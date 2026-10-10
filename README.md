@@ -10,7 +10,7 @@ It is a development preview. Animation playback, annotations and the overlays fo
 
 ## Download
 
-Get the latest zip from [Releases](https://github.com/DCCStudios/SSE-Animation-Previewer/releases), unpack it anywhere and run `SSE Animation Previewer.exe`. Keep the folder together. It carries its own .NET runtime and C++ runtime, so nothing else needs installing.
+Get the latest zip from [Nexus Mods](https://www.nexusmods.com/skyrimspecialedition/mods/194768) or from [Releases](https://github.com/DCCStudios/SSE-Animation-Previewer/releases) here. Both carry the same file. Unpack it anywhere and run `SSE Animation Previewer.exe`. Keep the folder together. It carries its own .NET runtime and C++ runtime, so nothing else needs installing.
 
 You need Windows 10 or 11 (x64), a graphics card and driver with OpenGL 4.3, and a Skyrim SE or AE Data folder. The program ships no game assets.
 

@@ -1,5 +1,7 @@
 # Nexus Mods page
 
+The page is https://www.nexusmods.com/skyrimspecialedition/mods/194768.
+
 `description.bbcode` is the text of the mod page's description, in Nexus BBCode. Paste it into the Description box on the page's edit screen. Its pictures load from this repository: screenshots from `docs/images` on `main`, animated pictures from the `media` branch.
 
 Suggested short summary for the page:
