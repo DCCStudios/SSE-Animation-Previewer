@@ -7,7 +7,7 @@ internal static class EffectGraphInspection
 {
     public static void Run()
     {
-        using var stream=File.OpenRead(@"F:\Modlists\NordicSoulsPBR\Game Root\Data\Skyrim - Animations.bsa");
+        using var stream=File.OpenRead(Path.Combine(SelfTest.GameData,"Skyrim - Animations.bsa"));
         using var reader=new BethesdaReader(stream);
         foreach(var entry in reader.EntriesFiles.Where(e=>new[]{"beginloopend.hkx","beginloopendchar.hkx","beginloopendbehavior.hkx"}.Contains(Path.GetFileName(e.FullPath),StringComparer.OrdinalIgnoreCase))){
         var bytes=reader.ExtractToMemory(entry.Index);

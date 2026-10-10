@@ -39,7 +39,8 @@ jobs:
           if (!(Test-Path -LiteralPath $exe)) { throw "Build output not found: $exe" }
           $run = Start-Process -FilePath $exe -ArgumentList '--ci-test' -WorkingDirectory $folder -Wait -PassThru
           if ($run.ExitCode -ne 0) {
-            foreach ($log in Get-ChildItem -LiteralPath $folder -Filter '*-tests.txt') {
+            # ci-test.txt is the summary: it names the suite that failed and carries any exception.
+            foreach ($log in @(Get-ChildItem -LiteralPath $folder -Filter 'ci-test.txt') + @(Get-ChildItem -LiteralPath $folder -Filter '*-tests.txt')) {
               Write-Host "::group::$($log.Name)"
               Get-Content -LiteralPath $log.FullName
               Write-Host '::endgroup::'
@@ -53,7 +54,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-logs
-          path: ${{ env.BUILD_OUTPUT }}/*-tests.txt
+          path: |
+            ${{ env.BUILD_OUTPUT }}/*-tests.txt
+            ${{ env.BUILD_OUTPUT }}/ci-test.txt
+            ${{ env.BUILD_OUTPUT }}/error.log
           if-no-files-found: warn
 
       - name: Build the public portable package

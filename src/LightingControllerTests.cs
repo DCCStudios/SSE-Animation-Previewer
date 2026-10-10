@@ -6,7 +6,8 @@ internal static class LightingControllerTests
 {
     internal static void Run(Action<bool,string> check)
     {
-        string root=@"F:\Modlists\NordicSoulsPBR\mods\Anchor MCO Animations v2 - Cloud Fenrir\meshes\magiceffects\FF7Fenrir";
+        string root=Path.Combine(SelfTest.Mods,@"Anchor MCO Animations v2 - Cloud Fenrir\meshes\magiceffects\FF7Fenrir");
+        if(!Directory.Exists(root)){SelfTest.Skip("Real Anchor lighting UV controller checks: "+SelfTest.Missing(root));return;}
         int found=0;
         foreach(string file in Directory.EnumerateFiles(root,"*.nif",SearchOption.AllDirectories)){
             var nif=new Nifcontent_Class_Manolo();nif.Load_Manolo(File.ReadAllBytes(file));var animation=new NifAnimation(nif);
