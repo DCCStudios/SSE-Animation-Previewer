@@ -11,8 +11,9 @@ $buildRoot = Join-Path $PSScriptRoot ('verification/package-builds/' + [Guid]::N
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 $Output = Join-Path $buildRoot 'staging'
 # Development-only build. The resulting Portable folder requires no SDK or converter.
-$floor = if ($Public) { 'resources' } else { '' }
-dotnet publish (Join-Path $PSScriptRoot 'SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output "-p:FloorTextures=$floor"
+# A property passed on the command line overrides the project file, so it is only passed for the public build.
+$floor = if ($Public) { @('-p:FloorTextures=resources') } else { @() }
+dotnet publish (Join-Path $PSScriptRoot 'SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output @floor
 if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
 $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio/Installer/vswhere.exe'
 $vs = & $vswhere -latest -products '*' -property installationPath
@@ -32,6 +33,7 @@ foreach ($file in 'LICENSE','THIRD-PARTY-NOTICES.md') {
 foreach ($directory in 'licenses','source-patches','docs') {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $directory) -Destination $Output -Recurse -Force
 }
+if (!(Test-Path (Join-Path $Output 'Resources/testgrid_d.dds'))) { throw 'Missing floor textures in the package.' }
 $needed = 'coreclr.dll','hostfxr.dll','hostpolicy.dll','System.Windows.Forms.dll','DirectXTexWrapper.dll','Ijwhost.dll','vcruntime140.dll','msvcp140.dll'
 foreach ($file in $needed) { if (!(Test-Path (Join-Path $Output $file))) { throw "Missing portable dependency: $file" } }
 # Paths are relative to the package root, including nested samples and licenses.
