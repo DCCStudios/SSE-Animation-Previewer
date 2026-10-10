@@ -39,7 +39,7 @@ internal static class ScriptAttachments
     {
         if(record.First("VMAD") is not {} vmad)yield break;
         ScriptAttachment[] scripts=[];string? error=null;
-        try{scripts=Read(vmad.Bytes);}catch(Exception ex) when(ex is IOException or ArgumentException){error=ex.Message;}
+        try{scripts=Read(vmad.Bytes);}catch(Exception ex) when(ex is IOException or ArgumentException or InvalidDataException){error=ex.Message;}
         if(error!=null){yield return record.EditorId+": cannot read script attachments: "+error;yield break;}
         foreach(var script in scripts){
             if(handled?.Contains(script.Name)==true)continue;

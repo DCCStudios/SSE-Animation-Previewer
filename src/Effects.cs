@@ -290,7 +290,7 @@ public sealed class Effects
         HashSet<string> handled=new(StringComparer.OrdinalIgnoreCase);
         if(passive||remote!=null||effect.First("VMAD") is not {} vmad)return handled;
         ScriptAttachment[] scripts;
-        try{scripts=ScriptAttachments.Read(vmad.Bytes);}catch(Exception ex) when(ex is IOException or ArgumentException){return handled;}
+        try{scripts=ScriptAttachments.Read(vmad.Bytes);}catch(Exception ex) when(ex is IOException or ArgumentException or InvalidDataException){return handled;}
         foreach(var script in scripts){
             if(!script.Name.Equals("FenrirBladeBeam",StringComparison.OrdinalIgnoreCase))continue;
             const string path=@"scripts\FenrirBladeBeam.pex";

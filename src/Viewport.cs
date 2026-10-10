@@ -12,7 +12,7 @@ public sealed class Viewport : PreviewControl
     public const float ClosestZoom=2;
     Point last;
     MouseButtons drag;
-    public void Zoom(float delta){camera.MinDistance=ClosestZoom;camera.Zoom(delta);}
+    public void Zoom(float delta){camera.MinDistance=Math.Min(ClosestZoom,camera.MaxDistance);camera.Zoom(delta);}
     protected override void OnMouseDown(MouseEventArgs e)
     {
         Focus();last=e.Location;

@@ -3,7 +3,7 @@ name: Build
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['v[0-9]+.[0-9]+.[0-9]+*']
   pull_request:
   workflow_dispatch:
 
@@ -13,6 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 30
     permissions:
       contents: write # the release step on tag pushes needs it
     env:
@@ -24,7 +25,14 @@ jobs:
 
       - uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 9.0.x
+          dotnet-version: 8.0.x
+
+      # The documented minimum is the .NET 8 SDK, so build with exactly that and not a newer one on the runner.
+      - name: Pin the .NET 8 SDK
+        shell: pwsh
+        run: |
+          '{"sdk":{"version":"8.0.100","rollForward":"latestFeature"}}' | Set-Content -LiteralPath global.json
+          dotnet --version
 
       # This one project builds the vendored engine through its project references.
       - name: Build
@@ -37,10 +45,11 @@ jobs:
           $folder = Join-Path $env:GITHUB_WORKSPACE $env:BUILD_OUTPUT
           $exe = Join-Path $folder 'SSE Animation Previewer.exe'
           if (!(Test-Path -LiteralPath $exe)) { throw "Build output not found: $exe" }
-          $run = Start-Process -FilePath $exe -ArgumentList '--ci-test' -WorkingDirectory $folder -Wait -PassThru
+          $run = Start-Process -FilePath $exe -ArgumentList '--ci-test' -WorkingDirectory $folder -PassThru
+          if (!$run.WaitForExit(600000)) { $run.Kill(); throw '--ci-test did not finish in ten minutes.' }
           if ($run.ExitCode -ne 0) {
             # ci-test.txt is the summary: it names the suite that failed and carries any exception.
-            foreach ($log in @(Get-ChildItem -LiteralPath $folder -Filter 'ci-test.txt') + @(Get-ChildItem -LiteralPath $folder -Filter '*-tests.txt')) {
+            foreach ($log in @(Get-ChildItem -LiteralPath $folder -Filter 'ci-test.txt') + @(Get-ChildItem -LiteralPath $folder -Filter 'error.log') + @(Get-ChildItem -LiteralPath $folder -Filter '*-tests.txt')) {
               Write-Host "::group::$($log.Name)"
               Get-Content -LiteralPath $log.FullName
               Write-Host '::endgroup::'
@@ -70,6 +79,10 @@ jobs:
           $label = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') { $env:GITHUB_SHA.Substring(0, 7) } else { $env:GITHUB_REF_NAME -replace '[\\/:*?"<>|]', '-' }
           $name = "SSE-Animation-Previewer-$label-win-x64"
           $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          # Start the packaged exe once: decoding a DDS goes through the native wrapper, Ijwhost and the C++ runtime.
+          $smoke = Start-Process -FilePath (Join-Path $package 'SSE Animation Previewer.exe') -ArgumentList '--texture-dump','Resources\testgrid_d.dds',(Join-Path $env:RUNNER_TEMP 'floor.png') -WorkingDirectory $package -PassThru
+          if (!$smoke.WaitForExit(120000)) { $smoke.Kill(); throw 'The packaged exe did not finish.' }
+          if ($smoke.ExitCode -ne 0 -or !(Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'floor.png'))) { throw "The packaged exe failed to decode a texture (exit $($smoke.ExitCode))." }
           Compress-Archive -Path $package -DestinationPath $zip -Force
           "name=$name" >> $env:GITHUB_OUTPUT
           "zip=$zip" >> $env:GITHUB_OUTPUT
@@ -88,11 +101,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ZIP: ${{ steps.package.outputs.zip }}
         run: |
-          # Create the release with generated notes, or replace the zip on a release that already exists.
-          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $env:GITHUB_REF_NAME $env:ZIP --clobber --repo $env:GITHUB_REPOSITORY
-          } else {
-            gh release create $env:GITHUB_REF_NAME $env:ZIP --title $env:GITHUB_REF_NAME --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY
-          }
+          # A published download is never replaced. To reissue a version, delete its release by hand first.
+          $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 200 --json tagName --jq '.[].tagName'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list releases.' }
+          if (@($existing) -contains $env:GITHUB_REF_NAME) { throw "Release $($env:GITHUB_REF_NAME) already exists and will not be overwritten." }
+          $kind = @(if ($env:GITHUB_REF_NAME -match '-') { '--prerelease' })
+          gh release create $env:GITHUB_REF_NAME $env:ZIP --title $env:GITHUB_REF_NAME --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY @kind
           if ($LASTEXITCODE -ne 0) { throw 'Publishing the release failed.' }

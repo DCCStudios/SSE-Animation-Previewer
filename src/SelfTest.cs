@@ -8,7 +8,16 @@ internal static class SelfTest
 {
     // Local data the tests read. SSE_TEST_MODS overrides the mod folder root; the vanilla assets sit in test-data beside the source.
     public static readonly string Mods=Environment.GetEnvironmentVariable("SSE_TEST_MODS") is {Length:>0} mods?mods:@"F:\Modlists\NordicSoulsPBR\mods";
-    public static readonly string TestData=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data"));
+    // The repository root: the nearest folder above the exe that holds the solution, looking no further than six levels,
+    // or four levels up (the build output layout) when there is none.
+    public static readonly string RepoRoot=FindRepoRoot();
+    static string FindRepoRoot()
+    {
+        var directory=new DirectoryInfo(AppContext.BaseDirectory);
+        for(int level=0;level<6&&directory!=null;level++,directory=directory.Parent)if(File.Exists(Path.Combine(directory.FullName,"SSEAnimationPreviewer.sln")))return directory.FullName;
+        return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\.."));
+    }
+    public static readonly string TestData=Path.Combine(RepoRoot,"test-data");
     public static readonly string GameData=Path.GetFullPath(Path.Combine(Mods,@"..\Game Root\Data"));
     public static bool HasTestData=>File.Exists(Path.Combine(TestData,"Skyrim.esm"));
     public static bool HasMods=>Directory.Exists(Mods)&&Directory.EnumerateDirectories(Mods).Any();

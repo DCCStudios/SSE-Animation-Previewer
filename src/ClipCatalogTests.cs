@@ -69,7 +69,7 @@ public static class ClipCatalogTests
             try{restored.Drop(absent);}catch(FileNotFoundException){missingRejected=true;}
             Check(missingRejected,"New drops reject missing files");
         }
-        string fixture=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\verification\catalog-fixture"));
+        string fixture=Path.Combine(SelfTest.RepoRoot,@"verification\catalog-fixture");
         assets=new Assets();assets.Roots.Add(fixture);
         void Write(string path,string body){string full=Path.Combine(fixture,path);Directory.CreateDirectory(Path.GetDirectoryName(full)!);File.WriteAllText(full,body);assets.External[path]=full;}
         const string parent=@"meshes\actors\character\animations\OpenAnimationReplacer\Folder Name";

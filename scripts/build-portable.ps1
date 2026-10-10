@@ -4,17 +4,24 @@ param([string]$Output = (Join-Path (Split-Path $PSScriptRoot -Parent) 'Portable'
 $root = Split-Path $PSScriptRoot -Parent
 $ErrorActionPreference = 'Stop'
 # Build in a fresh workspace; never mix previous test output into the delivery.
-$destination = [IO.Path]::GetFullPath($Output)
+# Resolve against the PowerShell location, which can differ from the process directory.
+$destination = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Output)
 $projectRoot = [IO.Path]::GetFullPath($root).TrimEnd('\')
 if ($destination.TrimEnd('\') -eq $projectRoot -or $projectRoot.StartsWith($destination.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Output cannot be the project directory or one of its ancestors.'
+}
+# An existing folder is moved aside and replaced, so it must be an earlier package or empty.
+if ((Test-Path -LiteralPath $destination -PathType Container) -and @(Get-ChildItem -LiteralPath $destination -Force).Count -gt 0) {
+    $isPackage = (Test-Path -LiteralPath (Join-Path $destination 'manifest.sha256.csv')) -and (Test-Path -LiteralPath (Join-Path $destination 'SSE Animation Previewer.exe'))
+    if (!$isPackage) { throw "Output exists and is not an earlier package, so it will not be replaced: $destination" }
 }
 $buildRoot = Join-Path $root ('verification/package-builds/' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 $Output = Join-Path $buildRoot 'staging'
 # Development-only build. The resulting Portable folder requires no SDK or converter.
 # A property passed on the command line overrides the project file, so it is only passed for the public build.
-$floor = @(if ($Public) { '-p:FloorTextures=resources' })
+# The public build also leaves out debug symbols, which carry the build machine's folder paths.
+$floor = @(if ($Public) { '-p:FloorTextures=resources'; '-p:DebugType=none'; '-p:DebugSymbols=false'; '-p:GenerateDocumentationFile=false' })
 dotnet publish (Join-Path $root 'src/SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output @floor
 if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
 # The C++ runtime DLLs live in the repository, so packaging needs no Visual Studio install.
@@ -54,7 +61,8 @@ if (Test-Path -LiteralPath $destination) {
 }
 try {
     # Copy from the actual backup after the rename, so edits made during publish are retained.
-    & (Join-Path $PSScriptRoot 'preserve-portable-data.ps1') -Previous $backup -Staging $Output
+    # The public package never carries scenes, presets or settings from an earlier folder.
+    if (!$Public) { & (Join-Path $PSScriptRoot 'preserve-portable-data.ps1') -Previous $backup -Staging $Output }
     & (Join-Path $PSScriptRoot 'verify-portable.ps1') -Package $Output
     New-Item -ItemType Directory -Path (Split-Path $destination -Parent) -Force | Out-Null
     Move-Item -LiteralPath $Output -Destination $destination

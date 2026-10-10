@@ -6,6 +6,7 @@
     <AssemblyName>SSE Animation Previewer</AssemblyName><ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Build output goes to bin\ at the repository root, where the tests look for fixtures four folders up. -->
     <BaseOutputPath>..\bin\</BaseOutputPath>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <FloorTextures Condition="'$(FloorTextures)'=='' And Exists('resources\local\testgrid_d.dds')">resources\local</FloorTextures>
     <FloorTextures Condition="'$(FloorTextures)'==''">resources</FloorTextures>
   </PropertyGroup>
@@ -14,12 +15,14 @@
          which would otherwise build it as Debug.
          The engine builds from source in engine\. Its one native part, the DDS wrapper, is prebuilt in lib\. -->
     <ProjectReference Include="..\engine\FO4_Base_Library\FO4_Base_Library.vbproj" SetConfiguration="Configuration=$(Configuration)" SetPlatform="Platform=x64" />
-    <ProjectReference Include="..\engine\FO4_Base_Library\FO4_Base_Library_CSharpHelpers\FO4_Base_Library_CSharpHelpers.csproj" SetConfiguration="Configuration=$(Configuration)" />
-    <ProjectReference Include="..\engine\Ba2_Bsa_Library\BSA_BA2_Library_DLL.vbproj" SetConfiguration="Configuration=$(Configuration)" />
-    <ProjectReference Include="..\engine\Material-Editor-master\MaterialLib\MaterialLib.csproj" SetConfiguration="Configuration=$(Configuration)" />
-    <ProjectReference Include="..\engine\NiflySharp\NiflySharp\NiflySharp.csproj" SetConfiguration="Configuration=$(Configuration)" />
+    <ProjectReference Include="..\engine\FO4_Base_Library\FO4_Base_Library_CSharpHelpers\FO4_Base_Library_CSharpHelpers.csproj" SetConfiguration="Configuration=$(Configuration)" SetPlatform="Platform=x64" />
+    <ProjectReference Include="..\engine\Ba2_Bsa_Library\BSA_BA2_Library_DLL.vbproj" SetConfiguration="Configuration=$(Configuration)" SetPlatform="Platform=x64" />
+    <ProjectReference Include="..\engine\Material-Editor-master\MaterialLib\MaterialLib.csproj" SetConfiguration="Configuration=$(Configuration)" SetPlatform="Platform=x64" />
+    <ProjectReference Include="..\engine\NiflySharp\NiflySharp\NiflySharp.csproj" SetConfiguration="Configuration=$(Configuration)" SetPlatform="Platform=x64" />
     <Reference Include="DirectXTexWrapper"><HintPath>..\lib\DirectXTexWrapper.dll</HintPath></Reference>
     <None Include="..\lib\Ijwhost.dll" Link="Ijwhost.dll" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The DDS wrapper needs the C++ runtime; shipping it beside the exe means no redistributable install. -->
+    <None Include="..\lib\crt\*.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
     <!-- Floor textures: the generated set in resources, or your own set in resources\local (not in the repository). -->
     <None Include="$(FloorTextures)\testgrid_*.dds" Link="Resources\%(Filename)%(Extension)" CopyToOutputDirectory="Always" />
     <PackageReference Include="OpenTK.GLControl" Version="4.0.2" />

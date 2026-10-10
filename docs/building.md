@@ -2,7 +2,7 @@
 
 [Back to the README](../README.md)
 
-Everything needed to build is in this repository. You install one thing, the .NET SDK, version 9.0.300 or later. The program targets .NET 8, but one of the engine's build-time code generators needs the newer SDK.
+Everything needed to build is in this repository. You install one thing, the .NET 8 SDK or a later one. GitHub Actions builds with the .NET 8 SDK on every push, so that minimum stays tested.
 
 ```
 git clone https://github.com/DCCStudios/SSE-Animation-Previewer
@@ -26,7 +26,7 @@ Windows x64 only. Visual Studio is not required.
 | `scripts` | Packaging scripts |
 | `docs`, `licenses` | These pages and the third-party license texts |
 
-`dotnet build` compiles `src` and everything under `engine`. The DDS wrapper in `lib` is the only prebuilt part. It is C++/CLI, which the .NET SDK cannot compile, so a built copy is checked in and its source sits beside it in `native`. Rebuild it only if you change it.
+`dotnet build` compiles `src` and everything under `engine`. The DDS wrapper in `lib` is the only prebuilt part. It is C++/CLI, which the .NET SDK cannot compile, so a built copy is checked in and its source sits beside it in `native`. Rebuild it only if you change it. The Microsoft C++ runtime files it needs are in `lib\crt` and are copied beside the exe by the build.
 
 ## Portable folder
 

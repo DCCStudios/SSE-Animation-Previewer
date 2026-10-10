@@ -203,7 +203,8 @@ public static class ClipOverrides
     {
         if(entry.ReplacementKey.Length==0)return [];
         long own=entry.Framework==Plain?long.MinValue:entry.Priority??long.MinValue;
-        return index[entry.ReplacementKey].Where(o=>o.Framework!=Plain&&!o.Disabled&&o.Priority is int p&&p>own
+        // A clip dropped in from outside the mounted folders (a rooted path) is not part of the load, so it overrides nothing.
+        return index[entry.ReplacementKey].Where(o=>o.Framework!=Plain&&!o.Disabled&&!System.IO.Path.IsPathRooted(o.Path)&&o.Priority is int p&&p>own
                 &&!(o.ConfigPath.Length>0&&o.ConfigPath.Equals(entry.ConfigPath,StringComparison.OrdinalIgnoreCase)))
             .GroupBy(o=>o.ConfigPath.Length>0?o.ConfigPath:o.Path,StringComparer.OrdinalIgnoreCase).Select(g=>g.First())
             .OrderByDescending(o=>o.Priority).ThenBy(o=>o.Path,StringComparer.OrdinalIgnoreCase).ToList();

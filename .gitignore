@@ -16,3 +16,6 @@ src/resources/local/
 
 # Agent worktrees
 .claude/
+
+# Editor caches
+*.lscache

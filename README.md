@@ -89,7 +89,7 @@ Untick **Require Alt for camera controls** to use plain drags. The camera zooms 
 
 ## Building from source
 
-The repository is self-contained. Install the .NET SDK, version 9.0.300 or later (the program itself targets .NET 8), then:
+The repository is self-contained. Install the .NET 8 SDK or a later one, then:
 
 ```
 git clone https://github.com/DCCStudios/SSE-Animation-Previewer
