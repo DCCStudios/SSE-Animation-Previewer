@@ -19,8 +19,8 @@ Copies of upstream license files are in licenses. Source patches against the che
 
 AMR, PayloadInterpreter, DynamicAnimationCasting and DtryKeyUtil source repositories are present under PluginTemplate for format/behavior reference. Their SKSE plugin DLLs are not required or loaded by this standalone application.
 
-The application source is provided under GPL-3.0-or-later, subject to third-party components' own licenses. Game and mod assets are not included, except for the user-supplied floor textures noted below in this local build.
+The application source is provided under GPL-3.0-or-later, subject to third-party components' own licenses. Game and mod assets are not included.
 
 The refraction geometry and composition shaders adapt equations from Community Shaders Utility.hlsl and ISRefraction.hlsl, copyright (c) 2022 Ilya Perapechka, under the MIT license. The full notice is included as licenses/CommunityShaders-Shaders-LICENSE.txt. Native material and permutation mapping was independently checked against the local AE 1.6.1170 executable without executing it.
 
-This local build also includes the three Test Room floor textures explicitly supplied by the user (testgrid_d.dds, testgrid_n.dds, testgrid_s.dds). They remain third-party mod assets and are not covered by the application source license.
+The grid floor textures in resources (testgrid_d.dds, testgrid_n.dds, testgrid_s.dds) and the particle fixtures in particle-fixtures were generated for this project and are covered by the application license.
