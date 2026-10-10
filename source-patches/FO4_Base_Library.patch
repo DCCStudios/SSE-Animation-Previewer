@@ -1,0 +1,306 @@
+diff --git a/FO4UnifiedMaterial_Class.vb b/FO4UnifiedMaterial_Class.vb
+index 364c147..fcbfe1c 100644
+--- a/FO4UnifiedMaterial_Class.vb
++++ b/FO4UnifiedMaterial_Class.vb
+@@ -1,4 +1,4 @@
+-﻿' Version Uploaded of Fo4Library 3.2.0
++' Version Uploaded of Fo4Library 3.2.0
+ Imports System.Collections.Concurrent
+ Imports System.ComponentModel
+ Imports System.Drawing.Design
+@@ -4681,7 +4681,8 @@ Public Class FO4UnifiedMaterial_Class
+         Return New Color4(r / 255, g / 255, b / 255, Math.Min(1.0F, Math.Max(0.0F, alpha)))
+     End Function
+     Private Shared Function ClampByte(value As Single) As Integer
+-        If value > Integer.MaxValue Then Return 255
++        If Single.IsNaN(value) OrElse value <= 0 Then Return 0
++        If value >= 255 Then Return 255
+         Return Math.Min(255, Math.Max(0, CInt(value)))
+     End Function
+     Private Shared Function NifColor3ToMaterialRgb(color As NiflySharp.Structs.Color3) As UInteger
+diff --git a/FilesDictionary_class.vb b/FilesDictionary_class.vb
+index db15271..3d230c7 100644
+--- a/FilesDictionary_class.vb
++++ b/FilesDictionary_class.vb
+@@ -1,4 +1,4 @@
+-﻿' Version Uploaded of Fo4Library 3.2.0
++' Version Uploaded of Fo4Library 3.2.0
+ Imports System.Collections.Concurrent
+ Imports System.IO
+ Imports System.Runtime.CompilerServices
+@@ -803,6 +803,38 @@ Public Class FilesDictionary_class
+     ''' que contesta "cual es el archivo final para esta carga de plugins y este load order": la
+     ''' precedencia entre suelto y archives ya la aplico el scan (ver Resolve_Conflict), asi que
+     ''' preguntar aca no abre ningun archive.</summary>
++    ''' <summary>Creates generation-stamped locations for an external archive index.
++    ''' The host owns overlay precedence; absolute archive paths keep same-named mod archives distinct.</summary>
++    ''' <summary>Releases idle handles for one archive. Active reads finish normally and
++    ''' are discarded on return. Call only while the host has stopped asset loading before replacing a file.</summary>
++    Public Shared Sub ReleaseExternalArchiveReaders(archivePath As String)
++        Dim key = ArchiveKey(Path.GetFullPath(archivePath))
++        BumpArchiveEpoch(key)
++        DrainAndDisposeBag(key)
++    End Sub
++    Public Shared Function BuildExternalArchiveLocations(archivePath As String,
++            entries As IEnumerable(Of KeyValuePair(Of String, Integer)),
++            sourceOrder As Integer) As Dictionary(Of String, File_Location)
++        Dim absolutePath = Path.GetFullPath(archivePath)
++        If Not File.Exists(absolutePath) Then Throw New FileNotFoundException("Archive not found", absolutePath)
++        Dim fileDate = File.GetLastWriteTime(absolutePath)
++        Dim result As New Dictionary(Of String, File_Location)(StringComparer.OrdinalIgnoreCase)
++        SyncLock _overriddenEntriesLock
++            ReleaseExternalArchiveReaders(absolutePath)
++            Dim token = ContentGenTokenOf(absolutePath)
++            Dim generation = Threading.Interlocked.Increment(token.Gen)
++            ClearBytesCache()
++            For Each entry In entries
++                result(entry.Key) = New File_Location With {
++                    .FullPath = entry.Key, .BA2File = absolutePath, .Index = entry.Value,
++                    .SourceOrder = sourceOrder, .FileDate = fileDate,
++                    .ArchiveGen = generation, .GenToken = token
++                }
++            Next
++        End SyncLock
++        Return result
++    End Function
++
+     Public Shared Function TryGetEntry(path As String) As File_Location
+         Dim encontrado As File_Location = Nothing
+         If Dictionary.TryGetValue(NormalizeDictionaryKey(path), encontrado) Then Return encontrado
+@@ -1859,7 +1891,7 @@ Public Class FilesDictionary_class
+             If Not _registeredArchives.TryAdd(archiveFileName, 0) Then Exit Sub
+ 
+             ' Montar es CAMBIAR lo que hay en esa ruta: los readers pooleados tienen la tabla de entradas VIEJA.
+-            BumpArchiveEpoch(ArchiveKey(absolutePath))
++            ReleaseExternalArchiveReaders(absolutePath)
+ 
+             ' Y ES UN CAMBIO DE CONTENIDO DEL DICCIONARIO: sube tambien el sello de generacion. Sin esto,
+             ' una vista derivada (la lista de claves bajo Strings\ del resolver de textos, por ejemplo)
+diff --git a/Havok/Anim/HkxAnimationGraphParser.vb b/Havok/Anim/HkxAnimationGraphParser.vb
+index f81c9e9..f59161f 100644
+--- a/Havok/Anim/HkxAnimationGraphParser.vb
++++ b/Havok/Anim/HkxAnimationGraphParser.vb
+@@ -1,4 +1,4 @@
+-﻿Option Strict On
++Option Strict On
+ Option Explicit On
+ 
+ Imports System.Collections.Generic
+@@ -109,7 +109,7 @@ Partial Public Class HkxObjectGraph_Class
+         ' no dice en ningun lado. La subclase concreta la sigue diciendo el nombre de clase
+         ' del bloque, que es lo unico que la declara.
+         For Each obj In AnimacionesDeclaradas(
+-                                            {Havok.Canon.Objects.HkObj_HkaSplineCompressedAnimation.NombreDeClase, Havok.Canon.Objects.HkObj_HkaLosslessCompressedAnimation.NombreDeClase})
++                                            {Havok.Canon.Objects.HkObj_HkaSplineCompressedAnimation.NombreDeClase, Havok.Canon.Objects.HkObj_HkaLosslessCompressedAnimation.NombreDeClase, "hkaInterleavedUncompressedAnimation"})
+             ' ⛔⛔ UN CLIP ROTO NO SE LLEVA PUESTOS A LOS DEMAS.
+             ' Sin esta guarda, si el clip #2 del archivo tira, se pierden TODOS los del archivo y el
+             ' llamador ve 'no tiene animaciones'. Medido sobre el corpus: 15.055 archivos de FO4 y
+@@ -120,6 +120,7 @@ Partial Public Class HkxObjectGraph_Class
+                 ' porque su guarda es `Leer(Of T)` — la misma resolucion por nombre que el resto del arbol.
+                 a = ParseAnimation(obj)
+                 If a Is Nothing Then a = ParseLosslessAnimation(obj)
++                If a Is Nothing Then a = ParseInterleavedAnimation(obj)
+             Catch ex As Exception
+                 AnimacionesFallidas.Add($"{obj.ClassName} @0x{obj.RelativeOffset:X}: {ex.GetType().Name}: {ex.Message}")
+                 If Logger.Enabled Then Logger.LogLazy(Function() $"[ANIM-FALLO] {obj.ClassName} @0x{obj.RelativeOffset:X}: {ex.Message}")
+@@ -162,6 +163,23 @@ Partial Public Class HkxObjectGraph_Class
+         Return r
+     End Function
+ 
++    Public Function ParseInterleavedAnimation(source As HkxVirtualObjectGraph_Class) As HkxAnimacionDescomprimida_Class
++        If source Is Nothing OrElse source.ClassName <> "hkaInterleavedUncompressedAnimation" Then Return Nothing
++        Dim raw = Havok.Canon.Objects.HkObj_HkaInterleavedUncompressedAnimation.Read(Me, source)
++        Dim tracks = raw.NumberOfTransformTracks
++        If tracks <= 0 OrElse raw.Transforms.Count Mod tracks <> 0 Then Throw New IO.InvalidDataException("Invalid interleaved track count")
++        Dim frames = raw.Transforms.Count \ tracks
++        Dim result As New HkxAnimacionDescomprimida_Class With {
++            .Animacion = Havok.Canon.Objects.HkObj_HkaAnimation.Read(Me, source),
++            .NumFrames = frames,
++            .FrameDuration = If(frames > 1, raw.Duration / (frames - 1), raw.Duration)
++        }
++        For Each transform In raw.Transforms
++            result.TrackTransforms.Add(transform)
++            result.TrackMask.Add(127)
++        Next
++        Return result
++    End Function
+     Public Function ParseAnimation(source As HkxVirtualObjectGraph_Class) As HkxAnimacionDescomprimida_Class
+         ' ⛔ EL GUARDA POR NOMBRE Y LA LECTURA SON LA MISMA LLAMADA (mas abajo, `Leer(Of T)`).
+         If IsNothing(source) Then Return Nothing
+diff --git a/Havok/Anim/HkxPoseImportHelper.vb b/Havok/Anim/HkxPoseImportHelper.vb
+index 05ab1eb..66e5cf4 100644
+--- a/Havok/Anim/HkxPoseImportHelper.vb
++++ b/Havok/Anim/HkxPoseImportHelper.vb
+@@ -1,4 +1,4 @@
+-﻿Option Strict On
++Option Strict On
+ Option Explicit On
+ 
+ Imports System.IO
+@@ -254,10 +254,26 @@ Public NotInheritable Class HkxPoseImportSession
+     ''' <para>⛔ Sólo para clips spline. Un clip lossless no tiene muestreador del `.exe` transcripto y
+     ''' tira: no se inventa una interpolación en su lugar.</para>
+     ''' </summary>
++    Private Function SampleStoredTrack(track As Integer, t As Single) As Single()
++        Dim frame = Math.Clamp(t / Math.Max(0.000001F, _animation.FrameDuration), 0, _animation.NumFrames - 1)
++        Dim low = CInt(Math.Floor(frame))
++        Dim high = Math.Min(low + 1, _animation.NumFrames - 1)
++        Dim a = _animation.GetTransform(low, track)
++        Dim b = _animation.GetTransform(high, track)
++        If a Is Nothing OrElse b Is Nothing Then Return Nothing
++        Dim u = CSng(frame - low)
++        Dim result(11) As Single
++        For i = 0 To 11
++            result(i) = a(i) + (b(i) - a(i)) * u
++        Next
++        Dim q = System.Numerics.Quaternion.Slerp(New System.Numerics.Quaternion(a(4), a(5), a(6), a(7)), New System.Numerics.Quaternion(b(4), b(5), b(6), b(7)), u)
++        result(4) = q.X : result(5) = q.Y : result(6) = q.Z : result(7) = q.W
++        Return result
++    End Function
+     Public Function BuildPoseAtTime(t As Single, poseName As String,
+                                     Optional collectDiagnostics As Boolean = False) As HkxPoseImportHelper.ImportResult
+         Dim m = If(_animation Is Nothing, Nothing, _animation.Muestreador)
+-        If m Is Nothing Then Throw New InvalidOperationException("BuildPoseAtTime: el clip no es hkaSplineCompressedAnimation (no hay muestreador del .exe).")
++        If m Is Nothing Then Return ArmarPose(poseName, collectDiagnostics, $"stored t={t}", Function(track) SampleStoredTrack(track, t), Function(track) 127)
+         Dim s = m.PoseAtTime(t)
+         Dim tr = s.Transforms
+         Return ArmarPose(poseName, collectDiagnostics, $"t={t:R} bloque={s.Bloque}",
+diff --git a/NifContent_Class.vb b/NifContent_Class.vb
+index 0a424c1..937eda2 100644
+--- a/NifContent_Class.vb
++++ b/NifContent_Class.vb
+@@ -104,6 +104,8 @@ Public Class Nifcontent_Class_Manolo
+                 Return False
+             Case GetType(NiParticleSystem)
+                 Return False
++            Case GetType(NiMeshParticleSystem)
++                Return False
+             Case GetType(BSSubIndexTriShape)
+                 Return True
+             Case GetType(BSTriShape)
+diff --git a/Render.vb b/Render.vb
+index 1e5a619..a4fcbef 100644
+--- a/Render.vb
++++ b/Render.vb
+@@ -1,4 +1,4 @@
+-﻿' Version Uploaded of Fo4Library 3.2.0
++' Version Uploaded of Fo4Library 3.2.0
+ Imports System.Collections.Concurrent
+ Imports System.ComponentModel
+ Imports System.Drawing.Imaging
+@@ -1479,6 +1479,7 @@ Public Class PreviewControl
+         Dim farZ As Single = eyeToCenter + radius * (1.0F + margin) + 1.0F
+         ' Mínimo razonable para escenas pequeñas
+         farZ = Math.Max(1000.0F, farZ)
++        If FarPlaneExtension > 0 Then farZ = Math.Max(farZ, eyeToCenter + FarPlaneExtension)
+ 
+         ' Near plane: suficientemente pequeño, pero no exagerado para no perder precisión de Z
+         Dim nearZ As Single = Math.Max(0.05F, farZ / 10000.0F)
+@@ -1588,6 +1589,7 @@ Public Class PreviewControl
+         GL.ClearColor(Config_App.Current.Setting_BackColor)
+         GL.Clear(ClearBufferMask.ColorBufferBit Or ClearBufferMask.DepthBufferBit)
+         PaintBackground()
++        RaiseEvent BeforeSceneMeshes(projection)
+         If Model.Can_Render Then
+             Model.RenderAll(projection, camera)
+         End If
+@@ -1748,12 +1750,14 @@ Public Class PreviewControl
+         Me.EnsureContextCurrent()
+         ApplyResize(True)
+ 
+-        If UpdateRequired Then
++        If True Then
+             ' Consume the current render request up front so any new request raised
+             ' during RenderScene survives this frame and schedules the next one.
+             UpdateRequired = False
++            RaiseEvent BeforeSceneFrame()
+             RenderScene()
+-            SwapBuffers()
++            RaiseEvent AfterSceneFrame(projection)
++            ' Read the rendered back buffer before presentation; front reads can be stale under DWM.
+             FinishRenderFrame()
+         End If
+ 
+@@ -1772,7 +1776,7 @@ Public Class PreviewControl
+         Catch
+         End Try
+         Try
+-            GL.ReadBuffer(ReadBufferMode.Front)
++            GL.ReadBuffer(ReadBufferMode.Back)
+             GL.PixelStore(PixelStoreParameter.PackAlignment, 4)
+             GL.ReadPixels(0, 0, bmp.Width, bmp.Height, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, PixelType.UnsignedByte, data.Scan0)
+         Finally
+@@ -1802,6 +1806,7 @@ Public Class PreviewControl
+             PresentFrame()
+         Catch ex As Exception
+             Try
++                System.IO.File.AppendAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "render-error.log"), ex.ToString() & Environment.NewLine)
+                 Processing_Status("Render error")
+             Catch
+             End Try
+@@ -1811,8 +1816,28 @@ Public Class PreviewControl
+     ''' <summary>Dibuja y presenta un frame: RenderScene + SwapBuffers + FinishRenderFrame. Lo
+     ''' llaman OnPaint (camino diferido normal, vía WM_PAINT) y RefreshRender durante el play
+     ''' (camino sincrónico). Centralizado para tener un único punto de present.</summary>
++    ' Host extension points: evaluated on the GL thread, without changing other consumers.
++    Public Event BeforeSceneFrame()
++    Public Event AfterSceneFrame(projectionMatrix As Matrix4)
++    ''' <summary>Raised after the background is painted and before the model pass (engine floor, meshes), so a
++    ''' host can draw its own ground geometry under blended effect meshes. Runs even when the model cannot render.</summary>
++    Public Event BeforeSceneMeshes(projectionMatrix As Matrix4)
++    ''' <summary>Extra depth past the camera focus that the far plane must keep inside the frustum; lets a host
++    ''' draw large ground geometry without it being clipped at the default 1000-unit far plane.</summary>
++    Public Property FarPlaneExtension As Single = 0
++    Public Property MaximumPresentationFps As Double = 60.0
++    Private _lastHostPresent As Long = 0
+     Private Sub PresentFrame()
++        Dim now = Stopwatch.GetTimestamp()
++        If MaximumPresentationFps > 0 AndAlso _lastHostPresent <> 0 AndAlso
++           (now - _lastHostPresent) / CDbl(Stopwatch.Frequency) < 1.0 / MaximumPresentationFps Then
++            UpdateRequired = True
++            Return
++        End If
++        _lastHostPresent = now
++        RaiseEvent BeforeSceneFrame()
+         RenderScene()
++        RaiseEvent AfterSceneFrame(projection)
+         SwapBuffers()
+         FinishRenderFrame()
+     End Sub
+@@ -2163,7 +2188,8 @@ Public Class PreviewControl
+                 PresentFrame()
+             Catch ex As Exception
+                 Try
+-                    Processing_Status("Render error")
++                    System.IO.File.AppendAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "render-error.log"), ex.ToString() & Environment.NewLine)
++                Processing_Status("Render error")
+                 Catch
+                 End Try
+             End Try
+@@ -3860,7 +3886,7 @@ Public Class PreviewModel
+             '=============================== MATRICES ===============================
+             Dim model As Matrix4 = MeshData.Transform
+             Dim view As Matrix4 = camera.GetViewMatrix()
+-            Dim modelView As Matrix4 = view * model
++            Dim modelView As Matrix4 = model * view
+ 
+             Dim normalMatrix As New OpenTK.Mathematics.Matrix3(modelView)
+             normalMatrix.Invert()
+@@ -3954,7 +3980,7 @@ Public Class PreviewModel
+             Dim model As Matrix4 = MeshData.Transform
+             ' MISMO orden que el pase iluminado (`view * model`). Cambiarlo aca y no alla dejaria la
+             ' sombra proyectada desde otro lado que la luz que la ilumina.
+-            Dim modelView As Matrix4 = lightView * model
++            Dim modelView As Matrix4 = model * lightView
+ 
+             ' matProjection / matView los sube el CALLER una sola vez por pase (son de la luz, no de la
+             ' malla). Aca solo va lo que cambia POR MALLA.
+@@ -4174,7 +4200,7 @@ Public Class PreviewModel
+             '=============================== MATRICES (identical to Render) ===============================
+             Dim model As Matrix4 = MeshData.Transform
+             Dim view As Matrix4 = camera.GetViewMatrix()
+-            Dim modelView As Matrix4 = view * model
++            Dim modelView As Matrix4 = model * view
+ 
+             Dim normalMatrix As New OpenTK.Mathematics.Matrix3(modelView)
+             normalMatrix.Invert()

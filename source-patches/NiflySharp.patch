@@ -1,0 +1,33 @@
+diff --git a/NiflySharp.Generator/NiflySharp.Generator.csproj b/NiflySharp.Generator/NiflySharp.Generator.csproj
+index 26bcd6f..d68b014 100644
+--- a/NiflySharp.Generator/NiflySharp.Generator.csproj
++++ b/NiflySharp.Generator/NiflySharp.Generator.csproj
+@@ -1,4 +1,4 @@
+-﻿<Project Sdk="Microsoft.NET.Sdk">
++<Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+     <TargetFramework>netstandard2.0</TargetFramework>
+@@ -32,7 +32,7 @@
+       <PrivateAssets>all</PrivateAssets>
+       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+     </PackageReference>
+-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
++    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+   </ItemGroup>
+ 
+ </Project>
+diff --git a/NiflySharp/NiflySharp.csproj b/NiflySharp/NiflySharp.csproj
+index 60efe17..b325f6e 100644
+--- a/NiflySharp/NiflySharp.csproj
++++ b/NiflySharp/NiflySharp.csproj
+@@ -1,7 +1,7 @@
+-﻿<Project Sdk="Microsoft.NET.Sdk">
++<Project Sdk="Microsoft.NET.Sdk">
+ 
+   <PropertyGroup>
+-    <TargetFrameworks>net10.0;net8.0</TargetFrameworks>
++    <TargetFrameworks>net8.0</TargetFrameworks>
+     <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
+     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
+     <Title>NiflySharp</Title>

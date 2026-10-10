@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+Portable/
+*.log
+portable-runtime-trace.txt
+
+# Local-only data: game and mod assets, test evidence, private floor textures
+test-data/
+verification/
+resources/local/
+
+# Editor
+.vs/
+*.user
