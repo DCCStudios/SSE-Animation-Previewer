@@ -4,7 +4,7 @@ This is the engineering log the previewer was built against: what each subsystem
 
 Some verification entries name test scenes, sample files and checks that have since been removed from the project (a Braver impact sample and its exporter, a scripted Cross Slash dialog, Cloud trail captures). Those entries are kept because the engine findings in them still hold. Paths under `verification/` and `test-data/` refer to local folders that are not in the repository. Where an entry mentions `PluginTemplate`, `DirectXTex` or `DirectXTextWrapper` folders in a workspace, that source is now under `engine` and `native`.
 
-Run **Portable\SSE Animation Previewer.exe**. Keep the entire Portable folder together. It includes the .NET desktop runtime, animation/NIF/archive libraries, DDS decoder, and native C++ runtime. No separate .NET installation, converter, Maya, Blender, SKSE installation, or development tool is required to launch it.
+Run **SSE Animation Previewer.exe** from the portable folder. Keep the entire folder together. It includes the .NET desktop runtime, animation/NIF/archive libraries, DDS decoder, and native C++ runtime. No separate .NET installation, converter, Maya, Blender, SKSE installation, or development tool is required to launch it.
 
 This is a development preview. Animation selection and decoding, character meshes, root motion and some mesh-based effects work. **It does not yet reproduce all Skyrim particle systems or all effect triggers accurately.** See the limitations below before relying on its visual output.
 
@@ -244,7 +244,7 @@ Not confirmed in game: the plugin's rotation reading and weapon axis were unveri
 ## Precision attack collisions
 Tick **Show Precision attack collisions** (PRECISION group, off by default) to draw the capsules Precision builds from the selected clip's `Collision_*` annotations. Red is the attack capsule and blue the recoil capsule, the colours Precision's own debug view uses. Each capsule rides its bone and the root motion, appears at its Collision_Add and goes at whatever ends it. The label under the box lists every collision with its time span and size. The Annotations & effects tab lists the timeline with the reason each collision ends, plus anything Precision would ignore or reject. The box and the player/NPC choice are saved with the session.
 
-The rules are taken from the Precision 2.0.4 source (PrecisionHandler.cpp and AttackCollision.cpp in PluginTemplate/Precision-main), not from the documentation:
+The rules are taken from the Precision 2.0.4 source (PrecisionHandler.cpp and AttackCollision.cpp, https://github.com/ersh1/Precision), not from the documentation:
 
 - Collision_AttackStart (or Collision_Start) opens the attack. Add, Remove and ClearTargets before it are ignored. Event names and payload parameter names ignore case.
 - Collision_Add needs Node(). The bone lookup ignores case, as the game's GetObjectByName does, but only `WEAPON` and `SHIELD` in capitals get weapon sizing.
@@ -287,7 +287,7 @@ Settings are Precision's defaults until a mounted mod supplies `MCM\Config\Preci
 `--background` (or the environment variable SSE_PREVIEW_BACKGROUND=1) opens the previewer off-screen, out of the taskbar and never as the foreground window. Rendering is unchanged: captures taken this way are pixel-identical to a normal run. It is meant for test and tool runs, for example `"SSE Animation Previewer.exe" --background --clip-profile <clip path suffix> <name>` or `--background --mod-sweep <source folder substring>`, which read the session beside the exe and write their output under clip-profile or mod-sweep next to it. Tool and test modes save to verification-session.json and never to your session.json. Close a background instance from Task Manager if a run is interrupted; it has no visible window.
 
 ## Development
-Source is in this folder. Renderer/dependency source is in the workspace's PluginTemplate, DirectXTex and DirectXTextWrapper folders. build-portable.ps1 publishes a self-contained Windows x64 folder and copies the native C++ runtime. It requires development tools only when rebuilding, never when running the delivered application.
+The previewer source is in src. Renderer and dependency source is in engine and native. scripts/build-portable.ps1 publishes a self-contained Windows x64 folder and copies the native C++ runtime. It requires development tools only when rebuilding, never when running the delivered application.
 
 Upstream renderer changes include safe color conversion, direct interleaved HKX decoding, stored-track interpolation, world-space model/view composition, a presentation cap, render diagnostics and scene hooks. See source-patches and THIRD-PARTY-NOTICES.md.
 

@@ -466,7 +466,7 @@ public sealed class MainWindow : Form
             Check(sources.Height>before,"Dragging the library/source divider makes the source area taller");
             using(var image=new Bitmap(sources.Width,sources.Height)){sources.DrawToBitmap(image,sources.ClientRectangle);image.Save(Path.Combine(AppContext.BaseDirectory,"loaded-sources-expanded.png"));}
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"sources-recent-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"sources-recent-tests.txt"),log);}finally{Close();}}
     }
     async Task SceneSaveSmoke(){
         var log=new List<string>();string folder=Path.Combine(AppContext.BaseDirectory,"scene-save-verification",Guid.NewGuid().ToString("N"));Directory.CreateDirectory(folder);
@@ -500,7 +500,7 @@ public sealed class MainWindow : Form
             Check(!SceneDialogProbe.SaveAndAnswerOverwrite(this,sceneMenu!.Items[0],true),"New-file Save completes through the actual browser without an overwrite prompt");
             Check(File.Exists(secondFile)&&File.ReadAllText(file)==overwritten&&sceneFile==secondFile,"Saving to a new filename preserves the original scene");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"scene-save-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"scene-save-tests.txt"),log);}finally{Close();}}
     }
     async Task SceneDialogSmoke(){
         var results=new List<string>();
@@ -514,7 +514,7 @@ public sealed class MainWindow : Form
                 results.Add("PASS "+(i%2==0?"Save":"Load")+" scene opens its owned file browser and cancels; menu remains reusable");
             }
         }catch(Exception ex){results.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"scene-dialog-tests.txt"),results);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"scene-dialog-tests.txt"),results);}finally{Close();}}
     }
     SaveFileDialog CreateSceneSaveDialog(string? suggestion=null)=>new(){Title="Save preview scene",Filter="Preview scene (*.ssescene.json)|*.ssescene.json",FileName=suggestion??sceneFile??"Scene.ssescene.json",DefaultExt="ssescene.json",AddExtension=true,OverwritePrompt=true,CheckPathExists=true,RestoreDirectory=true};
     void SavePreset(){
@@ -1450,7 +1450,7 @@ public sealed class MainWindow : Form
             Check(moved,"The posed body changes between the first frame and mid-clip");
             log.Add("diagnostics: "+string.Join(" | ",scene.Diagnostics.Concat(assets.Diagnostics).Where(d=>d.Contains("nimation",StringComparison.Ordinal)).Take(5)));
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"tagfile-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"tagfile-tests.txt"),log);}finally{Close();}}
     }
     // Playback speed follows the HKX: an MCO_AttackSpeed clip sets the control and shows the note, a plain clip resets to 1.00x.
     async Task SpeedSmoke(string mcoClip,string plainClip)
@@ -1478,7 +1478,7 @@ public sealed class MainWindow : Form
             speed.Value=1.5m;PreviewParticle(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\particle-fixtures\meshes\previewer\fountain.nif"));
             Check(speedNote.Text.Length==0,"Effect previews carry no speed note");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"speed-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"speed-tests.txt"),log);}finally{Close();}}
     }
     async Task FloorSmoke()
     {
@@ -1554,7 +1554,7 @@ public sealed class MainWindow : Form
             }else log.Add("SKIP character-on-floor render: test-data fixture is not present");
             foreach(Form f in Application.OpenForms.Cast<Form>().ToArray())if(f!=this)f.Close();
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"floor-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"floor-tests.txt"),log);}finally{Close();}}
     }
     async Task EmitterSourceSmoke()
     {
@@ -1585,7 +1585,7 @@ public sealed class MainWindow : Form
             };
             timer.Start();ChooseEmitterSources();if(failure!=null)throw failure;
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"emitter-source-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"emitter-source-tests.txt"),log);}finally{Close();}}
     }
     async Task RefractionSmoke()
     {
@@ -1631,7 +1631,7 @@ public sealed class MainWindow : Form
             viewport.camera.distance=250;using var near=Capture("near-restored");if(scene.DrawnRefractionLayers!=1||!File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,"refraction-near-restored.png")).SequenceEqual(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,"refraction-displaced.png"))))throw new InvalidDataException("Returning camera did not restore the same refraction image");
             log.Add("PASS Returning the camera restores refraction deterministically.");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"refraction-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"refraction-tests.txt"),log);}finally{Close();}}
     }
     async Task ArchiveOrderSmoke()
     {
@@ -1650,7 +1650,7 @@ public sealed class MainWindow : Form
             if(!Read("black").SequenceEqual(Read("black-replay")))throw new InvalidDataException("Restoring the prior archive did not reproduce its render");
             log.Add("PASS Changed archive texture renders differently; restoring the original order reproduces the original image exactly.");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"archive-order-render.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"archive-order-render.txt"),log);}finally{Close();}}
     }
     async Task ReferenceEffectSmoke()
     {
@@ -1747,7 +1747,7 @@ public sealed class MainWindow : Form
                 log.Add("PASS "+entry.Record.EditorId+": timeline play draws; stop finishes; rewind reproduces the original render exactly.");
             }
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"reference-effects.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"reference-effects.txt"),log);}finally{Close();}}
     }
     async Task RemoteCastSmoke()
     {
@@ -1772,7 +1772,7 @@ public sealed class MainWindow : Form
             using(var replay=viewport.CaptureBitmap())replay.Save(Path.Combine(AppContext.BaseDirectory,"remote-casts-replay.png"));
             log.Add("Original fountain fixtures visualize trajectories; these are not Blade Beam art or native collision validation.");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"remote-casts.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"remote-casts.txt"),log);}finally{Close();}}
     }
     async Task AttachmentSmoke()
     {
@@ -1983,7 +1983,7 @@ public sealed class MainWindow : Form
             log.Add("Early center: "+early.Value.Translation);log.Add("Late center: "+late.Value.Translation);
             UpdateDiagnostics();log.Add(diagnostics.Text);
         }catch(Exception ex){ShowError(ex);log.Add(ex.ToString());Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"attachment-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"attachment-tests.txt"),log);}finally{Close();}}
     }
     async Task CameraSmoke()
     {
@@ -2029,7 +2029,7 @@ public sealed class MainWindow : Form
             cameraSubject.SelectedIndex=2;
             Check(scene.FramingSubject==Scene.FrameSubject.Effects&&scene.ParticleCount==90,"Effect framing selects the effect subject without changing playback");
         }catch(Exception ex){ShowError(ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"camera-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"camera-tests.txt"),log);}finally{Close();}}
     }
     async Task CharacterSmoke()
     {
@@ -2160,7 +2160,7 @@ public sealed class MainWindow : Form
 
             log.AddRange(scene.Diagnostics);
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"cloud-equipment-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"cloud-equipment-tests.txt"),log);}finally{Close();}}
     }
     async Task LibrarySmoke()
     {
@@ -2259,7 +2259,7 @@ public sealed class MainWindow : Form
             log.Add("PASS Character framing is the default and is retained in session settings.");
             log.Add("PASS Real annotation/record chain resolves Blade Beam hit art separately from its empty cone-projectile model. Renders require visual review; this does not prove native projectile or script behavior.");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"bladebeam-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"bladebeam-smoke.txt"),log);}finally{Close();}}
     }
     // Profiles any library clip under the live Portable session: per-frame timings, particle counts,
     // per-system statistics and renders at a set of times. Used to chase runaway effects.
@@ -2311,7 +2311,7 @@ public sealed class MainWindow : Form
                 Check(distinct>40,$"Background renders are real frames ({distinct} distinct colours across 400 samples)");
             }
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"holster-tests.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"holster-tests.txt"),log);}finally{Close();}}
     }
     // Equipment panel: weight survives rebuilds and mounts, the All slot, the kept armor filter, slot names.
     async Task EquipmentSmoke(string[] folders)
@@ -2388,7 +2388,7 @@ public sealed class MainWindow : Form
             using(var popupImage=armorList.CapturePopup())popupImage?.Save(Path.Combine(output,"armor-filter-kept.png"));
             armorList.CommitSelection();armorList.SetFilter("");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"equipment-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"equipment-smoke.txt"),log);}finally{Close();}}
     }
     // Animation queue: several clips on one timeline with root motion carried from clip to clip and blended joins.
     async Task QueueSmoke(string[] clips)
@@ -2602,7 +2602,7 @@ public sealed class MainWindow : Form
                 Check(Enumerable.Range(0,strip.TabCount).All(t=>strip.GetTabRect(t).Width>=TextRenderer.MeasureText(strip.TabPages[t].Text,strip.Font).Width+8),$"In a narrow window every tab still fits its bold text ({rows} row(s))");}
             Size=wide;await Task.Delay(200);
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"queue-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"queue-smoke.txt"),log);}finally{Close();}}
     }
     // Snap to frame and the frame readout beside the time slider.
     // Precision attack collisions. First the event replay on synthetic annotations, then a scene: arguments are the
@@ -2705,7 +2705,7 @@ public sealed class MainWindow : Form
             Check(CaptureSettings().PrecisionCollisions&&!CaptureSettings().PrecisionNpc,"The setting is saved with the session");
             using(var window=new Bitmap(Width,Height)){DrawToBitmap(window,new Rectangle(Point.Empty,Size));window.Save(Path.Combine(output,"window-precision.png"));}
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"precision-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"precision-smoke.txt"),log);}finally{Close();}}
     }
     // Annotation sounds on the NordicSoulsPBR mod list: a vanilla SoundPlay on an MCO battleaxe clip, then an FF7 clip
     // whose sounds come from a mod folder that is not loaded (Warnings names it), then with that folder mounted.
@@ -2781,7 +2781,7 @@ public sealed class MainWindow : Form
             try{using var probe=new NAudio.Wave.WaveOutEvent{DesiredLatency=90};probe.Init(new NAudio.Wave.SilenceProvider(SoundPlayer.MixFormat));probe.Play();await Task.Delay(300);Check(probe.PlaybackState==NAudio.Wave.PlaybackState.Playing,"The audio device opens and plays the 44.1 kHz stereo mix format");probe.Stop();}
             catch(NAudio.MmException ex){log.Add("NOTE no audio device in this session: "+ex.Message);}
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"sound-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"sound-smoke.txt"),log);}finally{Close();}}
     }
     // A queued clip with the window annotation at several times gets a drop-down to choose the hand-over.
     // Arguments: a clip with two or more MCO_WinOpen times, and a clip to follow it.
@@ -2842,7 +2842,7 @@ public sealed class MainWindow : Form
                 }
             }
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"track-bone.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"track-bone.txt"),log);}finally{Close();}}
     }
     // Screenshots for the documentation. Arguments: an output folder, a Skyrim Data folder (or the test data), then
     // attack clips. The character is a Nord in iron armour with an iron battleaxe, so the pictures show game assets only.
@@ -2890,7 +2890,7 @@ public sealed class MainWindow : Form
                 Go(best);scene.Frame();viewport.Zoom(24);inspectorTabs.SelectedIndex=2;await SaveView("effect");await SaveWindow("effect-window");log.Add($"effect {effect} at {best:F1} s, {most} particles");
             }
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"docs-capture.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"docs-capture.txt"),log);}finally{Close();}}
     }
     // Library highlight and hover text on the catalog fixture (--catalog-test writes it): the playing clip's row is green,
     // orange when a higher-priority folder holds the same file, and the tooltip names those folders.
@@ -2921,7 +2921,7 @@ public sealed class MainWindow : Form
             Check(low.ToolTipText.Contains("Overridden by 3 higher-priority folders")&&low.ToolTipText.Contains(@"Override top")&&low.ToolTipText.Contains(@"Override high")&&low.ToolTipText.Contains(@"DynamicAnimationReplacer\_CustomConditions\650")&&!low.ToolTipText.Contains(@"Override off"),"Hovering a clip lists the submods and folders that override it");
             Check(plain.ToolTipText.Contains("Overridden by 4")&&!top.ToolTipText.Contains("Overridden")&&!alone.ToolTipText.Contains("Overridden"),"Clips nothing overrides keep the plain path tooltip");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"override-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"override-smoke.txt"),log);}finally{Close();}}
     }
     // Sub-texture sheets: every live particle of each NIF must sample one cell of its sheet, (u, width, v, height) as the
     // game stores it, so a cell is never wider than the sheet divided by its columns. Arguments: a mod folder, then NIF
@@ -2954,7 +2954,7 @@ public sealed class MainWindow : Form
                 scene.Frame();viewport.InvalidateRender();await Task.Delay(200);using var image=viewport.CaptureBitmap();image.Save(Path.Combine(output,Path.GetFileNameWithoutExtension(nif)+".png"));
             }
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"flipbook-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"flipbook-smoke.txt"),log);}finally{Close();}}
     }
     // PIE.@FF7VFX on the three Limit Break clips of the FF7 Limit Gauge mod, in the live session (Cloud and his sword).
     async Task Ff7VfxSmoke()
@@ -3052,7 +3052,7 @@ public sealed class MainWindow : Form
             }
             Check(warnings.Text!=null,"done");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"ff7vfx-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"ff7vfx-smoke.txt"),log);}finally{Close();}}
     }
     // Annotations tab highlight on a real clip with several windows, speed changes and Precision collisions.
     async Task AnnotationSmoke(string clipPath)
@@ -3095,7 +3095,7 @@ public sealed class MainWindow : Form
              using(var playing=new Bitmap(Width,Height)){DrawToBitmap(playing,new Rectangle(Point.Empty,Size));playing.Save(Path.Combine(output,"window-annotations-playing.png"));}}
             Go(0);Check(Highlight.Active.All(i=>rows[i].Time<=1e-6),"Back at the start only the annotations at time 0 are active");
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"annotation-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"annotation-smoke.txt"),log);}finally{Close();}}
     }
     // Skeleton overlay: off by default, every bone at its posed position, the Bones window's search and tick filter,
     // local axes on filtered bones, name labels, the controls' place above the character list, and the session.
@@ -3138,7 +3138,7 @@ public sealed class MainWindow : Form
             using(var main=new Bitmap(Width,Height)){DrawToBitmap(main,new Rectangle(Point.Empty,Size));main.Save(Path.Combine(output,"window.png"));}
             bonesWindow.Close();
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"skeleton-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"skeleton-smoke.txt"),log);}finally{Close();}}
     }
     // Writes every annotation of each HKX (time, track, text) to annotations.txt beside the exe.
     void DumpAnnotations(string[] files)
@@ -3190,7 +3190,7 @@ public sealed class MainWindow : Form
             Check(saved.QueueWindowPicks is {Length:3} p&&p[0]!["MCO_WinOpen"]==1&&p[2]==null,"The choices are saved with the session, one per queue slot");
             using(var window=new Bitmap(Width,Height)){if(inspectorTabs!=null&&queueTab!=null)inspectorTabs.SelectedTab=queueTab;await Task.Delay(150);DrawToBitmap(window,new Rectangle(Point.Empty,Size));window.Save(Path.Combine(output,"window-queue.png"));}
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"window-pick-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"window-pick-smoke.txt"),log);}finally{Close();}}
     }
     async Task FrameSmoke(string clipPath)
     {
@@ -3245,7 +3245,7 @@ public sealed class MainWindow : Form
             using(var bar=new Bitmap(timeline.Width,timeline.Height)){timeline.DrawToBitmap(bar,new Rectangle(Point.Empty,timeline.Size));bar.Save(Path.Combine(output,"timeline.png"));}
             using(var window=new Bitmap(Width,Height)){DrawToBitmap(window,new Rectangle(Point.Empty,Size));window.Save(Path.Combine(output,"window-frames.png"));}
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"frame-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"frame-smoke.txt"),log);}finally{Close();}}
     }
     // Actor hair color reaches head-part hair and worn hair-tint pieces (wigs). Arguments: mod folders mounted over
     // test-data; the first race and the first hair-tint armor found in them are used.
@@ -3311,7 +3311,7 @@ public sealed class MainWindow : Form
             await Task.Delay(150);
             using(var window=new Bitmap(Width,Height)){DrawToBitmap(window,new Rectangle(Point.Empty,Size));window.Save(Path.Combine(output,"window-hair-color.png"));}
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"hair-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"hair-smoke.txt"),log);}finally{Close();}}
     }
     // HDT-SMP on real assets. Arguments: a clip, then mod folders mounted over test-data. The weapon whose mesh has
     // bones outside the skeleton and every armor whose mesh links a physics XML are equipped automatically.
@@ -3567,7 +3567,7 @@ public sealed class MainWindow : Form
                 Check(different<=total/200,"The render with physics off is the same before and after a simulation run");
             }
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"smp-smoke.txt"),log);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"smp-smoke.txt"),log);}finally{Close();}}
     }
     static string ToolSessionPath()
     {
@@ -3610,7 +3610,7 @@ public sealed class MainWindow : Form
                 File.AppendAllText(Path.Combine(output,"diagnostics.txt"),"=== "+entry.Path+"\n"+string.Join("\n",scene.Diagnostics.Where(d=>d.StartsWith("Particle texture ")||d.Contains("no alpha property")||d.Contains("Missing")))+"\n");
             }
         }catch(Exception ex){File.WriteAllText(Path.Combine(output,"failure.txt"),ex.ToString());Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"sweep.csv"),rows);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"sweep.csv"),rows);}finally{Close();}}
     }
     async Task ClipProfile(string clipSuffix,string outputName){
         var rows=new List<string>{"time,pose_ms,frame_ms,update_ms,simulation_ms,effect_draw_ms,particles,drawn"};
@@ -3638,7 +3638,7 @@ public sealed class MainWindow : Form
             File.WriteAllLines(Path.Combine(output,"systems.txt"),systems);
             File.WriteAllLines(Path.Combine(output,"profile-buckets.txt"),ParticleSimulation.Profile.OrderByDescending(p=>p.Value).Select(p=>$"{p.Value*1000.0/Stopwatch.Frequency,10:F1} ms  {p.Key}"));
         }catch(Exception ex){File.WriteAllText(Path.Combine(output,"failure.txt"),ex.ToString());Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"frames.csv"),rows);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"frames.csv"),rows);}finally{Close();}}
     }
     async Task WeaponArtProfile(){
         var rows=new List<string>{"time,pose_ms,frame_ms,update_ms,simulation_ms,effect_draw_ms,particles,drawn"};
@@ -3657,7 +3657,7 @@ public sealed class MainWindow : Form
             scene.SetTime(44/30d);scene.FramingSubject=Scene.FrameSubject.Effects;scene.Frame();
             using(var rendered=viewport.CaptureBitmap())rendered.Save(Path.Combine(output,"effect-closeup.png"));
         }catch(Exception ex){File.WriteAllText(Path.Combine(output,"failure.txt"),ex.ToString());Environment.ExitCode=1;}
-        finally{File.WriteAllLines(Path.Combine(output,"frames.csv"),rows);Close();}
+        finally{try{File.WriteAllLines(Path.Combine(output,"frames.csv"),rows);}finally{Close();}}
     }
     async Task TimingSmoke()
     {
@@ -3763,7 +3763,7 @@ public sealed class MainWindow : Form
     {
         try {await Mount(Environment.GetEnvironmentVariable("SSE_PREVIEW_TEST_DATA")??SelfTest.TestData,false);await Mount(Fixture,true);var first=assets.Clips.First(c=>c.Name.Equals("mco_attack1.hkx",StringComparison.OrdinalIgnoreCase));await SelectClip(first);clock.Pause();clock.Seek(.72);scene.SetTime(.72);viewport.camera.FocusPosition=new OpenTK.Mathematics.Vector3(0,290,90);viewport.camera.distance=500;viewport.camera.Rotate(75,15);viewport.UpdateProjection(true);
             var capture=new System.Windows.Forms.Timer{Interval=1800};capture.Tick+=(_,_)=>{capture.Stop();File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"scene-debug.txt"),string.Join("\n",viewport.Model.meshes.Select(m=>$"{m.MeshData.Shape.ShapeName} hidden={m.MeshData.Shape.RenderHide} alpha={m.MeshData.Material.MaterialBase.Alpha} transform={m.MeshData.Transform} diffuse={m.MeshData.Material.DiffuseTexture_ID} paths={string.Join(",",m.MeshData.Material.Textures_Path_List)}"))+" textures="+string.Join(";",viewport.Model.Textures_Dictionary.Select(t=>$"{t.Key}:{t.Value.Loaded}")));File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"loaded-modules.txt"),Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m=>m.FileName));using var bmp=viewport.CaptureBitmap();bmp.Save(Path.Combine(AppContext.BaseDirectory,"smoke.png"));File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"smoke.txt"),$"clips={assets.Clips.Count}\nrecords={records.All.Count}\ncues={cues.Count}\nmeshes={viewport.Model.meshes.Count}\n{diagnostics.Text}");capture.Dispose();Close();};capture.Start();
-        }catch(Exception ex){ShowError(ex);Close();}
+        }catch(Exception ex){ShowError(ex);Environment.ExitCode=1;Close();}
     }
 }
 

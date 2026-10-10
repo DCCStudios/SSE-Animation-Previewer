@@ -127,7 +127,9 @@ public sealed class ClipCatalog(Assets assets)
                 if(sharedFolder!=null)body.AppendLine("Resolved shared folder: "+sharedFolder).AppendLine("Animation asset: "+path).AppendLine("Asset source: "+assets.Source(path));
             }else{
                 framework="DAR";group=parts[dar+1].Equals("_CustomConditions",StringComparison.OrdinalIgnoreCase)?"Priority "+parts[dar+2]:parts[dar+1]+" \u00b7 actor "+parts[dar+2];
-                if(int.TryParse(parts[dar+2],out int value)&&parts[dar+1].Equals("_CustomConditions",StringComparison.OrdinalIgnoreCase))priority=value;
+                // OAR gives a legacy plugin-and-actor folder priority 0 (Parsing.cpp, kLegacyActorBase).
+                if(!parts[dar+1].Equals("_CustomConditions",StringComparison.OrdinalIgnoreCase))priority=0;
+                else if(int.TryParse(parts[dar+2],out int value))priority=value;
                 configPath=subRoot+"\\_conditions.txt";
                 Section("DAR CONDITIONS",configPath);
                 string user=subRoot+"\\user.json";

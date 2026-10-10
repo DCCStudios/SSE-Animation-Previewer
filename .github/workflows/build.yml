@@ -13,9 +13,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      name: ${{ steps.package.outputs.name }}
     timeout-minutes: 30
-    permissions:
-      contents: write # the release step on tag pushes needs it
     env:
       DOTNET_NOLOGO: true
       DOTNET_CLI_TELEMETRY_OPTOUT: true
@@ -94,17 +94,31 @@ jobs:
           path: ${{ steps.package.outputs.zip }}
           if-no-files-found: error
 
+  # Only this job can write to the repository, and it only runs for version tags.
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.name }}
+          path: package
+
       - name: Publish the release
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ZIP: ${{ steps.package.outputs.zip }}
         run: |
+          $zip = (Get-ChildItem -LiteralPath package -Filter *.zip | Select-Object -First 1).FullName
+          if (!$zip) { throw 'The package artifact holds no zip.' }
           # A published download is never replaced. To reissue a version, delete its release by hand first.
           $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 200 --json tagName --jq '.[].tagName'
           if ($LASTEXITCODE -ne 0) { throw 'Could not list releases.' }
           if (@($existing) -contains $env:GITHUB_REF_NAME) { throw "Release $($env:GITHUB_REF_NAME) already exists and will not be overwritten." }
           $kind = @(if ($env:GITHUB_REF_NAME -match '-') { '--prerelease' })
-          gh release create $env:GITHUB_REF_NAME $env:ZIP --title $env:GITHUB_REF_NAME --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY @kind
+          gh release create $env:GITHUB_REF_NAME $zip --title $env:GITHUB_REF_NAME --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY @kind
           if ($LASTEXITCODE -ne 0) { throw 'Publishing the release failed.' }
