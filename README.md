@@ -89,7 +89,15 @@ Untick **Require Alt for camera controls** to use plain drags. The camera zooms 
 
 ## Building from source
 
-The program is C# on .NET 8 (WinForms and OpenTK). It links the renderer and asset readers from [FO4_Base_Library](https://github.com/MANOLOV02/FO4_Base_Library), which you build separately with the patches in `source-patches`. [Building](docs/building.md) has the steps.
+The repository is self-contained. Install the .NET 8 SDK, then:
+
+```
+git clone https://github.com/DCCStudios/SSE-Animation-Previewer
+cd SSE-Animation-Previewer
+dotnet build -c Release
+```
+
+The renderer and file readers the program is built on are included as source under `engine`, so there is nothing else to fetch or build first. [Building](docs/building.md) covers the layout, the portable package and the tests.
 
 ## License and credits
 

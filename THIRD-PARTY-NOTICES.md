@@ -2,7 +2,7 @@
 
 This utility uses FO4_Base_Library and its renderer/asset readers, adapted from the ecosystem of MANOLOV02/FO4_NPC_Manager.
 
-Sources retained in this workspace:
+Their source is included in this repository under engine and native, at the upstream commits listed in engine/README.md and native/README.md, with the previewer's changes applied. Upstream projects:
 - https://github.com/MANOLOV02/FO4_NPC_Manager
 - https://github.com/MANOLOV02/FO4_Base_Library
 - https://github.com/MANOLOV02/NiflySharpFork
@@ -15,9 +15,9 @@ Additional managed dependencies: OpenTK and OpenTK.GLControl, SharpZipLib, K4os.
 
 HDT-SMP simulation uses BulletSharp 0.12.0 (BulletSharp.x64 package, copyright (c) 2013-2019 Andres Traks) and the Bullet Physics library it bundles as libbulletc.dll, both under the zlib license. The text is in licenses/BulletSharp-LICENSE.txt. The physics XML reader and the skinned-mesh collision code (SmpPhysics.cs, SmpCollision.cs) are a C# port of logic from Faster HDT-SMP, https://github.com/DaymareOn/hdtSMP64, which is licensed under GPL-3.0 with a modding exception. The FSMP plugin itself is not included or loaded.
 
-Copies of upstream license files are in licenses. Source patches against the checked-out revisions are in source-patches. The local source checkouts contain the corresponding full source; the portable runtime folder alone is not a complete source distribution.
+Copies of upstream license files are in licenses. The portable runtime folder alone is not a complete source distribution; the corresponding source is this repository.
 
-AMR, PayloadInterpreter, DynamicAnimationCasting and DtryKeyUtil source repositories are present under PluginTemplate for format/behavior reference. Their SKSE plugin DLLs are not required or loaded by this standalone application.
+The formats and behaviour of AMR, Payload Interpreter, Dynamic Animation Casting, Dtry's Key Utils, Precision and FSMP were taken from their published source. None of their code or SKSE plugin DLLs is included, required or loaded by this standalone application, except the FSMP-derived physics reader noted above.
 
 The application source is provided under GPL-3.0-or-later, subject to third-party components' own licenses. Game and mod assets are not included.
 

@@ -2,74 +2,80 @@
 
 [Back to the README](../README.md)
 
-## What you need
-
-- Windows x64
-- .NET 8 SDK
-- Visual Studio 2022 with the C++ desktop workload (for the engine's native DDS wrapper, and for the C++ runtime files the portable script copies)
-
-## Engine libraries
-
-The previewer links the renderer and asset readers from MANOLOV02's libraries. They are not in this repository. `SSEAnimationPreviewer.csproj` expects their build output at:
+Everything needed to build is in this repository. You install one thing, the .NET 8 SDK.
 
 ```
-..\PluginTemplate\FO4_Base_Library\bin\x64\Release\net8.0-windows\win-x64
+git clone https://github.com/DCCStudios/SSE-Animation-Previewer
+cd SSE-Animation-Previewer
+dotnet build -c Release
 ```
 
-Change `EngineBin` in the project file if you keep them somewhere else.
+The exe lands in `bin\Release\net8.0-windows\win-x64`. The first build downloads a few NuGet packages (OpenTK, BulletSharp, NAudio, SharpZipLib, LZ4), so it needs a network connection once.
 
-1. Clone the repositories listed in [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md) at the revisions recorded in `source-patches/*.revision.txt`.
-2. Apply `source-patches/FO4_Base_Library.patch` and `source-patches/NiflySharp.patch`. They add direct HKX decoding, scene hooks, a presentation cap and a few fixes the previewer relies on.
-3. Build FO4_Base_Library in Release for x64. Its output folder then holds `FO4_Base_Library.dll`, `NiflySharp.dll`, `MaterialLib.dll`, `BSA_BA2_Library_DLL.dll`, `DirectXTexWrapper.dll` and `Ijwhost.dll`.
+Windows x64 only. Visual Studio is not required.
 
-## Build and run
+## What is in the repository
 
-```
-dotnet build SSEAnimationPreviewer.csproj -c Release
-```
+| Path | Contents |
+|---|---|
+| `src` | The previewer itself |
+| `engine` | The renderer and file readers it is built on, as source. See [engine/README.md](../engine/README.md). |
+| `native` | Source of the C++/CLI DDS wrapper. See [native/README.md](../native/README.md). |
+| `lib` | The built DDS wrapper and the Microsoft C++ runtime files that ship with the program |
+| `particle-fixtures` | Small NIF files written for the particle tests |
+| `scripts` | Packaging scripts |
+| `docs`, `licenses` | These pages and the third-party license texts |
 
-The exe lands in `bin\Release\net8.0-windows\win-x64`.
+`dotnet build` compiles `src` and everything under `engine`. The DDS wrapper in `lib` is the only prebuilt part. It is C++/CLI, which the .NET SDK cannot compile, so a built copy is checked in and its source sits beside it in `native`. Rebuild it only if you change it.
 
 ## Portable folder
 
 ```
-.\build-portable.ps1
+.\scripts\build-portable.ps1
 ```
 
-This publishes a self-contained build, copies the C++ runtime, licenses, docs and particle fixtures, writes a SHA-256 manifest and verifies it. If a `Portable` folder already exists, your scenes, presets and settings are carried over and the old folder is kept under `verification\package-builds`.
+This publishes a self-contained build to `Portable`, adds the C++ runtime, licenses, docs and particle fixtures, writes a SHA-256 manifest and verifies it. If `Portable` already exists, your scenes, presets and settings are carried over and the old folder is kept under `verification\package-builds`.
 
-`.\build-portable.ps1 -Public -Output <folder>` builds the copy that gets released. It always uses the generated floor textures in `resources`.
+`.\scripts\build-portable.ps1 -Public -Output <folder>` builds the copy that gets released. It always uses the floor textures in `src\resources`.
+
+Every push is built by GitHub Actions (`.github/workflows/build.yml`). Pushing a tag such as `v0.2.0` also packages the portable zip and attaches it to a release.
 
 ### Floor textures
 
-`resources\testgrid_*.dds` are generated grid textures that belong to this project. To use your own, put files with the same three names in `resources\local`. That folder is ignored by git, and a normal build picks it up automatically.
+`src\resources\testgrid_*.dds` are grid textures generated for this project. To use your own, put files with the same three names in `src\resources\local`. That folder is ignored by git, and a normal build picks it up automatically.
 
-## Layout
+## Source map
 
-| Path | Contents |
+| File | Contents |
 |---|---|
-| `MainWindow.cs` | The window, every control, session handling and the smoke tests |
-| `Scene*.cs` | Scene assembly, attachment, overlays, physics write-back |
-| `Animation.cs` | Clip decoding, speed maps, the queue timeline |
-| `Effects.cs`, `Particle*.cs`, `Nif*.cs` | Effect resolution and the particle simulator |
-| `Smp*.cs` | HDT-SMP reader, collision and Bullet setup |
-| `PrecisionCollisions.cs` | Precision timeline and capsule geometry |
-| `ClipCatalog.cs` | OAR and DAR library and the override lookup |
-| `Records.cs`, `Assets.cs`, `Archive*.cs` | Plugin records, virtual file system, BSA load order |
-| `particle-fixtures` | Original NIF fixtures for the particle tests |
-| `source-patches` | Patches and pinned revisions for the engine libraries |
+| `src\MainWindow.cs` | The window, every control, session handling and the smoke tests |
+| `src\Scene*.cs` | Scene assembly, attachment, overlays, physics write-back |
+| `src\Animation.cs` | Clip decoding, speed maps, the queue timeline |
+| `src\Effects.cs`, `Particle*.cs`, `Nif*.cs` | Effect resolution and the particle simulator |
+| `src\Smp*.cs` | HDT-SMP reader, collision and Bullet setup |
+| `src\PrecisionCollisions.cs` | Precision timeline and capsule geometry |
+| `src\ClipCatalog.cs` | OAR and DAR library and the override lookup |
+| `src\Records.cs`, `Assets.cs`, `Archive*.cs` | Plugin records, virtual file system, BSA load order |
+| `engine\FO4_Base_Library\Render.vb` | The viewport, shaders, lighting and camera |
 
 ## Tests
 
 The checks are built into the exe. See [Command line](command-line.md).
 
-Some of them need files that cannot be redistributed:
+```
+cd bin\Release\net8.0-windows\win-x64
+"SSE Animation Previewer.exe" --ci-test
+```
 
-- `test-data`, a small copy of vanilla meshes, textures and `Skyrim.esm` from your own installation
-- mod folders named in `SelfTest.cs`, which point at one local mod list
+`--ci-test` runs every check that needs only the files in this repository. It is what GitHub Actions runs.
 
-Checks whose files are missing fail or skip. The unit tests on the bundled fixtures (`--particle-test`, `--smp-test`) run anywhere.
+The other checks need files that cannot be redistributed:
+
+- `test-data` at the repository root, a small copy of vanilla meshes, textures and `Skyrim.esm` from your own installation
+- a folder of mods, which defaults to one developer's mod list and can be pointed elsewhere with the `SSE_TEST_MODS` environment variable
+
+A check whose files are missing reports that it was skipped.
 
 ## Code style
 
-The source is written dense, with long lines and few blank lines. Match the file you are in.
+The previewer source is written dense, with long lines and few blank lines. The engine is VB.NET with Spanish comments. Match the file you are in.
