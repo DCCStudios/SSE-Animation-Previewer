@@ -10,12 +10,14 @@
     <FloorTextures Condition="'$(FloorTextures)'==''">resources</FloorTextures>
   </PropertyGroup>
   <ItemGroup>
-    <!-- The engine builds from source in engine\. Its one native part, the DDS wrapper, is prebuilt in lib\. -->
-    <ProjectReference Include="..\engine\FO4_Base_Library\FO4_Base_Library.vbproj" SetPlatform="Platform=x64" />
-    <ProjectReference Include="..\engine\FO4_Base_Library\FO4_Base_Library_CSharpHelpers\FO4_Base_Library_CSharpHelpers.csproj" />
-    <ProjectReference Include="..\engine\Ba2_Bsa_Library\BSA_BA2_Library_DLL.vbproj" />
-    <ProjectReference Include="..\engine\Material-Editor-master\MaterialLib\MaterialLib.csproj" />
-    <ProjectReference Include="..\engine\NiflySharp\NiflySharp\NiflySharp.csproj" />
+    <!-- SetConfiguration keeps the engine in the previewer's configuration when building through the solution,
+         which would otherwise build it as Debug.
+         The engine builds from source in engine\. Its one native part, the DDS wrapper, is prebuilt in lib\. -->
+    <ProjectReference Include="..\engine\FO4_Base_Library\FO4_Base_Library.vbproj" SetConfiguration="Configuration=$(Configuration)" SetPlatform="Platform=x64" />
+    <ProjectReference Include="..\engine\FO4_Base_Library\FO4_Base_Library_CSharpHelpers\FO4_Base_Library_CSharpHelpers.csproj" SetConfiguration="Configuration=$(Configuration)" />
+    <ProjectReference Include="..\engine\Ba2_Bsa_Library\BSA_BA2_Library_DLL.vbproj" SetConfiguration="Configuration=$(Configuration)" />
+    <ProjectReference Include="..\engine\Material-Editor-master\MaterialLib\MaterialLib.csproj" SetConfiguration="Configuration=$(Configuration)" />
+    <ProjectReference Include="..\engine\NiflySharp\NiflySharp\NiflySharp.csproj" SetConfiguration="Configuration=$(Configuration)" />
     <Reference Include="DirectXTexWrapper"><HintPath>..\lib\DirectXTexWrapper.dll</HintPath></Reference>
     <None Include="..\lib\Ijwhost.dll" Link="Ijwhost.dll" CopyToOutputDirectory="PreserveNewest" />
     <!-- Floor textures: the generated set in resources, or your own set in resources\local (not in the repository). -->
