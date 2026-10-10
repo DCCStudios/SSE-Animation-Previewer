@@ -24,6 +24,8 @@ Actor conditions on these triggers are assumed to pass. Gameplay scripts are not
 
 ![A vanilla fireball explosion](images/effect.png)
 
+The NIF's textures must be in a mounted folder. Opening a NIF mounts the folder above its `meshes` folder, which is enough when the textures sit beside it. For a NIF from a meshes-only folder, mount your Skyrim Data folder with **Open Data…** first. A particle system whose texture is missing is drawn with soft white placeholder blobs, and the Diagnostics tab names the missing file.
+
 **Effect sequence** picks one of the NIF's controller sequences, or follows Start to Loop automatically.
 
 **Add effect overlay…** attaches an effect NIF to the scene alongside the character, and **Clear effect overlays** removes them.

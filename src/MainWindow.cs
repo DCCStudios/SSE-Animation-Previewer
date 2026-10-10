@@ -2931,7 +2931,8 @@ public sealed class MainWindow : Form
         var log=new List<string>();string output=Path.Combine(AppContext.BaseDirectory,"flipbook-smoke");Directory.CreateDirectory(output);
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         try{
-            await Mount(SelfTest.TestData,false);
+            // SSE_FLIPBOOK_MOD_ONLY=1 leaves the test data unmounted, to see a NIF whose textures are missing.
+            if(Environment.GetEnvironmentVariable("SSE_FLIPBOOK_MOD_ONLY")!="1")await Mount(SelfTest.TestData,false);
             await Mount(arguments[0],true);
             followCamera.Checked=false;scene.FollowScene=false;
             foreach(string nif in arguments.Skip(1)){

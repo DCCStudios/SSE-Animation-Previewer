@@ -99,7 +99,27 @@ public sealed class ParticleRenderer : IDisposable
             GL.TexParameter(TextureTarget.Texture2D,TextureParameterName.TextureWrapS,(int)TextureWrapMode.Repeat);
             GL.TexParameter(TextureTarget.Texture2D,TextureParameterName.TextureWrapT,(int)TextureWrapMode.Repeat);
             return textures[path]=id;
-        }catch(Exception ex){Diagnostics.Add("Particle texture "+path+": "+ex.Message);return textures[path]=0;}
+        }catch(Exception ex){
+            // A system whose texture cannot be loaded is still drawn, with a soft round placeholder, so its motion shows.
+            Diagnostics.Add(assets.Exists(path)?"Particle texture "+path+": "+ex.Message+" A placeholder is drawn."
+                :"Particle texture not found in the mounted folders: "+path+". A soft white placeholder is drawn in its place. Mount the Data folder that holds the game's textures (Open Data…) to see the real one.");
+            return textures[path]=Placeholder();
+        }
+    }
+    int placeholder;
+    int Placeholder()
+    {
+        if(placeholder!=0)return placeholder;
+        const int size=64;var pixels=new byte[size*size*4];
+        for(int y=0;y<size;y++)for(int x=0;x<size;x++){
+            float dx=(x+.5f)/size*2-1,dy=(y+.5f)/size*2-1;float fall=Math.Clamp(1-MathF.Sqrt(dx*dx+dy*dy),0,1);
+            int i=(y*size+x)*4;pixels[i]=pixels[i+1]=pixels[i+2]=255;pixels[i+3]=(byte)(255*MathF.Min(1,fall*1.6f));
+        }
+        placeholder=GL.GenTexture();GL.BindTexture(TextureTarget.Texture2D,placeholder);
+        GL.TexImage2D(TextureTarget.Texture2D,0,PixelInternalFormat.Rgba8,size,size,0,PixelFormat.Rgba,PixelType.UnsignedByte,pixels);
+        GL.TexParameter(TextureTarget.Texture2D,TextureParameterName.TextureMinFilter,(int)TextureMinFilter.Linear);
+        GL.TexParameter(TextureTarget.Texture2D,TextureParameterName.TextureMagFilter,(int)TextureMagFilter.Linear);
+        return placeholder;
     }
     public void Draw(IEnumerable<(ParticleNif System,double Time)> systems,Matrix4 projection,FO4_Base_Library.OrbitCamera camera)
     {
@@ -116,7 +136,7 @@ public sealed class ParticleRenderer : IDisposable
         bool[] colorMask=new bool[4];GL.GetBoolean(GetPName.ColorWritemask,colorMask);
         int[] bound=new int[2];for(int i=0;i<2;i++){GL.ActiveTexture(TextureUnit.Texture0+i);GL.GetInteger(GetPName.TextureBinding2D,out bound[i]);}
         try{
-            if(texturesInvalidated){foreach(int texture in textures.Values)if(texture!=0)GL.DeleteTexture(texture);textures.Clear();texturesInvalidated=false;}
+            if(texturesInvalidated){foreach(int texture in textures.Values)if(texture!=0)GL.DeleteTexture(texture);textures.Clear();placeholder=0;texturesInvalidated=false;}
             Initialize();GL.UseProgram(program);GL.BindVertexArray(vao);GL.Disable(EnableCap.CullFace);GL.DepthMask(false);GL.ColorMask(true,true,true,true);
             GL.DepthFunc(DepthFunction.Lequal);GL.BlendEquation(BlendEquationMode.FuncAdd);
             var vp=camera.GetViewMatrix()*projection;GL.UniformMatrix4(GL.GetUniformLocation(program,"vp"),false,ref vp);
