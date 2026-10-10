@@ -14,7 +14,7 @@ internal static class ReferenceEffectTests
         assets.External.Clear();check(ReferenceEffects.Resolve(effect,records,assets).Issues.Any(i=>i.StartsWith("Missing mesh:")),"Missing reference-effect meshes are reported before attempting a preview");
         effect.Fields[0]=new("DATA",[1,2,3]);check(ReferenceEffects.Resolve(effect,records,assets).Model.Length==0,"Truncated RFCT data cannot produce a guessed art reference");
         string mod=Path.Combine(SelfTest.Mods,"Anchor MCO Animations v2 - Cloud Fenrir");string path=Path.Combine(mod,"Anchor_FF7Fenrir.esp");
-        if(!File.Exists(path))return;
+        if(!File.Exists(path)){SelfTest.Skip("Real Fenrir reference effect checks: "+SelfTest.Missing(path));return;}
         foreach(var record in Records.Parse(File.ReadAllBytes(path),Path.GetFileName(path)))records.All[record.Key]=record;
         foreach(int index in new[]{1,2,3}){
             string name=$"CrossSlash_HitFX0{index}";

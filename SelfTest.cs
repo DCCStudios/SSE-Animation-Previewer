@@ -6,7 +6,16 @@ using BSA_BA2_Library_DLL.BethesdaArchive.Core;
 namespace SSEPreview;
 internal static class SelfTest
 {
-    public static readonly string Mods=@"F:\Modlists\NordicSoulsPBR\mods";
+    // Local data the tests read. SSE_TEST_MODS overrides the mod folder root; the vanilla assets sit in test-data beside the source.
+    public static readonly string Mods=Environment.GetEnvironmentVariable("SSE_TEST_MODS") is {Length:>0} mods?mods:@"F:\Modlists\NordicSoulsPBR\mods";
+    public static readonly string TestData=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data"));
+    public static readonly string GameData=Path.GetFullPath(Path.Combine(Mods,@"..\Game Root\Data"));
+    public static bool HasTestData=>File.Exists(Path.Combine(TestData,"Skyrim.esm"));
+    public static bool HasMods=>Directory.Exists(Mods)&&Directory.EnumerateDirectories(Mods).Any();
+    public static bool HasMod(string name)=>Directory.Exists(Path.Combine(Mods,name));
+    // The running suite sets this so shared sub-tests can log a "SKIP " line when their data is missing.
+    public static Action<string> Skip=_=>{};
+    public static string Missing(string file)=>Path.GetFileName(file)+" is missing under "+Mods;
     public static readonly string[] TestMods=["Cloud FF7 Blade Beam MCO","DAR Moveset and Buster Sword - Cloud Strife FF7 Remake","Anchor MCO Animations v2 - Cloud Fenrir","FF7 Cloud Animations","Simple MCO Weaponart Casting - Vanilla Spells"];
     public static void Run()
     {
@@ -33,9 +42,9 @@ internal static class SelfTest
     }
     public static void Fixture()
     {
-        var root=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data"));
+        var root=TestData;
         Directory.CreateDirectory(root);
-        var game=@"F:\Modlists\NordicSoulsPBR\Game Root\Data";
+        var game=GameData;
         File.Copy(Path.Combine(game,"Skyrim.esm"),Path.Combine(root,"Skyrim.esm"),true);
         string[] meshPrefixes=[@"meshes\actors\character\character assets\",@"meshes\actors\character\character assets female\",@"meshes\armor\iron\",@"meshes\weapons\iron\",@"meshes\magic\"];
         string[] texturePrefixes=[@"textures\actors\character\male\",@"textures\actors\character\female\",@"textures\actors\character\hair\",@"textures\actors\character\eyes\",@"textures\armor\iron\",@"textures\weapons\iron\",@"textures\effects\",@"textures\magic\",@"textures\cubemaps\"];

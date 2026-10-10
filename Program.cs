@@ -35,9 +35,28 @@ internal static class Program
             if(args.Contains("--particle-test")) {ParticleTests.Run();return 0;}
             if(args.Contains("--smp-test")) {SmpTests.Run();return 0;}
             if(args.Contains("--self-test")) {SelfTest.Run();return 0;}
+            if(args.Contains("--ci-test")) return CiTest();
             Application.ThreadException+=(_,e)=>File.AppendAllText(Path.Combine(AppContext.BaseDirectory,"error.log"),e.Exception.ToString()+Environment.NewLine);
             Application.Run(new MainWindow(args));return Environment.ExitCode;
         }catch(Exception ex) {File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"error.log"),ex.ToString());return 1;}
+    }
+    // The suites that run on bundled data alone. Checks that want test-data or the mod folders log a SKIP line.
+    // Every suite runs even after another fails; the exit code is 0 only when all of them pass.
+    static int CiTest()
+    {
+        var started=DateTime.UtcNow.AddSeconds(-2);var summary=new List<string>();bool passed=true;
+        foreach(var (name,log,run) in new (string,string,Action)[]{("particle","particle-tests.txt",ParticleTests.Run),("smp","smp-tests.txt",()=>SmpTests.Run()),("catalog","catalog-tests.txt",ClipCatalogTests.Run)}){
+            string? error=null;try{run();}catch(Exception ex){error=ex.ToString();}
+            string file=Path.Combine(AppContext.BaseDirectory,log);var lines=File.Exists(file)&&File.GetLastWriteTimeUtc(file)>=started?File.ReadAllLines(file):[];
+            int Count(string prefix)=>lines.Count(l=>l.StartsWith(prefix,StringComparison.Ordinal));
+            bool ok=error==null&&Count("FAIL ")==0&&Count("PASS ")>0;passed&=ok;
+            summary.Add($"{(ok?"PASS":"FAIL")} {name}: {Count("PASS ")} passed, {Count("FAIL ")} failed, {Count("SKIP ")} skipped, log {log}");
+            summary.AddRange(lines.Where(l=>l.StartsWith("FAIL ",StringComparison.Ordinal)||l.StartsWith("SKIP ",StringComparison.Ordinal)).Select(l=>"  "+l));
+            if(error!=null)summary.Add("  "+error.ReplaceLineEndings(Environment.NewLine+"  "));
+        }
+        File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"ci-test.txt"),summary);
+        foreach(string line in summary)Console.WriteLine(line);
+        return passed?0:1;
     }
     static string? Describe(object? v,int depth=0)
     {

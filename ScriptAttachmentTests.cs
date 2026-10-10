@@ -20,7 +20,7 @@ internal static class ScriptAttachmentTests
             check(script.Properties[1].Value is float f&&f==.25f&&script.Properties[2].Value is object?[] a&&a.SequenceEqual(new[]{"start","stop"}),$"VMAD format {format} reads scalar and array properties without losing alignment");
         }
         string plugin=Path.Combine(SelfTest.Mods,@"Anchor MCO Animations v2 - Cloud Fenrir\Anchor_FF7Fenrir.esp");
-        if(File.Exists(plugin)){
+        if(!File.Exists(plugin))SelfTest.Skip("Real Fenrir script attachment checks: "+SelfTest.Missing(plugin));else{
             var parsed=Records.Parse(File.ReadAllBytes(plugin),Path.GetFileName(plugin)).ToArray();
             check(parsed.Count(r=>r.Kind=="RFCT"&&r.EditorId.StartsWith("CrossSlash_HitFX"))==3,"Real Anchor plugin retains all three scripted Cross Slash reference effects");
             var fx=parsed.Single(r=>r.Kind=="MGEF"&&r.EditorId=="Fenrir_CrossSlash_FX1_index");

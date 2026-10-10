@@ -18,7 +18,7 @@ internal static class RemoteCastTests
         check(!ScriptedCasts.VerifiedFenrir([0,1,2,3]),"Unrecognized PEX content cannot activate a filename-only script adapter");
         string mod=Path.Combine(SelfTest.Mods,"Anchor MCO Animations v2 - Cloud Fenrir");
         string pex=Path.Combine(mod,@"Scripts\FenrirBladeBeam.pex");
-        if(!File.Exists(pex))return;
+        if(!File.Exists(pex)){SelfTest.Skip("Real Fenrir remote cast checks: "+SelfTest.Missing(pex));return;}
         check(ScriptedCasts.VerifiedFenrir(File.ReadAllBytes(pex)),"Installed Fenrir script matches the inspected implementation");
         var assets=new Assets();var records=new Records();
         foreach(var path in Directory.EnumerateFiles(mod,"*.esp"))foreach(var record in Records.Parse(File.ReadAllBytes(path),Path.GetFileName(path)))records.All[record.Key]=record;
