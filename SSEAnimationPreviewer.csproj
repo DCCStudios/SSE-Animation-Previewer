@@ -4,19 +4,19 @@
     <UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
     <SelfContained>true</SelfContained><PublishSingleFile>false</PublishSingleFile><PublishTrimmed>false</PublishTrimmed><PlatformTarget>x64</PlatformTarget><RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <AssemblyName>SSE Animation Previewer</AssemblyName><ApplicationManifest>app.manifest</ApplicationManifest>
-    <DefaultItemExcludes>$(DefaultItemExcludes);Portable/**;test-data/**;verification/**;particle-fixtures/**;docs/**</DefaultItemExcludes>
+    <DefaultItemExcludes>$(DefaultItemExcludes);Portable/**;test-data/**;verification/**;particle-fixtures/**;docs/**;engine/**;native/**;lib/**</DefaultItemExcludes>
     <FloorTextures Condition="'$(FloorTextures)'=='' And Exists('resources\local\testgrid_d.dds')">resources\local</FloorTextures>
     <FloorTextures Condition="'$(FloorTextures)'==''">resources</FloorTextures>
-    <EngineBin>..\PluginTemplate\FO4_Base_Library\bin\x64\Release\net8.0-windows\win-x64</EngineBin>
   </PropertyGroup>
   <ItemGroup>
-    <Reference Include="FO4_Base_Library"><HintPath>$(EngineBin)\FO4_Base_Library.dll</HintPath></Reference>
-    <Reference Include="NiflySharp"><HintPath>$(EngineBin)\NiflySharp.dll</HintPath></Reference>
-    <Reference Include="MaterialLib"><HintPath>$(EngineBin)\MaterialLib.dll</HintPath></Reference>
-    <Reference Include="BSA_BA2_Library_DLL"><HintPath>$(EngineBin)\BSA_BA2_Library_DLL.dll</HintPath></Reference>
-    <Reference Include="FO4_Base_Library_CSharpHelpers"><HintPath>$(EngineBin)\FO4_Base_Library_CSharpHelpers.dll</HintPath></Reference>
-    <Reference Include="DirectXTexWrapper"><HintPath>$(EngineBin)\DirectXTexWrapper.dll</HintPath></Reference>
-    <None Include="$(EngineBin)\Ijwhost.dll" Link="Ijwhost.dll" CopyToOutputDirectory="PreserveNewest" />
+    <!-- The engine builds from source in engine\. Its one native part, the DDS wrapper, is prebuilt in lib\. -->
+    <ProjectReference Include="engine\FO4_Base_Library\FO4_Base_Library.vbproj" SetPlatform="Platform=x64" />
+    <ProjectReference Include="engine\FO4_Base_Library\FO4_Base_Library_CSharpHelpers\FO4_Base_Library_CSharpHelpers.csproj" />
+    <ProjectReference Include="engine\Ba2_Bsa_Library\BSA_BA2_Library_DLL.vbproj" />
+    <ProjectReference Include="engine\Material-Editor-master\MaterialLib\MaterialLib.csproj" />
+    <ProjectReference Include="engine\NiflySharp\NiflySharp\NiflySharp.csproj" />
+    <Reference Include="DirectXTexWrapper"><HintPath>lib\DirectXTexWrapper.dll</HintPath></Reference>
+    <None Include="lib\Ijwhost.dll" Link="Ijwhost.dll" CopyToOutputDirectory="PreserveNewest" />
     <!-- Floor textures: the generated set in resources, or your own set in resources\local (not in the repository). -->
     <None Include="$(FloorTextures)\testgrid_*.dds" Link="Resources\%(Filename)%(Extension)" CopyToOutputDirectory="Always" />
     <PackageReference Include="OpenTK.GLControl" Version="4.0.2" />

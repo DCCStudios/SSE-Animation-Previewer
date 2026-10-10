@@ -1,0 +1,74 @@
+<Project>
+
+  <!-- ============================================================================================
+       PIN DE PLATAFORMA DEL WRAPPER NATIVO (DirectXTexWrapper.vcxproj, C++/CLI).
+
+       ⛔ EL PROBLEMA. El default del .vcxproj es `Debug|Win32`, asi que TODO llamador que no fije la
+       plataforma explicitamente lo construye x86. MEDIDO:
+         msbuild NPC_Manager_FO4.vbproj -restore -t:Publish     (sin -p:Platform)
+           -> NPC_Manager_FO4.dll = x64  +  DirectXTexWrapper.dll = x86   ← publicado asi
+       MSBuild avisa con MSB3270, que es un WARNING: el publish termina VERDE. Y el sintoma en la maquina
+       del usuario es mudo — cada textura DX10 de un BA2 se lee como 0 bytes.
+       No es hipotetico: `Platform=AnyCPU` es el default de `msbuild <proj>` sin `-p:Platform` Y una
+       SolutionConfiguration declarada en los dos .sln, y con AnyCPU `$(PlatformTarget)` viene VACIO.
+
+       ⛔ POR QUE NO ALCANZA CON PONER `SetPlatform` EN LOS DOS PROYECTOS QUE LO REFERENCIAN DE VERDAD
+       (FO4_Base_Library y Ba2_Bsa_Library). El SDK INYECTA el ProjectReference transitivo en cada
+       consumidor — `IncludeTransitiveProjectReferences`, en Microsoft.PackageDependencyResolution.targets —
+       y lo inyecta SIN la metadata. O sea que NPC_Manager_FO4, Wardrobe_Manager, FO4_FaceTint_CLI y
+       Ba2_Bsa_Manager le piden el .vcxproj ELLAS MISMAS. MEDIDO con -m:1 -v:n:
+         NPC_Manager_FO4.vbproj  esta compilando DirectXTexWrapper.vcxproj  ← PT='x86' -> build\Win32
+         FO4_Base_Library.vbproj esta compilando DirectXTexWrapper.vcxproj  ← PT='x64' -> build\x64
+       Con el pin puesto SOLO en las libs, el .vcxproj se construye DOS VECES, dos DLL distintas pelean
+       por la misma carpeta, y el publish que hoy anda se ROMPE con NETSDK1152 (el Ijwhost.dll
+       RID-especifico de win-x86 contra el de win-x64). Por eso el import va en LOS SEIS proyectos.
+
+       ⛔ POR QUE NO UN Directory.Build.targets EN LA RAIZ, que seria una sola linea. Ese arbol es
+       COMPARTIDO: cuelgan BodySlide-and-Outfit-Studio, f4se-master, F4SEPlugins-master, nifskope-develop,
+       TES5Edit, HavokLib — ~100 proyectos C++ de terceros. Un Directory.Build.targets lo importan TAMBIEN
+       ellos, y `DependsOnTargets="IncludeTransitiveProjectReferences"` no existe en un proyecto no-SDK:
+       MSBuild corre los DependsOnTargets ANTES de evaluar la Condition del target, asi que ni condicionarlo
+       lo salva. Romperia el build de todo el arbol ajeno. Ver 00-reglas-arbol-compartido-no-pisar.
+
+       ⚠️ Tools/ NO importa esto (son 113 proyectos y no se distribuyen). Para ellos sigue valiendo lo que
+       ya dice la memoria 10-stack-build-msbuild: compilarlos con `-p:Platform=x64`.
+       ============================================================================================ -->
+
+  <PropertyGroup>
+    <!-- Default x64 A PROPOSITO: con Platform=AnyCPU, $(PlatformTarget) viene vacio y el proceso
+         administrado corre en 64 bits. Solo un x86 explicito baja a Win32. -->
+    <DirectXTexWrapperPlatform Condition="'$(DirectXTexWrapperPlatform)'==''">x64</DirectXTexWrapperPlatform>
+    <DirectXTexWrapperPlatform Condition="'$(PlatformTarget)'=='x86'">Win32</DirectXTexWrapperPlatform>
+  </PropertyGroup>
+
+  <!-- ⛔ El DependsOnTargets NO es decorativo: el item transitivo lo agrega
+       IncludeTransitiveProjectReferences, que corre DESPUES de AssignProjectConfiguration. Sin el, el pin
+       queda VACIO en las apps y el .vcxproj se construye Win32 igual (medido). -->
+  <Target Name="PinDirectXTexWrapperPlatform"
+          BeforeTargets="AssignProjectConfiguration"
+          DependsOnTargets="IncludeTransitiveProjectReferences">
+    <ItemGroup>
+      <ProjectReference Condition="'%(Filename)%(Extension)'=='DirectXTexWrapper.vcxproj'">
+        <SetPlatform>Platform=$(DirectXTexWrapperPlatform)</SetPlatform>
+      </ProjectReference>
+    </ItemGroup>
+  </Target>
+
+  <!-- ⛔ ACA HUBO UN `<Error>` QUE VERIFICABA DE DONDE SE RESOLVIO LA DLL, Y SE SACO PORQUE NO PODIA FALLAR.
+       Se probo con `AfterTargets="ResolveProjectReferences"` (ahi `ReferenceCopyLocalPaths` todavia no esta
+       poblado) y con `AfterTargets="ResolveReferences"` (el item SI esta, verificado con `-getItem`), y en
+       ninguno de los dos casos disparo el control negativo — o sea, era verde decorativo. Dejarlo puesto es
+       peor que no tener nada: da la sensacion de que el build esta cubierto. Ver 00-reglas-epistemica §9.
+
+       ⭐ LA VERIFICACION QUE SI FUNCIONA es mirar el header PE de la DLL que aterriza (0x14c = x86,
+       0x8664 = x64). MEDIDO antes y despues de este archivo:
+         msbuild FO4_NPC_Manager\FO4_NPC_Manager\NPC_Manager_FO4.vbproj -restore -t:Publish -p:PublishDir=<dir>\
+           ANTES: NPC_Manager_FO4.dll x64 + DirectXTexWrapper.dll **x86**
+           AHORA: las dos x64
+         msbuild Wardrobe_Manager\Wardrobe_Manager\Wardrobe_Manager.vbproj -restore -t:Publish -p:Platform=x86 ...
+           AHORA: las dos x86  (esa direccion no la cubria nada antes)
+       El one-liner:
+         python -c "import struct,sys;d=open(sys.argv[1],'rb').read();e=struct.unpack_from('<I',d,0x3c)[0];print({0x14c:'x86',0x8664:'x64'}[struct.unpack_from('<H',d,e+4)[0]])" <dll>
+  -->
+
+</Project>

@@ -1,0 +1,56 @@
+' Mapeo compartido índice-de-combo ↔ versión de header BA2 (FO4) + populate del combo, usado por
+' WM Config_Form y NPC SaveEsp_Form. La visibilidad FO4-only se decide en cada form. La opción
+' "Loose" (índice 2 / versión 0) sólo la ofrece NPC.
+Public Module Ba2VersionUI
+    ' Versiones de header BA2 (FO4).
+    Public Const NextGen As UInteger = 8UI        ' índice 0
+    Public Const OldGen As UInteger = 1UI         ' índice 1
+    Public Const LooseOnly As UInteger = 0UI      ' índice 2 (solo NPC) — saltea el pack BA2
+
+    ' versión → índice de combo (1→1, 0→2, cualquier otra/8 → 0 = NG default).
+    Public Function Ba2VersionToComboIndex(version As UInteger) As Integer
+        Select Case version
+            Case OldGen : Return 1
+            Case LooseOnly : Return 2
+            Case Else : Return 0
+        End Select
+    End Function
+
+    ' índice de combo → versión (1→1, 2→0, cualquier otro/0 → 8 = NG default).
+    Public Function ComboIndexToBa2Version(index As Integer) As UInteger
+        Select Case index
+            Case 1 : Return OldGen
+            Case 2 : Return LooseOnly
+            Case Else : Return NextGen
+        End Select
+    End Function
+
+    ' Llena el combo con las opciones de versión. includeLoose agrega la opción 3 (índice 2).
+    Public Sub PopulateBa2VersionCombo(combo As System.Windows.Forms.ComboBox, includeLoose As Boolean)
+        If combo Is Nothing Then Return
+        combo.Items.Clear()
+        combo.Items.Add("8 - Next Gen (NG)")
+        combo.Items.Add("1 - Old Gen (OG / universal)")
+        If includeLoose Then combo.Items.Add("None - Loose files (skip BA2 pack)")
+    End Sub
+
+    ' --- SSE (Skyrim) archive target ---
+    ' SSE has no BA2 header-version choice: it either packs a BSA (v105) or leaves the bake loose.
+    ' Config field NPC_Config.Archive_SSE: 0 = Loose, 1 = BSA. Combo idx 0 = BSA, 1 = Loose.
+    Public Sub PopulateArchiveComboSSE(combo As System.Windows.Forms.ComboBox)
+        If combo Is Nothing Then Return
+        combo.Items.Clear()
+        combo.Items.Add("BSA (v105)")
+        combo.Items.Add("None - Loose files (skip BSA pack)")
+    End Sub
+
+    ' Archive_SSE value → combo index (1 BSA → 0, 0 Loose → 1).
+    Public Function ArchiveSseToComboIndex(v As UInteger) As Integer
+        Return If(v = 0UI, 1, 0)
+    End Function
+
+    ' Combo index → Archive_SSE value (0 → 1 BSA, 1 → 0 Loose).
+    Public Function ComboIndexToArchiveSse(idx As Integer) As UInteger
+        Return If(idx = 1, 0UI, 1UI)
+    End Function
+End Module

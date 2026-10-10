@@ -1,0 +1,333 @@
+﻿Imports System.IO
+Imports System.Text
+
+''' <summary>
+''' Core binary structures for reading Bethesda ESP/ESM/ESL plugin files (Fallout 4).
+''' </summary>
+Public Module PluginConstants
+    ' Record flags
+    Public Const FLAG_ESM As UInteger = &H1UI
+    Public Const FLAG_LOCALIZED As UInteger = &H80UI
+    ''' <summary><b>0x00100000</b> — el bit de "update" que lee el motor con VRESL.
+    ''' <para>⛔ ACÁ DECÍA <c>&amp;H100</c> Y ERA EL BIT EQUIVOCADO, no sólo un valor sin uso.
+    ''' SYNC: <c>3rd party references\TES5Edit\Core\wbInterface.pas:20426-20433</c>
+    ''' <code>
+    ''' function TwbMainRecordStructFlags.IsUpdate: Boolean;
+    ''' begin
+    '''   Result := wbIsUpdateSupported and (
+    '''        (wbIsStarfield and ((_Flags and $00000200) &lt;&gt; 0))
+    '''     or (wbVRESL       and ((_Flags and $00100000) &lt;&gt; 0)) );
+    ''' end;
+    ''' </code>
+    ''' O sea: con VRESL es <c>$00100000</c>, y el <c>$200</c> es la rama de <b>Starfield</b>. Fuera de
+    ''' Starfield, <c>$200</c> es justamente <see cref="FLAG_ESL"/> (<c>IsLight</c>,
+    ''' <c>wbInterface.pas:20415-20422</c>). El <c>$100</c> no es ninguno de los dos: es
+    ''' <c>IsLight</c> <b>en Starfield</b>.</para>
+    ''' <para>Alcance HOY: <b>0 casos</b> — ningún rig del usuario es VR, así que
+    ''' <c>UpdateIsSupported</c> devuelve False y la rama no se toca. Es una corrección de ley, no de
+    ''' comportamiento observable.</para>
+    ''' <para>Donde SÍ vale, suprime la regla "extensión .esl ⇒ light". Ver
+    ''' <c>PluginManager.IsLightSlot</c>.</para></summary>
+    Public Const FLAG_UPDATE As UInteger = &H100000UI
+    Public Const FLAG_ESL As UInteger = &H200UI
+    Public Const FLAG_COMPRESSED As UInteger = &H40000UI
+    ''' <summary>Record flag Deleted. The runtime form keeps it at the same bit: Fallout4.exe's recipe-table builder
+    ''' (0x1403A5B50, 1.11.240) skips a COBJ with form flag 0x20.</summary>
+    Public Const FLAG_DELETED As UInteger = &H20UI
+
+    ' Group header size
+    Public Const RECORD_HEADER_SIZE As Integer = 24
+    Public Const GROUP_HEADER_SIZE As Integer = 24
+    Public Const SUBRECORD_HEADER_SIZE As Integer = 6
+
+    ' Signatures for NPC rendering (original subset - for backward compatibility).
+    ' BPTD: RACE.GNAM references BPTD for bone→part-type mapping, consumed
+    ' by NPC_Manager to resolve MRSV regions. Without BPTD, PluginManager.GetRecord(BPTDFormID)
+    ' returns Nothing and downstream FMRS/body-weight pipelines cannot reach the data.
+    ' KYWD (robot AttachPoint mounting): OMOD.AttachPoint is a FormID to a KYWD
+    ' whose EditorID matches BSConnectPoint::Parents.Name in the actor's skeleton NIF. Measured with
+    ' dump v2: 513 OMOD chunks NPC_-target with AttachPoint, and without KYWD indexed ALL of them
+    ' resolve as "not loaded", so the AttachPoint→socket-name lookup dies and robot chunks never mount.
+    ' ACHR: placed-actor references live nested inside CELL/WRLD sub-groups (never as a
+    ' top-level group), and are consumed by PluginManager.GetPlacedNPCFormIDs. ACHR in the filter
+    ' lets the uniform record-level filter (PluginReader.ReadRecord) KEEP ACHR while skip-seeking the
+    ' unused cell children (REFR/NAVM/LAND/PGRE/PHZD). Inocuo at top level: ACHR is never a top-level group.
+    ' ARMO/ARMA authoring-editor FormID target signatures, so the editors'
+    ' FormIdPicker lists populate and DisplayFor resolves names. Without these the pickers for
+    ' EITM/PTRN/ETYP/YNAM/ZNAM/BAMT/INRD (ARMO) and ONAM/SNDD footstep (ARMA) + the DAMA Damage-Type
+    ' entries come up EMPTY and their FormIDs show only hex (the records are never indexed). All are
+    ' small record types → negligible load cost:
+    '   ENCH(EITM), TRNS(PTRN), EQUP(ETYP), SNDR(YNAM/ZNAM), MATT(BAMT), INNR(INRD),
+    '   ARTO(ONAM), FSTS(SNDD footstep), DMGT(DAMA damage-type array entries).
+    ' NPC editor pickers: FACT (Factions), VTYP (Voice VTCK), CLAS (Class CNAM),
+    ' CSTY (Combat Style ZNAM) are small; the inventory item types (WEAP/ALCH/AMMO/MISC/BOOK/KEYM/
+    ' NOTE/INGR) are the only non-negligible additions — needed for the NPC editor's Inventory tab
+    ' picker. Trim these if load time regresses on very large load orders.
+    Public ReadOnly SIGS_NPC_RENDERING As New HashSet(Of String)(
+        {"NPC_", "RACE", "ARMO", "ARMA", "OTFT", "HDPT", "TXST", "CLFM", "LVLN", "LVLI", "FLST", "MSWP",
+         "CELL", "WRLD", "BPTD", "OMOD", "KYWD", "IDLE", "AACT", "ACHR",
+         "ENCH", "TRNS", "EQUP", "SNDR", "MATT", "INNR", "ARTO", "FSTS", "DMGT",
+         "FACT", "VTYP", "CLAS", "CSTY",
+         "WEAP", "ALCH", "AMMO", "MISC", "BOOK", "KEYM", "NOTE", "INGR",
+         "PERK", "SPEL", "AVIF",
+         "QUST"},
+        StringComparer.Ordinal)
+    ' QUST: NOT for quests as such — it is where a Papyrus script's PROPERTIES live (VMAD). Some behaviour a mod
+    ' relies on exists only as a script that mutates game state at runtime, and its only static trace is the script
+    ' attachment plus its bound properties. RaceCompatibility is the case that forced this: a custom-race mod hangs
+    ' GenericRaceController off one of its quests, and that script inserts the new races into the vanilla head-part
+    ' FormLists on first load. Without the QUST record there is nothing to reconstruct it from, and every
+    ' custom-race NPC would be offered zero vanilla head parts. See RaceCompatibilityCatalog.
+
+    ' Default filter kept for backward compatibility
+    Public ReadOnly SIGS_OF_INTEREST As HashSet(Of String) = SIGS_NPC_RENDERING
+
+    ''' <summary>All Fallout 4 record type signatures supported by the parser.</summary>
+    Public ReadOnly ALL_FO4_SIGNATURES As New HashSet(Of String)(
+        {"AACT", "ACTI", "ADDN", "AECH", "ALCH", "AMDL", "AMMO", "ANIO", "AORU", "ARMA", "ARMO", "ARTO",
+         "ASPC", "ASTP", "AVIF", "BNDS", "BOOK", "BPTD", "CAMS", "CELL", "CLAS", "CLFM", "CLMT", "CMPO",
+         "COBJ", "COLL", "CONT", "CPTH", "CSTY", "DEBR", "DFOB", "DIAL", "DLBR", "DLVW", "DMGT", "DOBJ",
+         "DOOR", "DUAL", "ECZN", "EFSH", "ENCH", "EQUP", "EXPL", "EYES", "FACT", "FLOR", "FLST", "FSTP",
+         "FSTS", "FURN", "GDRY", "GLOB", "GMST", "GRAS", "HAZD", "HDPT", "IDLE", "IDLM", "IMAD", "IMGS",
+         "INFO", "INGR", "INNR", "IPCT", "IPDS", "KEYM", "KSSM", "KYWD", "LAND", "LAYR", "LCTN", "LENS",
+         "LGTM", "LIGH", "LSCR", "LTEX", "LVLI", "LVLN", "LVSP", "MATT", "MESG", "MGEF", "MISC", "MOVT",
+         "MSWP", "MSTT", "MUSC", "MUST", "NAVI", "NAVM", "NOTE", "NPC_", "OMOD", "OTFT", "PACK", "PERK",
+         "PKIN", "PROJ", "QUST", "RACE", "REGN", "RELA", "REVB", "RFCT", "RFGP", "SCCO", "SCEN", "SCOL",
+         "SCSN", "SMBN", "SMEN", "SMQN", "SNCT", "SNDR", "SOPM", "SOUN", "SPEL", "SPGD", "STAG", "STAT",
+         "TACT", "TERM", "TREE", "TRNS", "TXST", "VTYP", "WATR", "WEAP", "WRLD", "WTHR", "ZOOM"},
+        StringComparer.Ordinal)
+End Module
+
+''' <summary>Las firmas de 4 bytes, compartidas en vez de recreadas.
+'''
+''' <para>Un archivo de plugin es una sucesión de firmas de cuatro letras: una por grupo, una por
+''' record y una por subrecord. Decodificar cada una construye un arreglo de 4 bytes y una cadena
+''' nueva; en un orden de carga real eso son varios MILLONES de pares de objetos que existen sólo
+''' para volver a decir "EDID" o "FULL". El conjunto de firmas distintas, en cambio, es de unos
+''' cientos.</para>
+'''
+''' <para>La clave es el u32 que forman esos mismos 4 bytes, o sea exactamente lo que ya está en el
+''' archivo: no hay que decodificar nada para buscarlo.</para>
+'''
+''' <para>⛔ Al no encontrarla se construye con <see cref="Encoding.ASCII"/> y sin
+''' excepción: ese decodificador mapea todo byte mayor que 127 a <c>?</c>, y esa es justamente la
+''' forma que después se compara contra los conjuntos de firmas. Armarla de otra manera haría que un
+''' archivo con una firma corrupta dejara de colapsar y pasara a coincidir con otra cosa.</para>
+'''
+''' <para>El techo evita que un archivo corrupto —con firmas basura, todas distintas— haga crecer la
+''' tabla sin control. Pasado el tope se decodifica igual, sólo que sin compartir.</para></summary>
+Friend Module PluginSignatures
+    Private Const Tope As Integer = 8192
+    Private ReadOnly _porClave As New System.Collections.Concurrent.ConcurrentDictionary(Of UInteger, String)()
+
+    ''' <summary>u32 de la firma "GRUP" tal como aparece en el archivo (little-endian).</summary>
+    Friend Const ClaveGRUP As UInteger = &H50555247UI
+
+    ''' <summary>Lee los 4 bytes de una firma y devuelve su clave. NO construye ninguna cadena: sirve
+    ''' para comparar contra una firma conocida sin pagar la decodificación.</summary>
+    Friend Function LeerClave(br As BinaryReader) As UInteger
+        Return br.ReadUInt32()
+    End Function
+
+    ''' <summary>La cadena de esa clave, compartida.</summary>
+    Friend Function Texto(clave As UInteger) As String
+        Dim s As String = Nothing
+        If _porClave.TryGetValue(clave, s) Then Return s
+        Dim b(3) As Byte
+        b(0) = CByte(clave And &HFFUI)
+        b(1) = CByte((clave >> 8) And &HFFUI)
+        b(2) = CByte((clave >> 16) And &HFFUI)
+        b(3) = CByte((clave >> 24) And &HFFUI)
+        s = Encoding.ASCII.GetString(b, 0, 4)
+        If _porClave.Count < Tope Then _porClave.TryAdd(clave, s)
+        Return s
+    End Function
+
+    ''' <summary>Lee la firma y devuelve su cadena compartida.</summary>
+    Friend Function Leer(br As BinaryReader) As String
+        Return Texto(br.ReadUInt32())
+    End Function
+End Module
+
+Public Structure RecordHeader
+    Public Signature As String    ' 4 chars
+    Public DataSize As UInteger   ' Size of data after this header
+    Public Flags As UInteger
+    Public FormID As UInteger
+    Public VCS1 As UInteger
+    Public Version As UShort
+    Public VCS2 As UShort
+
+    Public ReadOnly Property IsCompressed As Boolean
+        Get
+            Return (Flags And FLAG_COMPRESSED) <> 0
+        End Get
+    End Property
+
+    Public ReadOnly Property IsDeleted As Boolean
+        Get
+            Return (Flags And FLAG_DELETED) <> 0
+        End Get
+    End Property
+
+    Public Shared Function Read(br As BinaryReader) As RecordHeader
+        Dim h As New RecordHeader With {
+            .Signature = PluginSignatures.Leer(br),
+            .DataSize = br.ReadUInt32(),
+            .Flags = br.ReadUInt32(),
+            .FormID = br.ReadUInt32(),
+            .VCS1 = br.ReadUInt32(),
+            .Version = br.ReadUInt16(),
+            .VCS2 = br.ReadUInt16()
+        }
+        Return h
+    End Function
+End Structure
+
+Public Structure GroupHeader
+    Public Signature As String    ' Always "GRUP"
+    Public GroupSize As UInteger  ' Total size INCLUDING this 24-byte header
+    Public Label As UInteger      ' For type 0: record signature as uint
+    Public GroupType As Integer
+    Public Stamp As UInteger
+    Public Unknown As UInteger
+
+    ''' <summary>Label as a 4-char signature string (for type 0 groups). La cadena sale de la tabla
+    ''' compartida: es la MISMA decodificación (ASCII sobre los 4 bytes en el orden del archivo), sin
+    ''' construir un arreglo y una cadena por grupo.</summary>
+    Public ReadOnly Property LabelAsSignature As String
+        Get
+            Return PluginSignatures.Texto(Label)
+        End Get
+    End Property
+
+    Public Shared Function Read(br As BinaryReader) As GroupHeader
+        Dim h As New GroupHeader With {
+            .Signature = PluginSignatures.Leer(br),
+            .GroupSize = br.ReadUInt32(),
+            .Label = br.ReadUInt32(),
+            .GroupType = br.ReadInt32(),
+            .Stamp = br.ReadUInt32(),
+            .Unknown = br.ReadUInt32()
+        }
+        Return h
+    End Function
+End Structure
+
+Public Structure SubrecordData
+    Public Signature As String    ' 4 chars
+    Public Data As Byte()
+
+    ''' <summary>Decode as a TRANSLATABLE inline string (cpTranslate fields like FULL/SHRT/DESC).
+    ''' Uses the Translatable encoding. For non-translatable fields
+    ''' (EDID, model paths — cpOverride/cpNormal) use <see cref="AsStringGeneral"/> instead.</summary>
+    Public ReadOnly Property AsString As String
+        Get
+            If Data Is Nothing OrElse Data.Length = 0 Then Return ""
+            ' Strip null terminator
+            Dim len = Data.Length
+            If len > 0 AndAlso Data(len - 1) = 0 Then len -= 1
+            Return PluginTextDecoding.DecodePluginString(Data, 0, len)
+        End Get
+    End Property
+
+    ''' <summary>Decode as a NON-translatable inline string (General encoding = cp1252 for FO4).
+    ''' Fields where translatability is not set — e.g. EDID — resolve through this non-translatable
+    ''' path, not the translatable one.</summary>
+    Public ReadOnly Property AsStringGeneral As String
+        Get
+            If Data Is Nothing OrElse Data.Length = 0 Then Return ""
+            Dim len = Data.Length
+            If len > 0 AndAlso Data(len - 1) = 0 Then len -= 1
+            Return PluginEncodingSettings.DecodeGeneral(Data, 0, len)
+        End Get
+    End Property
+
+    Public ReadOnly Property AsUInt32 As UInteger
+        Get
+            If Data Is Nothing OrElse Data.Length < 4 Then Return 0
+            Return BitConverter.ToUInt32(Data, 0)
+        End Get
+    End Property
+
+    Public ReadOnly Property AsUInt16 As UShort
+        Get
+            If Data Is Nothing OrElse Data.Length < 2 Then Return 0
+            Return BitConverter.ToUInt16(Data, 0)
+        End Get
+    End Property
+
+    Public ReadOnly Property AsFloat As Single
+        Get
+            If Data Is Nothing OrElse Data.Length < 4 Then Return 0
+            Return BitConverter.ToSingle(Data, 0)
+        End Get
+    End Property
+End Structure
+
+''' <summary>Parsed record with header and list of subrecords.</summary>
+Public Class PluginRecord
+    Public Header As RecordHeader
+    Public SourcePluginName As String = ""
+    Public SourcePluginIsLocalized As Boolean
+    ''' <summary>
+    ''' Per-file translatable encoding captured from the source plugin's TES4 SNAM &lt;cp:XXXX&gt;
+    ''' tag at load time.
+    ''' Nothing = no tag in source → fall back to global PluginEncodingSettings.Translatable.
+    ''' Honored by PluginManager.ResolveFieldString and ParserHelpers.ResolveStr.
+    ''' </summary>
+    Public SourcePluginTranslatableEncoding As Encoding = Nothing
+    Public Subrecords As New List(Of SubrecordData)
+
+    ''' <summary>Get first subrecord with given signature, or Nothing.</summary>
+    Public Function GetSubrecord(sig As String) As SubrecordData?
+        For Each sr In Subrecords
+            If sr.Signature = sig Then Return sr
+        Next
+        Return Nothing
+    End Function
+
+    ''' <summary>Get all subrecords with given signature.</summary>
+    Public Function GetSubrecords(sig As String) As List(Of SubrecordData)
+        Return Subrecords.Where(Function(sr) sr.Signature = sig).ToList()
+    End Function
+
+    ''' <summary>Editor ID (EDID subrecord). EDID is non-translatable → decoded with the General
+    ''' encoding (cp1252), NOT Translatable. In practice EDIDs are pure ASCII so this matches
+    ''' AsString, but it keeps the encoding model correct.</summary>
+    Public ReadOnly Property EditorID As String
+        Get
+            Dim sr = GetSubrecord("EDID")
+            Return If(sr?.AsStringGeneral, "")
+        End Get
+    End Property
+End Class
+
+''' <summary>Represents a resolved global FormID with plugin name.</summary>
+Public Structure ResolvedFormID
+    Public FormID As UInteger
+    Public PluginName As String
+
+    Public Sub New(id As UInteger, plugin As String)
+        FormID = id
+        PluginName = plugin
+    End Sub
+
+    Public Overrides Function ToString() As String
+        Return $"[{PluginName}:{FormID:X8}]"
+    End Function
+End Structure
+
+''' <summary>Rich progress payload for <see cref="PluginManager.LoadAllPlugins"/>: byte-weighted so the
+''' UI advances smoothly even inside a single large master (Fallout4.esm), plus a file count. Reported
+''' from the parallel parse threads through the caller's <c>IProgress(Of PluginLoadProgress)</c> (a
+''' <c>Progress(Of T)</c> marshals to the UI thread). <see cref="BytesDone"/> is monotonic and ends ==
+''' <see cref="BytesTotal"/>; <see cref="FilesDone"/> ends == the number of plugins actually parsed.</summary>
+Public Structure PluginLoadProgress
+    Public FilesDone As Integer
+    Public FilesTotal As Integer
+    Public BytesDone As Long
+    Public BytesTotal As Long
+    Public CurrentName As String
+End Structure
+

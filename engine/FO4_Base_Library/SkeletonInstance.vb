@@ -1,0 +1,914 @@
+﻿' Version Uploaded of Fo4Library 3.2.0
+Imports NiflySharp.Blocks
+
+''' <summary>
+''' Single bone in a <see cref="SkeletonInstance"/>'s hierarchy. Carries bind transform
+''' (<see cref="OriginalLocaLTransform"/>) and an optional pose <see cref="DeltaTransform"/>
+''' that gets folded into <see cref="LocaLTransform"/> when present.
+''' </summary>
+Public Class HierarchiBone_class
+    ''' <summary>
+    ''' ⛔ La composición se escribe UNA sola vez: acá se agrega la física a
+    ''' <see cref="LocaLTransformWithoutPhysics"/>, que es la que lista las otras cuatro capas.
+    ''' Tenerlas duplicadas era drift garantizado y silencioso: el render compone con esta propiedad
+    ''' y el delta de física se calcula contra la otra, así que agregar o reordenar una capa en una
+    ''' sola de las dos movería la tela sin que nadie hubiera tocado el módulo de física.
+    ''' </summary>
+    Public ReadOnly Property LocaLTransform As Transform_Class
+        Get
+            Dim r As Transform_Class = LocaLTransformWithoutPhysics
+            If PhysicsDeltaTransform IsNot Nothing Then r = r.ComposeTransforms(PhysicsDeltaTransform)
+            Return r
+        End Get
+    End Property
+
+    ''' <summary>
+    ''' QUINTA capa: FÍSICA. Es la MÁS EXTERNA, después de la pose.
+    ''' <para>Por qué acá y no pisando otra capa: la física se recalcula ENTERA cada frame a partir del
+    ''' esqueleto ya posado y ya morfado. Si escribiera en <see cref="DeltaTransform"/> pelearía con
+    ''' <c>ApplyPose</c>; si escribiera en <see cref="MorphDeltaTransform"/> borraría los morphs de
+    ''' apariencia. Como capa propia, apagar la física es poner esto en Nothing y el resultado vuelve a
+    ''' ser EXACTAMENTE el de antes — bit a bit, porque componer con Nothing es no-op.</para>
+    ''' <para>Es un DELTA, no un absoluto: quien la escribe calcula
+    ''' <c>PhysicsDelta = inv(OrigL × Mount × Morph × Delta) × localDeseado</c>, igual que hace el mount.</para>
+    ''' <para>Sólo la escriben los huesos de cloth (Hair_C/L/R_Cloth*, y los que el
+    ''' hclSimpleMeshBoneDeformOperator declare). El resto del esqueleto no se toca.</para>
+    ''' </summary>
+    Public PhysicsDeltaTransform As Transform_Class = Nothing
+
+    ''' <summary>Effective local transform of this bone WITHOUT the physics layer, composed as 4 layers:
+    ''' <c>OriginalLocaLTransform × MountDeltaTransform × MorphDeltaTransform × DeltaTransform</c>.
+    ''' Es contra esto que se calcula el delta de física, igual que el mount se calcula contra el bind.
+    ''' <para>
+    ''' Capas (de bind hacia afuera):
+    ''' <list type="bullet">
+    ''' <item><c>OriginalLocaLTransform</c> — skeleton bind (jamás se muta).</item>
+    ''' <item><c>MountDeltaTransform</c> — chunk-mount correction (delta multiplicativo
+    ''' sobre el bind). Se computa como <c>MountDelta = inv(OrigL) × newLocal</c> donde
+    ''' <c>newLocal = inv(parent.OriginalGetGlobalTransform) × desiredWorld</c>.</item>
+    ''' <item><c>MorphDeltaTransform</c> — bone-morph de apariencia del NPC (race height,
+    ''' body weight MWGT/NNAM/MRSV, face FMRI/FMRS, ARMA sculpt) escrito por
+    ''' <c>ApplyBoneMorphPose</c>. Capa estructural como el mount: SOBREVIVE a un cambio de
+    ''' pose/animación.</item>
+    ''' <item><c>DeltaTransform</c> — pose/animación (HKX por frame, ScreenArcher, etc.)
+    ''' escrito por <c>ApplyPose</c>. Aplica AL FINAL, libre para animar sin tocar el morph.</item>
+    ''' </list>
+    ''' </para>
+    ''' <para>Componer con <c>Nothing</c> es no-op, así que una capa ausente no cuesta ni mueve bits.</para>
+    ''' <para>Cascade: <c>GetGlobalTransform</c> compone parent chain con esta
+    ''' <c>LocaLTransform</c>, propagando Mount/Morph/Delta del parent automáticamente.</para>
+    ''' </summary>
+    Public ReadOnly Property LocaLTransformWithoutPhysics As Transform_Class
+        Get
+            Dim r As Transform_Class = OriginalLocaLTransform
+            If MountDeltaTransform IsNot Nothing Then r = r.ComposeTransforms(MountDeltaTransform)
+            If MorphDeltaTransform IsNot Nothing Then r = r.ComposeTransforms(MorphDeltaTransform)
+            If DeltaTransform IsNot Nothing Then r = r.ComposeTransforms(DeltaTransform)
+            Return r
+        End Get
+    End Property
+    ''' <summary>Capa de pose/animación únicamente (NULL = sin pose). Es la capa MÁS externa,
+    ''' escrita por <c>ApplyPose</c>. Los morphs de apariencia del NPC ya NO viven aquí — van a
+    ''' <see cref="MorphDeltaTransform"/> — para que la animación HKX pueda manejar esta capa
+    ''' por frame sin borrarlos. Limpiada por <c>Reset()</c> y <c>ResetPose()</c>.</summary>
+    Public DeltaTransform As Transform_Class = Nothing
+    ''' <summary>Capa de bone-morph de apariencia del NPC (V3). NULL = sin morph. Va ENTRE
+    ''' <see cref="MountDeltaTransform"/> y <see cref="DeltaTransform"/>: composición
+    ''' <c>OrigL × MountDelta × Morph × Delta</c> ("skeleton + chunks + morph + pose").
+    ''' Lleva race height, body weight (MWGT/NNAM/MRSV), face FMRI/FMRS y ARMA sculpt mergeados,
+    ''' escritos por <c>ApplyBoneMorphPose</c>. Capa estructural: SOBREVIVE a un cambio de
+    ''' pose/animación (igual que el mount). Excluida de <see cref="OriginalGetGlobalTransform"/>
+    ''' (como <c>DeltaTransform</c>). Limpiada por <c>Reset()</c> y <c>ResetMorph()</c>.</summary>
+    Public MorphDeltaTransform As Transform_Class = Nothing
+    ''' <summary>Capa de MOUNT estructural (chunk mounting V2): corrección que lleva el hueso del bind
+    ''' del rig a su posición ENSAMBLADA (la que exige el skin-bind del chunk vía socket). NULL = sin
+    ''' mount. Escrita por el aplicador del mount plan del consumidor (NPC Manager
+    ''' <c>OverrideActorBoneWorld</c>/<c>ApplyMountPlanForActor</c>), re-aplicada tras cada
+    ''' <c>ApplyPose</c> (Reset la limpia). La animación HKX NO pelea con esta capa: el Δ se computa
+    ''' contra el clipBase medido del clip (<c>HkxPoseImportSession.BindLiveSkeletonTracks</c> —
+    ''' clips autoreados sobre el rig conservan el mount, clips autoreados sobre el ensamblado lo
+    ''' traen en sus propios locales). Limpiada por <c>Reset()</c>.</summary>
+    Public MountDeltaTransform As Transform_Class = Nothing
+    ''' <summary>[NO-ANIM-SYNC] Máscara de los flags NiAVObject "No Anim Sync X/Y/Z/S" (bits 16-19 del campo Flags
+    ''' del NIF) del nodo del CHUNK montado correspondiente a este hueso: bit0=X, bit1=Y, bit2=Z, bit3=S. La setea
+    ''' <c>NpcMountingResolver.PlumbNoAnimSyncMasks</c> (lee <c>nn.Flags_ui</c> del chunk NIF; el esqueleto base = 0,
+    ''' MEDIDO). La lee <c>HkxPoseImportSession.BuildPose</c>: para las componentes flagueadas mantiene la
+    ''' traslación/escala ESTRUCTURAL (S = OriginalLocaL∘Mount = socket ensamblado) y solo aplica la ROTACIÓN del
+    ''' clip = pose-writer del motor (Fallout4.exe 0x1413995D0, gate .data 0x2F32638=0). 0 = sin flag ⇒ anim normal.</summary>
+    Public NoAnimSyncMask As Byte = 0
+    Public OriginalLocaLTransform As Transform_Class
+    Public BoneName As String
+    Public Parent As HierarchiBone_class
+    Public Childrens As New List(Of HierarchiBone_class)
+    Public ReadOnly Property GetGlobalTransform As Transform_Class
+        Get
+            If IsNothing(Parent) Then Return LocaLTransform
+            Return Parent.GetGlobalTransform.ComposeTransforms(LocaLTransform)
+        End Get
+    End Property
+    ''' <summary>Bind chain INCLUYENDO MountDeltaTransform pero EXCLUYENDO DeltaTransform (pose).
+    ''' <para>⛔ MountDelta TIENE que propagarse por la cadena parent: un child que compute
+    ''' <c>newLocal_child = inv(parent.OriginalGetGlobalTransform) × desiredWorld</c> no vería la corrección
+    ''' de mount del parent y la cascade quedaría rota.</para></summary>
+    Public ReadOnly Property OriginalGetGlobalTransform As Transform_Class
+        Get
+            Dim localBind As Transform_Class = OriginalLocaLTransform
+            If MountDeltaTransform IsNot Nothing Then
+                localBind = localBind.ComposeTransforms(MountDeltaTransform)
+            End If
+            If IsNothing(Parent) Then Return localBind
+            Return Parent.OriginalGetGlobalTransform.ComposeTransforms(localBind)
+        End Get
+    End Property
+End Class
+
+''' <summary>Cache EFÍMERA (por pase de render) de los global transforms de un
+''' <see cref="SkeletonInstance"/>. La construye <see cref="SkeletonInstance.BuildGlobalTransformCacheForRenderPass"/>
+''' UNA vez por instancia antes del <c>Parallel.ForEach</c> de meshes, y se lee read-only durante el
+''' loop. Dos mapas: <c>Display</c> (Original×Mount×Morph×Delta, = <c>GetGlobalTransform</c>) y
+''' <c>BindMount</c> (Original×Mount, = <c>OriginalGetGlobalTransform</c>). NO persiste entre frames:
+''' se reconstruye desde el estado actual de las capas → sin riesgo de invalidación stale (la
+''' superficie de mutación incluye el mount escrito por la APP, así que un generation-counter sería
+''' frágil). Si un hueso NO está en la cache (huérfano no alcanzable desde SkeletonStructure), el
+''' caller cae al camino recursivo. Keyed por <see cref="HierarchiBone_class"/> (referencia) — el hot
+''' path ya tiene el objeto bone.</summary>
+Public NotInheritable Class SkeletonGlobalTransformCache
+    Private ReadOnly _display As Dictionary(Of HierarchiBone_class, Transform_Class)
+    Private ReadOnly _bindMount As Dictionary(Of HierarchiBone_class, Transform_Class)
+
+    Friend Sub New(capacity As Integer)
+        Dim cap = Math.Max(0, capacity)
+        _display = New Dictionary(Of HierarchiBone_class, Transform_Class)(cap)
+        _bindMount = New Dictionary(Of HierarchiBone_class, Transform_Class)(cap)
+    End Sub
+
+    Friend Sub Store(bone As HierarchiBone_class, display As Transform_Class, bindMount As Transform_Class)
+        _display(bone) = display
+        _bindMount(bone) = bindMount
+    End Sub
+
+    Friend Function TryGetDisplay(bone As HierarchiBone_class, ByRef value As Transform_Class) As Boolean
+        Return _display.TryGetValue(bone, value)
+    End Function
+
+    Friend Function TryGetBindMount(bone As HierarchiBone_class, ByRef value As Transform_Class) As Boolean
+        Return _bindMount.TryGetValue(bone, value)
+    End Function
+End Class
+
+''' <summary>
+''' Esqueleto cargado en memoria con su jerarquía, dict por nombre, bones inyectados (cloth)
+''' y pose actual aplicada. Permite N esqueletos vivos simultáneos (multi-actor en una escena).
+'''
+''' <see cref="Default"/> es la instancia global usada por consumers que no necesitan
+''' multi-actor. Apps que renderizan varios actores construyen sus propias instancias y las
+''' entregan vía <see cref="SingleInstanceSkeletonResolver"/> o
+''' <see cref="MultiInstanceSkeletonResolver"/>.
+''' </summary>
+Public Class SkeletonInstance
+
+    ''' <summary>Singleton-esque default instance used by <see cref="DefaultSkeletonResolver"/>
+    ''' and any consumer that does not need multi-actor isolation. Single-skeleton apps (WM)
+    ''' use this exclusively. Multi-actor apps construct fresh <see cref="SkeletonInstance"/>
+    ''' objects per actor.</summary>
+    Public Shared ReadOnly [Default] As New SkeletonInstance()
+
+    Public Property Skeleton As Nifcontent_Class_Manolo
+    Public Property SkeletonStructure As New List(Of HierarchiBone_class)
+    Public Property SkeletonDictionary As New Dictionary(Of String, HierarchiBone_class)(StringComparer.OrdinalIgnoreCase)
+    Public ReadOnly Property InjectedBones As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+    ''' <summary>Pose/animación actualmente aplicada a la capa <c>DeltaTransform</c>
+    ''' (source-of-truth de "¿hay pose?"). En NPC_Manager los morphs de apariencia NO van aquí
+    ''' sino en <see cref="MorphPose"/>.</summary>
+    Public Property Pose As Poses_class
+    ''' <summary>Bone-morph de apariencia del NPC actualmente aplicado a la capa
+    ''' <c>MorphDeltaTransform</c> (source-of-truth de "¿hay morph?"). Escrito por
+    ''' <c>ApplyBoneMorphPose</c>. Independiente de <see cref="Pose"/>.</summary>
+    Public Property MorphPose As Poses_class
+    Private ReadOnly _lock As New Object
+
+    Public ReadOnly Property HasSkeleton As Boolean
+        Get
+            If Skeleton Is Nothing Then Return False
+            If Skeleton.Blocks.Count = 0 Then Return False
+            Return True
+        End Get
+    End Property
+
+    ''' <summary>Memoización #3: construye la cache de global transforms con un pase BFS parent-first
+    ''' desde las raíces (<see cref="SkeletonStructure"/>). O(bones) en vez de O(bonesPalette ×
+    ''' profundidad) por shape, y compartida por todos los shapes de la instancia.
+    ''' <para><b>Bit-idéntico al recursivo</b>: misma asociatividad left-assoc desde la raíz
+    ''' (<c>display = parent.display × LocaLTransform</c>, igual que <c>GetGlobalTransform</c>;
+    ''' <c>bindMount = parent.bindMount × (Original×Mount)</c>, igual que
+    ''' <c>OriginalGetGlobalTransform</c>). Las dos caches se construyen con locales DISTINTOS — bind
+    ''' NO se deriva de display ni viceversa.</para>
+    ''' <para><b>Precondición de orden</b>: llamar DESPUÉS de <c>ApplyPose</c> / <c>ApplyBoneMorphPose</c>
+    ''' / el mount (<c>ApplyMountPlanForActor</c>, escrito por la app) / inyección de cloth-connect
+    ''' bones — todos ocurren antes de <c>InvalidateRender</c> (render síncrono), así que al construir
+    ''' la cache las capas ya están finales.</para>
+    ''' <para>Huesos en <see cref="SkeletonDictionary"/> pero NO alcanzables desde
+    ''' <see cref="SkeletonStructure"/> quedan fuera de la cache → el caller (RecomputeGPUBoneMatrices)
+    ''' cae al camino recursivo para ellos (fallback seguro).</para>
+    ''' <para><b>Contrato de threading (INVARIANTE — leer antes de tocar el lock)</b>: la
+    ''' construcción toma <c>_lock</c> (abajo), pero los consumidores leen
+    ''' <see cref="SkeletonDictionary"/> y el cache resultante SIN lock — el resolver serial las
+    ''' resuelve por mesh y el <c>Parallel.ForEach</c> de la pose sólo lee
+    ''' (<c>SkinningHelper.RecomputeGPUBoneMatrices</c> → <c>CachedBindMount</c>/<c>CachedDisplay</c>,
+    ''' y <c>Render.PipelineStep_*</c>). La seguridad descansa en una invariante por convención:
+    ''' <b>toda mutación del esqueleto (ApplyPose / ApplyBoneMorphPose / mount / inyección de
+    ''' cloth-bones) y la construcción de esta cache COMPLETAN antes de que arranque cualquier
+    ''' lectura de render</b>. No hay solapamiento mutación↔lectura, por eso los lectores no toman
+    ''' lock. NO agregar locks en el lado lector (riesgo de perf/deadlock); preservar este orden
+    ''' build-then-read es lo que mantiene la corrección.</para></summary>
+    Friend Function BuildGlobalTransformCacheForRenderPass() As SkeletonGlobalTransformCache
+        ' INVARIANTE de threading: ver la doc XML de la clase, arriba. El _lock acá serializa builds concurrentes,
+        ' pero los lectores (render pass) corren lock-free confiando en "toda mutación + esta build
+        ' completan antes de leer". No agregar locks en los read sites.
+        SyncLock _lock
+            Dim cache As New SkeletonGlobalTransformCache(SkeletonDictionary.Count)
+            Dim queue As New Queue(Of HierarchiBone_class)
+            For Each root In SkeletonStructure
+                If root IsNot Nothing Then queue.Enqueue(root)
+            Next
+            While queue.Count > 0
+                Dim bone = queue.Dequeue()
+
+                ' Local bind+mount (igual que OriginalGetGlobalTransform usa por hueso).
+                Dim localBind As Transform_Class = bone.OriginalLocaLTransform
+                If bone.MountDeltaTransform IsNot Nothing Then localBind = localBind.ComposeTransforms(bone.MountDeltaTransform)
+                ' Local display (las 4 capas; la propiedad ya las compone).
+                Dim localDisplay As Transform_Class = bone.LocaLTransform
+
+                Dim display As Transform_Class
+                Dim bindMount As Transform_Class
+                Dim pDisplay As Transform_Class = Nothing
+                Dim pBind As Transform_Class = Nothing
+                If bone.Parent Is Nothing Then
+                    display = localDisplay
+                    bindMount = localBind
+                ElseIf cache.TryGetDisplay(bone.Parent, pDisplay) AndAlso cache.TryGetBindMount(bone.Parent, pBind) Then
+                    ' BFS parent-first → el padre ya está cacheado.
+                    display = pDisplay.ComposeTransforms(localDisplay)
+                    bindMount = pBind.ComposeTransforms(localBind)
+                Else
+                    ' Defensivo (no debería pasar en BFS bien ordenado): recursivo.
+                    display = bone.GetGlobalTransform
+                    bindMount = bone.OriginalGetGlobalTransform
+                End If
+
+                cache.Store(bone, display, bindMount)
+                For Each child In bone.Childrens
+                    If child IsNot Nothing Then queue.Enqueue(child)
+                Next
+            End While
+            Return cache
+        End SyncLock
+    End Function
+
+    ''' <summary>Resuelve una entrada de <c>Poses_class.Transforms</c> al <c>Transform_Class</c>
+    ''' que se guarda en el hueso, aplicando el manejo ScreenArcher (delta relativo al bind).
+    ''' Compartido por <see cref="ApplyPose"/> y <see cref="ApplyBoneMorphPose"/>. Sin lock;
+    ''' el caller debe tener <c>_lock</c>.</summary>
+    Private Shared Function ResolvePoseTransform(bon As HierarchiBone_class,
+                                                 value As PoseTransformData,
+                                                 source As Poses_class.Pose_Source_Enum) As Transform_Class
+        Dim posetrans = New Transform_Class(value, source)
+        If source = Poses_class.Pose_Source_Enum.ScreenArcher Then
+            Return bon.OriginalLocaLTransform.Inverse.ComposeTransforms(posetrans)
+        End If
+        Return posetrans
+    End Function
+
+    ''' <summary>Aplica una pose/animación a la capa <c>DeltaTransform</c> (la más externa).
+    ''' Limpia SOLO esa capa (<see cref="ResetPose"/>): el bone-morph (<see cref="MorphPose"/>)
+    ''' y el chunk-mount sobreviven, de modo que la animación HKX puede manejar esta capa por
+    ''' frame sin recomputar la apariencia.</summary>
+    Public Sub ApplyPose(pose As Poses_class)
+        SyncLock _lock
+            If Not HasSkeleton Then Exit Sub
+
+            ResetPose()
+
+            If pose Is Nothing Then
+                Me.Pose = Nothing
+                Exit Sub
+            End If
+
+            For Each posbon In pose.Transforms
+                If Not SkeletonDictionary.ContainsKey(posbon.Key) Then Continue For
+                Dim bon = SkeletonDictionary(posbon.Key)
+                bon.DeltaTransform = ResolvePoseTransform(bon, posbon.Value, pose.Source)
+                SkeletonDictionary(posbon.Key) = bon
+            Next
+
+            Me.Pose = pose
+        End SyncLock
+    End Sub
+
+    ''' <summary>Aplica los bone-morphs de apariencia del NPC (race height + body weight +
+    ''' face FMRI/FMRS + ARMA sculpt mergeados) a la capa <c>MorphDeltaTransform</c>. Limpia
+    ''' SOLO esa capa (<see cref="ResetMorph"/>): la pose/animación (<c>DeltaTransform</c>) y el
+    ''' chunk-mount sobreviven. Espejo de <see cref="ApplyPose"/> pero sobre la capa morph.
+    ''' <para>Patrón NPC: <c>ApplyBoneMorphPose(morph)</c> + <c>ApplyMountPlanForActor</c>
+    ''' + (opcional) <c>ApplyPose(frame)</c> por frame de animación.</para></summary>
+    Public Sub ApplyBoneMorphPose(pose As Poses_class)
+        SyncLock _lock
+            If Not HasSkeleton Then Exit Sub
+
+            ResetMorph()
+
+            If pose Is Nothing Then
+                Me.MorphPose = Nothing
+                Exit Sub
+            End If
+
+            For Each posbon In pose.Transforms
+                If Not SkeletonDictionary.ContainsKey(posbon.Key) Then Continue For
+                Dim bon = SkeletonDictionary(posbon.Key)
+                bon.MorphDeltaTransform = ResolvePoseTransform(bon, posbon.Value, pose.Source)
+                SkeletonDictionary(posbon.Key) = bon
+            Next
+
+            Me.MorphPose = pose
+        End SyncLock
+    End Sub
+
+    ''' <summary>Loads a skeleton from an explicit dictionary key. Falls back to the global skeleton path if the key is empty or not found.</summary>
+    Public Function LoadFromKey(dictionaryKey As String) As Boolean
+        If String.IsNullOrEmpty(dictionaryKey) Then Return LoadFromConfig(True, True)
+        Dim loc As FilesDictionary_class.File_Location = Nothing
+        If Not FilesDictionary_class.Dictionary.TryGetValue(dictionaryKey, loc) Then Return LoadFromConfig(True, True)
+        Return LoadFromBytes(loc.GetBytes)
+    End Function
+
+    ''' <summary>Loads a skeleton from raw bytes.</summary>
+    Public Function LoadFromBytes(data As Byte()) As Boolean
+        If data Is Nothing OrElse data.Length = 0 Then Return False
+        SyncLock _lock
+            Try
+                Skeleton = New Nifcontent_Class_Manolo
+                SkeletonStructure.Clear()
+                SkeletonDictionary.Clear()
+                Skeleton.Load_Manolo(data)
+                Return BuildSkeletonStructure()
+            Catch ex As Exception
+                ' Mismo motivo que el Catch de LoadFromConfig: devolver False deja a la app renderizando
+                ' SIN esqueleto, y sin log el sintoma aparece lejisimos de la causa.
+                Dim exL = ex
+                Logger.LogLazy(Function() $"[SKEL] LoadFromBytes FALLO y deja el render SIN esqueleto: " &
+                                          $"{exL.GetType().Name}: {exL.Message}")
+                Skeleton = Nothing
+                InjectedBones.Clear()
+                Return False
+            End Try
+        End SyncLock
+    End Function
+
+    ''' <summary>Loads the skeleton path configured in Config_App.Current. force=False reuses if already loaded.</summary>
+    Public Function LoadFromConfig(force As Boolean, relative As Boolean) As Boolean
+        SyncLock _lock
+            Try
+                If force = False AndAlso HasSkeleton Then Return True
+                Skeleton = New Nifcontent_Class_Manolo
+                SkeletonStructure.Clear()
+                SkeletonDictionary.Clear()
+                Dim skeletonPath = Config_App.Current.SkeletonFilePath
+                If relative = False AndAlso Not String.IsNullOrEmpty(skeletonPath) AndAlso IO.File.Exists(skeletonPath) Then
+                    ' Loose file present on disk (or a skeleton outside the data folder): load it directly.
+                    Skeleton.Load_Manolo(skeletonPath)
+                ElseIf Not String.IsNullOrEmpty(skeletonPath) Then
+                    ' relative load requested, OR the loose file is absent: resolve the configured skeleton
+                    ' through the FilesDictionary so a BA2/BSA-packed skeleton is found too (loose entries
+                    ' still win inside the dictionary). Keeps the WM "skeleton available" indicator
+                    ' (HasSkeleton) correct when the skeleton lives only in an archive.
+                    Dim relativestr = IO.Path.GetRelativePath(Config_App.Current.DataPath, skeletonPath)
+                    Dim skel As FilesDictionary_class.File_Location = Nothing
+                    If FilesDictionary_class.Dictionary.TryGetValue(relativestr, skel) Then
+                        Skeleton.Load_Manolo(skel.GetBytes)
+                    End If
+                End If
+                Dim built = BuildSkeletonStructure()
+                If built Then
+                    Dim siblingHkx = TryResolveConfiguredSkeletonHkxBytes()
+                    If siblingHkx IsNot Nothing AndAlso siblingHkx.Length > 0 Then
+                        Dim merged = MergeHkxSkeleton(siblingHkx)
+                        Logger.LogLazy(Function() $"[SKEL-HKX] LoadFromConfig merged sibling skeleton.hkx: {merged} bone(s) re-positioned/added.")
+                    End If
+                End If
+                Return built
+            Catch ex As Exception
+                ' El fallo TIENE que dejar rastro. Este Catch deja `Skeleton = Nothing` y devuelve False,
+                ' o sea que la app sigue y RENDERIZA SIN ESQUELETO. Sin log, el sintoma (malla en bind,
+                ' o sin skinning) aparece a mil lineas de la causa y no hay nada que grepear. El otro
+                ' llamador del merge (MainForm, [PREP-SKEL]) ya logueaba; este no.
+                Dim exL = ex
+                Logger.LogLazy(Function() $"[SKEL-HKX] LoadFromConfig FALLO y deja el render SIN esqueleto: " &
+                                          $"{exL.GetType().Name}: {exL.Message}")
+                Skeleton = Nothing
+                InjectedBones.Clear()
+                Return False
+            End Try
+        End SyncLock
+    End Function
+
+    ''' <summary>Resolves the animation skeleton.hkx that sits next to the configured skeleton NIF
+    ''' (<see cref="Config_App.SkeletonFilePath"/>), mirroring the resolver used by the Wardrobe Manager
+    ''' pose importer. Candidates: the skeleton path with extension changed to .hkx, then a sibling
+    ''' "skeleton.hkx" in the same folder. Each candidate is tried as a loose file first, then via the
+    ''' data-relative <see cref="FilesDictionary_class.Dictionary"/> (BA2/loose). Returns the HKX bytes or
+    ''' Nothing if none resolves. Any failure is swallowed (returns Nothing): the caller falls back to the
+    ''' pure-NIF skeleton.</summary>
+    Private Shared Function TryResolveConfiguredSkeletonHkxBytes() As Byte()
+        Try
+            Dim skeletonNif = Config_App.Current.SkeletonFilePath
+            If String.IsNullOrWhiteSpace(skeletonNif) Then Return Nothing
+
+            Dim candidates As New List(Of String)
+            candidates.Add(IO.Path.ChangeExtension(skeletonNif, ".hkx"))
+            Dim skeletonDir = IO.Path.GetDirectoryName(skeletonNif)
+            If String.IsNullOrWhiteSpace(skeletonDir) = False Then candidates.Add(IO.Path.Combine(skeletonDir, "skeleton.hkx"))
+
+            Dim dataRoot = Config_App.Current.FO4EDataPath
+            Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+            For Each candidate In candidates
+                If String.IsNullOrWhiteSpace(candidate) OrElse seen.Add(candidate) = False Then Continue For
+
+                If IO.File.Exists(candidate) Then
+                    Dim bytes = IO.File.ReadAllBytes(candidate)
+                    Logger.LogLazy(Function() $"[SKEL-HKX] resolved loose sibling skeleton.hkx '{candidate}' ({If(bytes Is Nothing, 0, bytes.Length)} bytes).")
+                    Return bytes
+                End If
+
+                If String.IsNullOrWhiteSpace(dataRoot) Then Continue For
+                Dim rel As String = ""
+                Dim fullPath = IO.Path.GetFullPath(candidate)
+                Dim fullRoot = IO.Path.GetFullPath(dataRoot)
+                If fullPath.StartsWith(fullRoot, StringComparison.OrdinalIgnoreCase) Then
+                    rel = IO.Path.GetRelativePath(fullRoot, fullPath).Correct_Path_Separator
+                End If
+                If String.IsNullOrEmpty(rel) Then Continue For
+
+                Dim location As FilesDictionary_class.File_Location = Nothing
+                If FilesDictionary_class.Dictionary.TryGetValue(rel, location) AndAlso location IsNot Nothing Then
+                    Dim bytes = location.GetBytes()
+                    If bytes IsNot Nothing AndAlso bytes.Length > 0 Then
+                        Logger.LogLazy(Function() $"[SKEL-HKX] resolved dictionary sibling skeleton.hkx '{rel}' ({bytes.Length} bytes).")
+                        Return bytes
+                    End If
+                End If
+            Next
+            Return Nothing
+        Catch
+            Return Nothing
+        End Try
+    End Function
+
+    Private Function BuildSkeletonStructure() As Boolean
+        Dim parentMap As New Dictionary(Of Integer, NiNode)
+        For Each block In Skeleton.Blocks.OfType(Of NiNode)()
+            For Each childRef In block.Children.References
+                If childRef.Index >= 0 Then parentMap(childRef.Index) = block
+            Next
+        Next
+
+        ' ⛔⛔ LAS RAICES SE JUNTAN PRIMERO Y CADA UNA SE AGREGA UNA SOLA VEZ.
+        '
+        ' `AddBone(Nothing, x)` no agrega un hueso: construye el SUBARBOL ENTERO de x. Llamarlo una vez
+        ' por cada hijo del root construye el esqueleto completo tantas veces como hijos tenga el root.
+        '
+        ' MEDIDO (Tools/ClothPhysicsGate --perf, skeleton.nif vanilla):
+        '     Skyrim   99 nombres unicos / 297 nodos en el arbol / 3 raices   <- el mismo esqueleto x3
+        '     Fallout 305 nombres unicos / 305 nodos en el arbol / 1 raiz
+        '
+        ' Pasa SOLO en Skyrim, y por eso paso desapercibido: el For de abajo compara el tipo EXACTO
+        ' (`GetType(NiNode)`), asi que un `BSFadeNode` no se enumera nunca. En Fallout la raiz es un
+        ' NiNode y entra por la rama `par Is Nothing` una sola vez; en Skyrim la raiz es un BSFadeNode,
+        ' asi que NINGUN nodo tiene `par Is Nothing` y cada hijo directo del fade-node entraba por la
+        ' rama que agrega al PADRE — una reconstruccion completa por hijo.
+        '
+        ' Lo que costaba: `SkeletonDictionary` se queda con la ULTIMA copia, asi que las otras dos son
+        ' huesos huerfanos que nadie puede resolver por nombre — pero SI los recorre todo lo que camina
+        ' `SkeletonStructure`, y eso incluye `BuildGlobalTransformCacheForRenderPass`, que corre POR
+        ' PASADA DE RENDER y compone dos transforms por nodo. En Skyrim eso era 3x el trabajo de
+        ' esqueleto en cada frame, y el factor no es 3 fijo: es la cantidad de hijos directos del
+        ' fade-node, o sea que con un esqueleto modeado (XPMSSE y companiaa) crece.
+        Dim raices As New List(Of NiNode)
+        Dim raicesVistas As New HashSet(Of Integer)
+        For Each bon As NiNode In Skeleton.Blocks.Where(Function(pf) pf.GetType Is GetType(NiNode))
+            Dim bonIndex As Integer
+            Dim par As NiNode = Nothing
+            If Skeleton.GetBlockIndex(bon, bonIndex) Then
+                parentMap.TryGetValue(bonIndex, par)
+            End If
+            Dim raiz As NiNode = Nothing
+            If IsNothing(par) Then
+                raiz = bon
+            ElseIf par.GetType Is GetType(NiflySharp.Blocks.BSFadeNode) Then
+                raiz = par
+            End If
+            If raiz Is Nothing Then Continue For
+            ' La deduplicacion es por INDICE DE BLOQUE, que es la identidad del nodo dentro del NIF.
+            ' Si el indice no se puede resolver se agrega igual: perder una raiz seria peor que
+            ' construirla dos veces, y es el comportamiento que habia.
+            Dim raizIndex As Integer
+            If Skeleton.GetBlockIndex(raiz, raizIndex) Then
+                If Not raicesVistas.Add(raizIndex) Then Continue For
+            End If
+            raices.Add(raiz)
+        Next
+        For Each raiz In raices
+            AddBone(Nothing, raiz)
+        Next
+        Return SkeletonDictionary.Count <> 0
+    End Function
+
+    ''' <summary>Merge bones from an additional skeleton NIF (face skel, robot extension, etc.) into this instance.
+    ''' The additional NIF references existing bones (e.g. HEAD) as anchors and adds its own children.
+    ''' Idempotent: bones already present are reused as anchors, not duplicated.</summary>
+    ''' <returns>Number of new bones added (0 if file failed or all already present).</returns>
+    Public Function MergeAdditionalSkeleton(extraSkelBytes As Byte()) As Integer
+        If extraSkelBytes Is Nothing OrElse extraSkelBytes.Length = 0 Then Return 0
+
+        SyncLock _lock
+            If Not HasSkeleton Then Return 0
+
+            Dim faceNif As New Nifcontent_Class_Manolo
+            Try
+                faceNif.Load_Manolo(extraSkelBytes)
+            Catch
+                Return 0
+            End Try
+
+            Dim parentMap As New Dictionary(Of Integer, NiNode)
+            For Each block In faceNif.Blocks.OfType(Of NiNode)()
+                For Each childRef In block.Children.References
+                    If childRef.Index >= 0 Then parentMap(childRef.Index) = block
+                Next
+            Next
+
+            Dim addedCount As Integer = 0
+
+            Dim walkNode As Action(Of NiNode, HierarchiBone_class) = Nothing
+            walkNode = Sub(node As NiNode, parentBone As HierarchiBone_class)
+                           If node Is Nothing Then Return
+                           Dim name = If(node.Name?.String, "")
+                           Dim currentBone As HierarchiBone_class = Nothing
+
+                           If name <> "" Then
+                               If SkeletonDictionary.TryGetValue(name, currentBone) Then
+                                   ' Existing bone — reuse as anchor; traverse its children
+                               Else
+                                   currentBone = New HierarchiBone_class With {
+                                       .BoneName = name,
+                                       .Parent = parentBone,
+                                       .DeltaTransform = Nothing,
+                                       .OriginalLocaLTransform = New Transform_Class(node)
+                                   }
+                                   If parentBone IsNot Nothing Then
+                                       parentBone.Childrens.Add(currentBone)
+                                   Else
+                                       SkeletonStructure.Add(currentBone)
+                                   End If
+                                   SkeletonDictionary(name) = currentBone
+                                   addedCount += 1
+                               End If
+                           End If
+
+                           For Each childRef In node.Children.References
+                               If childRef.Index < 0 OrElse childRef.Index >= faceNif.Blocks.Count Then Continue For
+                               Dim childNode = TryCast(faceNif.Blocks(childRef.Index), NiNode)
+                               If childNode IsNot Nothing Then walkNode(childNode, If(currentBone, parentBone))
+                           Next
+                       End Sub
+
+            For Each bon As NiNode In faceNif.Blocks.Where(Function(pf) pf.GetType Is GetType(NiNode))
+                Dim bonIndex As Integer
+                Dim par As NiNode = Nothing
+                If faceNif.GetBlockIndex(bon, bonIndex) Then
+                    parentMap.TryGetValue(bonIndex, par)
+                End If
+                If IsNothing(par) OrElse par.GetType Is GetType(NiflySharp.Blocks.BSFadeNode) Then
+                    Dim startNode = If(par, bon)
+                    walkNode(startNode, Nothing)
+                End If
+            Next
+
+            Return addedCount
+        End SyncLock
+    End Function
+
+    ''' <summary>Hace AUTORITATIVO al HKX de animación (skeleton.hkx) sobre el skeleton base, en dos pasadas:
+    ''' <para>Pass A — COMPARTIDOS: cada hueso que existe en el render-NIF Y en el HKX se RE-POSICIONA al world
+    ''' del HKX (no-op cuando NIF==HKX = 100/113 razas; flipea oddballs como Behemoth/Turret a la orientación
+    ''' del HKX, que es la correcta).</para>
+    ''' <para>Pass B — SOLO-HKX: AGREGA todos los huesos que el HKX define y el NIF no tiene (Weapon/IK +
+    ''' chunk-bones de robot + connect-points 'C-'), colgando de su padre HKX en el bind ensamblado. Esto deja
+    ''' presentes los huesos solo-HKX para que la importación de pose los bindee nativamente.</para>
+    ''' hkxBytes Nothing/vacío → no-op (fallback NIF puro). El skeleton de animación se elige porque su root
+    ''' existe en el NIF base (el de ragdoll, 'Ragdoll_*', nunca).
+    ''' Ver 24-anim-behavior-por-raza / 24-robots-mounting.</summary>
+    ''' <returns>Cantidad de huesos re-posicionados (Pass A) más agregados (Pass B); 0 si no hay HKX/anim skel.</returns>
+    Public Function MergeHkxSkeleton(hkxBytes As Byte()) As Integer
+        If hkxBytes Is Nothing OrElse hkxBytes.Length = 0 Then Return 0
+
+        SyncLock _lock
+            If Not HasSkeleton Then Return 0
+
+            ' ⭐ OBJETO GENERADO. `HkObj_HkaSkeleton` sale de la reflexion de los dos .exe y elige
+            ' la tabla segun lo que el packfile DECLARA, asi que este codigo lee Fallout y Skyrim sin
+            ' una sola rama por juego.
+            ' ⛔ ACA DECIA "equivalencia con el parser viejo MEDIDA sobre 290 esqueletos de FO4 y 382
+            ' de SSE … 0 diferencias". Esa medicion NO EXISTIA: el bloque de `--hkxsweep` que la
+            ' producia comparaba la MISMA llamada contra si misma —`viejo` y `nuevo` eran el mismo
+            ' `Leer(Of HkObj_HkaSkeleton)`— asi que las 0 diferencias eran ciertas por construccion y
+            ' el numero no decia nada. Se borro el bloque y se borra la cita.
+            ' Lo que SI esta medido, y se vuelve a medir solo: el barrido lee 148.354 objetos de
+            ' 17.511 archivos de FO4 y 116.833 de 7.702 de SSE sin un fallo, y el A/B de la ley de
+            ' esqueleto —que compara DOS leyes distintas— da 0 divergencias sobre 575 archivos.
+            Dim sk As Havok.Canon.Objects.HkObj_HkaSkeleton = Nothing
+            Try
+                Dim sg = HkxObjectGraphParser_Class.BuildGraph(HkxPackfileParser_Class.Parse(hkxBytes))
+                ' ⛔ LA LEY ES `EsqueletoDeAnimacion`, NO UNA COPIA. Lo unico propio de este consumidor
+                ' es el desempate: si el root del esqueleto existe en el NIF vivo, ese es el bueno.
+                sk = sg.EsqueletoDeAnimacion(Function(s) SkeletonDictionary.ContainsKey(HkxRootBoneName(s)))
+            Catch ex As Exception
+                ' Devolver 0 en silencio hacia que un HKX ilegible se viera igual que uno sin huesos.
+                Logger.LogLazy(Function() $"[SKEL-HKX] no pude leer el esqueleto del HKX: {ex.GetType().Name}: {ex.Message}")
+                Return 0
+            End Try
+            If sk Is Nothing OrElse sk.Bones.Count = 0 Then Return 0
+
+            ' World bind por hueso del HKX (compose ReferencePose vía ParentIndices; orden topológico).
+            Dim nB = sk.Bones.Count
+            Dim hWorld(nB - 1) As Transform_Class
+            Dim hByName As New Dictionary(Of String, Transform_Class)(StringComparer.OrdinalIgnoreCase)
+            For i = 0 To nB - 1
+                Dim loc = HkxTransformConventionHelper.ToTransform(sk.ReferencePose(i))
+                Dim p = If(i < sk.ParentIndices.Count, CInt(sk.ParentIndices(i)), -1)
+                hWorld(i) = If(p < 0 OrElse p >= i, loc, hWorld(p).ComposeTransforms(loc))
+                Dim nm0 = sk.Bones(i).Name
+                If Not String.IsNullOrEmpty(nm0) AndAlso Not hByName.ContainsKey(nm0) Then hByName(nm0) = hWorld(i)
+            Next
+
+            Dim changed As Integer = 0
+
+            ' ⛔ TRANSACCIONAL. Las dos pasadas MUTAN el esqueleto vivo, y un throw en el medio dejaba un
+            ' esqueleto MEDIO MERGEADO: Pass A ya habia pisado `OriginalLocaLTransform` de los huesos
+            ' visitados, y Pass B ya habia colgado bones nuevos. Peor que no mergear, porque el llamador
+            ' de MainForm loguea 'fallback NIF' y SIGUE usando ese esqueleto a medias.
+            ' Se registra lo justo para deshacer: el valor previo de cada hueso tocado, y cada hueso
+            ' agregado con su padre. Listas paralelas y no tuplas, para que el rollback se lea de un vistazo.
+            Dim tocados As New List(Of HierarchiBone_class)
+            Dim previos As New List(Of Transform_Class)
+            Dim agregados As New List(Of HierarchiBone_class)
+            Dim agregadosPadre As New List(Of HierarchiBone_class)
+            Dim agregadosNombre As New List(Of String)
+            Try
+
+            ' Pass A — compartidos: override el world al del HKX, recorriendo la estructura NIF parent-first
+            ' (así el world del parent ya está finalizado cuando computo el local del hijo).
+            Dim stack As New Stack(Of HierarchiBone_class)(SkeletonStructure)
+            While stack.Count > 0
+                Dim b = stack.Pop()
+                Dim hw As Transform_Class = Nothing
+                If b.BoneName IsNot Nothing AndAlso hByName.TryGetValue(b.BoneName, hw) Then
+                    Dim pw = If(b.Parent IsNot Nothing, b.Parent.OriginalGetGlobalTransform, New Transform_Class())
+                    tocados.Add(b)
+                    previos.Add(b.OriginalLocaLTransform)
+                    b.OriginalLocaLTransform = pw.Inverse().ComposeTransforms(hw)
+                    changed += 1
+                End If
+                For Each c In b.Childrens : stack.Push(c) : Next
+            End While
+
+            ' Pass B — solo-HKX: agregar TODOS los bones del HKX que el NIF no tiene (Weapon/IK + chunk-bones de
+            ' robot + connect-points C-), colgando de su padre HKX en el bind ensamblado de CreateABot. Son BASE
+            ' (no injected). Los chunk-mesh se RE-BINDEAN aparte para encastrar en estas posiciones (ver render).
+            For i = 0 To nB - 1
+                Dim nm = sk.Bones(i).Name
+                If String.IsNullOrEmpty(nm) OrElse SkeletonDictionary.ContainsKey(nm) Then Continue For
+                Dim p = If(i < sk.ParentIndices.Count, CInt(sk.ParentIndices(i)), -1)
+                Dim parentBone As HierarchiBone_class = Nothing
+                If p >= 0 AndAlso p < nB Then SkeletonDictionary.TryGetValue(sk.Bones(p).Name, parentBone)
+                Dim pw = If(parentBone IsNot Nothing, parentBone.OriginalGetGlobalTransform, New Transform_Class())
+                Dim nbone As New HierarchiBone_class With {
+                    .BoneName = nm,
+                    .Parent = parentBone,
+                    .OriginalLocaLTransform = pw.Inverse().ComposeTransforms(hWorld(i))
+                }
+                If parentBone IsNot Nothing Then parentBone.Childrens.Add(nbone) Else SkeletonStructure.Add(nbone)
+                SkeletonDictionary(nm) = nbone
+                agregados.Add(nbone)
+                agregadosPadre.Add(parentBone)
+                agregadosNombre.Add(nm)
+                changed += 1
+            Next
+
+            Return changed
+
+            Catch ex As Exception
+                ' ROLLBACK: se deshace en orden inverso y se deja el esqueleto EXACTAMENTE como estaba.
+                For i = agregados.Count - 1 To 0 Step -1
+                    If agregadosPadre(i) IsNot Nothing Then
+                        agregadosPadre(i).Childrens.Remove(agregados(i))
+                    Else
+                        SkeletonStructure.Remove(agregados(i))
+                    End If
+                    SkeletonDictionary.Remove(agregadosNombre(i))
+                Next
+                For i = tocados.Count - 1 To 0 Step -1
+                    tocados(i).OriginalLocaLTransform = previos(i)
+                Next
+                Dim exL = ex, nA = tocados.Count, nB2 = agregados.Count
+                Logger.LogLazy(Function() $"[SKEL-HKX] MergeHkxSkeleton FALLO y se REVIRTIO " &
+                                          $"({nA} hueso(s) repuestos, {nB2} agregado(s) quitados): " &
+                                          $"{exL.GetType().Name}: {exL.Message}")
+                Return 0
+            End Try
+        End SyncLock
+    End Function
+
+    ''' <summary>Nombre del root (bone con parent &lt; 0) de un hkaSkeleton parseado.</summary>
+    Private Shared Function HkxRootBoneName(s As Havok.Canon.Objects.HkObj_HkaSkeleton) As String
+        For i = 0 To s.Bones.Count - 1
+            Dim p = If(i < s.ParentIndices.Count, s.ParentIndices(i), -1)
+            If p < 0 OrElse p >= s.Bones.Count Then Return s.Bones(i).Name
+        Next
+        Return If(s.Bones.Count > 0, s.Bones(0).Name, "")
+    End Function
+
+    ''' <summary>Cloth-bone injection. If the caller passes a non-null <paramref name="pose"/>,
+    ''' it is applied AFTER cloth-inject (correct order so transforms targeting cloth bones
+    ''' land on the freshly re-injected instances). If <paramref name="pose"/> is Nothing the
+    ''' caller is responsible for having already applied pose via <see cref="ApplyPose"/>;
+    ''' this method does NOT auto-re-apply <see cref="Pose"/>, otherwise consumers that call
+    ''' ApplyPose explicitly before invoking the render pipeline would pay double Reset+apply
+    ''' work and could observe inconsistent intermediate state.</summary>
+    Public Sub PrepareForShapes(shapes As IEnumerable(Of IRenderableShape), Optional pose As Poses_class = Nothing)
+        SyncLock _lock
+            If Not HasSkeleton Then Exit Sub
+
+            ClearInjectedBones()
+            Try
+                For Each shape In shapes
+                    SkeletonClothOverlayHelper_Class.InjectMissingBonesIntoLiveSkeleton(shape, Me)
+                Next
+            Catch ex As Exception
+                ' `Debugger.Break()` es un instrumento de DEBUG: en Release no existe, asi que este fallo
+                ' era MUDO justo en la build que se distribuye. El rollback (ClearInjectedBones) ya estaba;
+                ' lo que faltaba era decir que ocurrio -- si no, la ropa aparece sin sus huesos y no hay
+                ' nada que buscar en el log.
+                Dim exL = ex
+                Logger.LogLazy(Function() $"[SKEL-CLOTH] InjectMissingBonesIntoLiveSkeleton FALLO; se revierten " &
+                                          $"los huesos inyectados: {exL.GetType().Name}: {exL.Message}")
+#If DEBUG Then
+                Debugger.Break()
+#End If
+                ClearInjectedBones()
+            End Try
+
+            If pose IsNot Nothing Then
+                ApplyPose(pose)
+            End If
+        End SyncLock
+    End Sub
+
+    Public Function IsInjectedBone(boneName As String) As Boolean
+        If String.IsNullOrWhiteSpace(boneName) Then Return False
+        Return InjectedBones.Contains(boneName)
+    End Function
+
+    Private Sub ClearInjectedBones()
+        If InjectedBones.Count = 0 Then Exit Sub
+
+        Dim injectedNames As New List(Of String)(InjectedBones)
+        For Each boneName In injectedNames
+            Dim bone As HierarchiBone_class = Nothing
+            If Not SkeletonDictionary.TryGetValue(boneName, bone) Then Continue For
+
+            If IsNothing(bone.Parent) Then
+                SkeletonStructure.Remove(bone)
+            Else
+                bone.Parent.Childrens.Remove(bone)
+            End If
+
+            SkeletonDictionary.Remove(boneName)
+        Next
+
+        InjectedBones.Clear()
+    End Sub
+
+    ''' <summary>Teardown total a bind: limpia las CUATRO capas
+    ''' (<c>DeltaTransform</c> pose/animación, <c>MorphDeltaTransform</c> bone-morph,
+    ''' <c>MountDeltaTransform</c> chunk mount, <c>PhysicsDeltaTransform</c> física). Tras esto,
+    ''' <c>GetGlobalTransform</c> devuelve el bind puro. Lo usan los callers que quieren
+    ''' "render bind regardless of pose" (p.ej. ShapeTypeValidator). Para limpiar una sola capa ver
+    ''' <see cref="ResetPose"/> / <see cref="ResetMorph"/> / <see cref="ResetPhysics"/>.
+    ''' <para>⛔ La capa de física TIENE que estar acá: sin ella "teardown total a bind" sería mentira
+    ''' en cuanto la física hubiera corrido una vez, y el bind que devolviera llevaría el último frame
+    ''' simulado encima.</para></summary>
+    Public Sub Reset()
+        SyncLock _lock
+            For Each bon In SkeletonDictionary.Values
+                bon.DeltaTransform = Nothing
+                bon.MorphDeltaTransform = Nothing
+                bon.MountDeltaTransform = Nothing
+                bon.PhysicsDeltaTransform = Nothing
+            Next
+        End SyncLock
+    End Sub
+
+    ''' <summary>
+    ''' True desde que ALGUIEN escribió la capa de física en esta instancia. Existe para que
+    ''' <see cref="ResetPhysics"/> sea O(1) mientras la física está apagada: el pase de render la llama
+    ''' en CADA frame (tiene que hacerlo, para que apagar el interruptor a mitad de sesión limpie de
+    ''' verdad), y sin esto pagaba un lock + una pasada sobre todos los huesos, por instancia y por
+    ''' frame, en el mismo bucle donde se pelearon 1,16 ms/frame.
+    ''' </summary>
+    Friend Property HasPhysicsLayer As Boolean = False
+
+    ''' <summary>Limpia SOLO la capa de física (<c>PhysicsDeltaTransform</c>). Es lo que hace apagar
+    ''' el interruptor: el render vuelve a ser idéntico al de antes de que existiera la física, porque
+    ''' componer con Nothing es no-op.</summary>
+    Public Sub ResetPhysics()
+        If Not HasPhysicsLayer Then Exit Sub      ' nunca se escribió: no hay nada que limpiar
+        SyncLock _lock
+            For Each bon In SkeletonDictionary.Values
+                bon.PhysicsDeltaTransform = Nothing
+            Next
+            HasPhysicsLayer = False
+        End SyncLock
+    End Sub
+
+    ''' <summary>La escribe el simulador cuando pone la capa en algún hueso. Ver <see cref="HasPhysicsLayer"/>.</summary>
+    Friend Sub MarkPhysicsLayerWritten()
+        HasPhysicsLayer = True
+    End Sub
+
+    ''' <summary>Limpia SOLO la capa de pose/animación (<c>DeltaTransform</c>). Deja intactas
+    ''' las capas Morph y Mount. Llamado por <c>ApplyPose</c> antes de escribir el pose nuevo,
+    ''' de modo que un cambio de pose/animación NO borra los morphs de apariencia ni el mount
+    ''' de los chunks.</summary>
+    Public Sub ResetPose()
+        SyncLock _lock
+            For Each bon In SkeletonDictionary.Values
+                bon.DeltaTransform = Nothing
+            Next
+        End SyncLock
+    End Sub
+
+    ''' <summary>Limpia SOLO la capa de bone-morph (<c>MorphDeltaTransform</c>). Deja intactas
+    ''' las capas Pose y Mount. Llamado por <c>ApplyBoneMorphPose</c> antes de reaplicar.</summary>
+    Public Sub ResetMorph()
+        SyncLock _lock
+            For Each bon In SkeletonDictionary.Values
+                bon.MorphDeltaTransform = Nothing
+            Next
+        End SyncLock
+    End Sub
+
+    Private Sub AddBone(parent As HierarchiBone_class, bone As NiNode)
+        Dim donde As HierarchiBone_class
+        Dim nuevo As HierarchiBone_class
+        If IsNothing(parent) Then
+            donde = New HierarchiBone_class
+            SkeletonStructure.Add(donde)
+            nuevo = donde
+        Else
+            nuevo = New HierarchiBone_class
+            parent.Childrens.Add(nuevo)
+        End If
+        nuevo.Parent = parent
+        nuevo.BoneName = bone.Name.String
+        nuevo.DeltaTransform = Nothing
+        nuevo.OriginalLocaLTransform = New Transform_Class(bone)
+        SkeletonDictionary(bone.Name.String) = nuevo
+        For Each chil In bone.Children.References
+            If chil.Index >= 0 AndAlso chil.Index < Skeleton.Blocks.Count Then
+                Dim childNode = TryCast(Skeleton.Blocks(chil.Index), NiNode)
+                If childNode IsNot Nothing Then AddBone(nuevo, childNode)
+            End If
+        Next
+    End Sub
+
+    Public Function GetParentNodeNameSkeleton(boneName As String) As String
+        Dim par = GetParentNodeSkeleton(boneName)
+        If par Is Nothing Then Return ""
+        Dim result = par.Name.String
+        If IsNothing(result) Then Return ""
+        Return result
+    End Function
+
+    Public Function GetParentNodeSkeleton(boneName As String) As NiNode
+        If Not HasSkeleton Then Return Nothing
+        Dim childIndex As Integer
+        Dim child = Skeleton.FindBlockByName(Of NiNode)(boneName)
+
+        If Not Skeleton.GetBlockIndex(child, childIndex) Then Return Nothing
+
+        Dim nodes = Skeleton.Blocks.OfType(Of NiNode)().Where(Function(n) n IsNot child)
+        Return nodes.FirstOrDefault(Function(n) n.Children.Indices.Contains(childIndex))
+    End Function
+
+End Class

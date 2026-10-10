@@ -13,3 +13,6 @@ resources/local/
 # Editor
 .vs/
 *.user
+
+# Agent worktrees
+.claude/

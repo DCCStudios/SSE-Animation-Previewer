@@ -1,0 +1,5069 @@
+' Version Uploaded of Fo4Library 3.2.0
+Imports System.Collections.Concurrent
+Imports System.ComponentModel
+Imports System.Drawing.Design
+Imports System.IO
+Imports System.Reflection
+Imports System.Text.Json
+Imports MaterialLib
+Imports MaterialLib.BaseMaterialFile
+Imports NiflySharp
+Imports NiflySharp.Blocks
+Imports NiflySharp.Helpers
+Imports NiflySharp.Structs
+
+<AttributeUsage(AttributeTargets.Property)>
+Public Class BGSMOnlyAttribute
+    Inherits Attribute
+End Class
+
+<AttributeUsage(AttributeTargets.Property)>
+Public Class BGEMOnlyAttribute
+    Inherits Attribute
+End Class
+
+' Which material type(s) a property applies to.
+Public Enum FieldApplies
+    Both = 0
+    BGSM = 1
+    BGEM = 2
+End Enum
+
+' Gate data-driven de una propiedad del grid:
+'  - AppliesTo: se oculta cuando no aplica al tipo de material actual.
+'  - Ventana de persistencia por tipo (Bgsm/Bgem Min/MaxExclusive): persistible si Version >= Min y < MaxExcl
+'    para el tipo ACTUAL. Los dos pares son separados porque las props compartidas gatean a versiones
+'    DISTINTAS en BGSM y en BGEM. Fuera de la ventana el campo queda DISABLED (read-only) en vez de editarse
+'    hacia un layout que no lo va a serializar.
+'  - EnabledWhen / VisibleWhen: predicados sobre la instancia que deshabilitan u ocultan (p.ej. EmittanceColor
+'    con EmitEnabled=False, SkinTintColor solo con SkinTint=True).
+'  - SkyrimOnly: visible solo en Skyrim.
+Public Structure FieldGate
+    Public AppliesTo As FieldApplies
+    Public BgsmMinVersion As UInteger
+    Public BgsmMaxExclusive As UInteger
+    Public BgemMinVersion As UInteger
+    Public BgemMaxExclusive As UInteger
+    Public EnabledWhen As Func(Of FO4UnifiedMaterial_Class, Boolean)
+    Public VisibleWhen As Func(Of FO4UnifiedMaterial_Class, Boolean)
+    Public SkyrimOnly As Boolean
+    ' Opción (b) Skyrim: el binario v2 no persiste el campo, pero el contenedor Skyrim SÍ
+    ' (sidecar .bgsm.json + Save_To_Shader escribe los texset slots SSE 5/6). Cuando es True
+    ' y el material es BGSM y Config_App.Current.Game = Skyrim, la ventana de versión NO
+    ' deshabilita el campo. Solo aplica a BGSM (el sidecar es .bgsm.json; BGEM no lo necesita).
+    Public BgsmSkyrimSidecarBypass As Boolean
+End Structure
+
+Public Class FO4UnifiedMaterialDescriptor
+    Inherits CustomTypeDescriptor
+
+    Private ReadOnly instance As FO4UnifiedMaterial_Class
+
+    Public Sub New(parent As ICustomTypeDescriptor, instance As FO4UnifiedMaterial_Class)
+        MyBase.New(parent)
+        Me.instance = instance
+    End Sub
+
+    Public Overrides Function GetProperties(attributes As Attribute()) As PropertyDescriptorCollection
+        Dim props As PropertyDescriptorCollection = MyBase.GetProperties(attributes)
+        Return FilterProperties(props)
+    End Function
+
+    Public Overrides Function GetProperties() As PropertyDescriptorCollection
+        Dim props As PropertyDescriptorCollection = MyBase.GetProperties()
+        Return FilterProperties(props)
+    End Function
+
+    Private Function FilterProperties(props As PropertyDescriptorCollection) As PropertyDescriptorCollection
+        Dim filtered As New List(Of PropertyDescriptor)()
+        Dim currentType As Type = instance.Underlying_Material.GetType()
+        Dim isBgsm = currentType Is GetType(BGSM)
+        Dim isBgem = currentType Is GetType(BGEM)
+        Dim version = instance.Underlying_Material.Version
+
+        For Each prop As PropertyDescriptor In props
+            Dim gate As FieldGate = Nothing
+            Dim hasGate = FO4UnifiedMaterial_Class.FieldGates.TryGetValue(prop.Name, gate)
+
+            ' Applies-to: table if present, else fall back to the BGSMOnly/BGEMOnly attributes.
+            Dim appliesTo As FieldApplies
+            If hasGate Then
+                appliesTo = gate.AppliesTo
+            ElseIf prop.Attributes(GetType(BGSMOnlyAttribute)) IsNot Nothing Then
+                appliesTo = FieldApplies.BGSM
+            ElseIf prop.Attributes(GetType(BGEMOnlyAttribute)) IsNot Nothing Then
+                appliesTo = FieldApplies.BGEM
+            Else
+                appliesTo = FieldApplies.Both
+            End If
+
+            If appliesTo = FieldApplies.BGSM AndAlso Not isBgsm Then Continue For
+            If appliesTo = FieldApplies.BGEM AndAlso Not isBgem Then Continue For
+
+            Dim disabled As Boolean = False
+            If hasGate Then
+                If gate.SkyrimOnly AndAlso Config_App.Current.Game <> Config_App.Game_Enum.Skyrim Then Continue For
+                If gate.VisibleWhen IsNot Nothing AndAlso Not gate.VisibleWhen(instance) Then Continue For
+                ' Persistence window for the current material type → disable (read-only) when outside it.
+                ' Excepción opción (b): en Skyrim el sidecar .bgsm.json + los slots SSE del texset
+                ' persisten ciertos campos BGSM que la ventana v2 no cubre (Flow/Lighting).
+                Dim sidecarBypass = gate.BgsmSkyrimSidecarBypass AndAlso isBgsm AndAlso
+                                    Config_App.Current.Game = Config_App.Game_Enum.Skyrim
+                Dim minVer = If(isBgem, gate.BgemMinVersion, gate.BgsmMinVersion)
+                Dim maxExcl = If(isBgem, gate.BgemMaxExclusive, gate.BgsmMaxExclusive)
+                If (version < minVer OrElse version >= maxExcl) AndAlso Not sidecarBypass Then disabled = True
+                ' Capability gate → disable when the enabling flag is off.
+                If gate.EnabledWhen IsNot Nothing AndAlso Not gate.EnabledWhen(instance) Then disabled = True
+            End If
+
+            If disabled Then
+                filtered.Add(New ReadOnlyPropertyDescriptor(prop))
+            Else
+                filtered.Add(prop)
+            End If
+        Next
+
+        Return New PropertyDescriptorCollection(filtered.ToArray())
+    End Function
+End Class
+
+' Wraps a PropertyDescriptor to force it read-only in the grid (the "disabled" presentation for a
+' field that the current Version cannot persist, or whose enabling flag is off). The value is still
+' shown; it just can't be edited.
+Public Class ReadOnlyPropertyDescriptor
+    Inherits PropertyDescriptor
+
+    Private ReadOnly inner As PropertyDescriptor
+
+    Public Sub New(inner As PropertyDescriptor)
+        MyBase.New(inner)
+        Me.inner = inner
+    End Sub
+
+    Public Overrides ReadOnly Property IsReadOnly As Boolean
+        Get
+            Return True
+        End Get
+    End Property
+
+    Public Overrides ReadOnly Property ComponentType As Type
+        Get
+            Return inner.ComponentType
+        End Get
+    End Property
+
+    Public Overrides ReadOnly Property PropertyType As Type
+        Get
+            Return inner.PropertyType
+        End Get
+    End Property
+
+    ' Reset BLOQUEADO, igual que Set. Delegar CanResetValue/ResetValue en el inner deja el comando `Reset`
+    ' del PropertyGrid como via de ESCRITURA sobre un campo presentado como no editable: resetear la fila
+    ' pisa el valor autorado con el default (p.ej. ResetSpecularColor lo lleva a blanco). Un campo read-only
+    ' tiene que serlo por las dos vias.
+    Public Overrides Function CanResetValue(component As Object) As Boolean
+        Return False
+    End Function
+
+    Public Overrides Function GetValue(component As Object) As Object
+        Return inner.GetValue(component)
+    End Function
+
+    Public Overrides Sub ResetValue(component As Object)
+        ' Read-only: ignore resets from the grid.
+    End Sub
+
+    Public Overrides Sub SetValue(component As Object, value As Object)
+        ' Read-only: ignore writes from the grid.
+    End Sub
+
+    Public Overrides Function ShouldSerializeValue(component As Object) As Boolean
+        Return inner.ShouldSerializeValue(component)
+    End Function
+End Class
+
+Public Class FO4UnifiedMaterialProvider
+    Inherits TypeDescriptionProvider
+
+    Private ReadOnly baseProvider As TypeDescriptionProvider
+
+    Public Sub New()
+        MyBase.New(TypeDescriptor.GetProvider(GetType(FO4UnifiedMaterial_Class)))
+        baseProvider = TypeDescriptor.GetProvider(GetType(FO4UnifiedMaterial_Class))
+    End Sub
+
+    Public Overrides Function GetTypeDescriptor(objectType As Type, instance As Object) As ICustomTypeDescriptor
+        Dim defaultDescriptor As ICustomTypeDescriptor = baseProvider.GetTypeDescriptor(objectType, instance)
+        Return New FO4UnifiedMaterialDescriptor(defaultDescriptor, CType(instance, FO4UnifiedMaterial_Class))
+    End Function
+End Class
+
+<TypeDescriptionProvider(GetType(FO4UnifiedMaterialProvider))>
+Public Class FO4UnifiedMaterial_Class
+    <Browsable(False)>
+    Public Property Underlying_Material As MaterialLib.BaseMaterialFile = NewBgemNormalized()
+
+    ' Requisito L: al CONSTRUIR el wrapper, normalizar a "" los 3 strings de BGEM que históricamente
+    ' podían quedar sin inicializar (SpecularTexture/LightingTexture/GlowTexture). No se toca MaterialLib;
+    ' la normalización vive aquí. (El SetDefaults actual ya los pone en "", esto es la garantía explícita.)
+    Private Shared Function NewBgemNormalized() As BGEM
+        Dim bgem As New BGEM()
+        If bgem.SpecularTexture Is Nothing Then bgem.SpecularTexture = ""
+        If bgem.LightingTexture Is Nothing Then bgem.LightingTexture = ""
+        If bgem.GlowTexture Is Nothing Then bgem.GlowTexture = ""
+        Return bgem
+    End Function
+
+    ' Dirty tracking via snapshot comparison. ClearDirty() captures a Clone of the current
+    ' state; IsDirty() reports whether the wrapper has diverged from that snapshot via
+    ' GetDifferences (which honors AreEquivalentGrayscaleScale tolerance for slot-equivalent
+    ' palette scales). Net-zero round-trips (user edits then reverts) report clean because
+    ' the comparison is against the snapshot, not a one-way "was ever touched" flag.
+    ' Snapshot captured by the load/save paths (Deserialize / Save_To_* / Create_From_Shader);
+    ' the editor doesn't need to mark dirty on user edits — the next IsDirty() check detects
+    ' the diff automatically.
+    Private _cleanSnapshot As FO4UnifiedMaterial_Class = Nothing
+
+    ' Propiedades que NO viven en el archivo de material (.bgsm/.bgem) sino en el shader del NIF:
+    ' Save_To_Bgsm/Bgem nunca las escribe (NifShaderType es campo transitorio, ver más abajo). Un
+    ' cambio en ellas NO es una "modificación del material a guardar a archivo" — se persiste con el
+    ' NIF en el guardado normal del proyecto. El gating de los botones "Save/Save As material" y de
+    ' Revisa_Material (WM Editor_Form) las ignora vía IsMaterialFileDirty/AreEqualToMaterialFile, así
+    ' que cambiar el shader type a mano NO marca el material como sucio ni exige grabar un .bgsm.
+    ' GetDifferences / AreEqualTo (FaceGenComparator, diagnóstico de bake) SÍ las comparan — esa
+    ' comparación quiere ver el tipo de shader. Hoy solo el shader type; ampliar con evidencia.
+    Public Shared ReadOnly NifShaderOnlyPropertyNames As String() = {NameOf(NifShaderType)}
+
+    ''' <summary>Los campos solo-NIF PARA ESTE material. Es <see cref="NifShaderOnlyPropertyNames"/> más
+    ''' <c>CastShadows</c> cuando el material es un <b>.bgem</b>.
+    '''
+    ''' <para>POR QUE NO PUEDE SER UNA LISTA FIJA. <c>CastShadows</c> vive en el ARCHIVO si el material
+    ''' es un .bgsm, pero el .bgem NO TIENE ese campo: ahí el único lugar donde el dato existe es el bit
+    ''' <c>Cast_Shadows</c> del shader del NIF. O sea que "esta propiedad se persiste con el material o con
+    ''' el NIF" depende del TIPO de material, y una constante compartida no puede expresar eso.</para>
+    '''
+    ''' <para><b>El defecto que arregla.</b> Al dejar de ser <c>&lt;BGSMOnly&gt;</c>, la casilla CastShadows
+    ''' pasó a verse también sobre un .bgem. Tildarla dejaba el editor de Wardrobe Manager en un estado SIN
+    ''' SALIDA: <c>Revisa_Material</c> reconstruía el material desde el archivo, <c>Deserialize</c> volvía a
+    ''' sembrar el bit desde el NIF (que todavía no lo tenía), <c>AreEqualToMaterialFile</c> veía la
+    ''' diferencia y abortaba el guardado del proyecto con "Must save materials modification first" — un
+    ''' pedido que el usuario no podía satisfacer por ningún camino, porque grabar el .bgem no persiste un
+    ''' campo que el .bgem no tiene. La única salida era destildar la casilla.</para></summary>
+    ''' <para>ES UNA FUNCION Y NO UNA PROPIEDAD, Y ESO NO ES ESTILO. <see cref="GetDifferences"/>
+    ''' compara TODA propiedad publica de instancia sin indexar, por reflexion. Declarada como propiedad,
+    ''' esta se compararia A SI MISMA: devuelve un <c>String()</c> nuevo en cada llamada, dos arrays
+    ''' distintos nunca son iguales, y entonces TODO material difiere de TODO material. Lo detecta el gate
+    ''' <c>castshadows-editor</c>.
+    ''' <para>REGLA GENERAL PARA ESTA CLASE: agregar una propiedad publica la mete automaticamente en
+    ''' la comparacion de materiales. Si lo que se agrega no es un dato del material, tiene que ser una
+    ''' Function, un campo, o entrar en la lista de exclusion.</para></para>
+    Public Function CamposSoloDelNif() As String()
+        If Underlying_Material IsNot Nothing AndAlso Underlying_Material.GetType() Is GetType(BGEM) Then
+            Return NifShaderOnlyPropertyNames.Concat({NameOf(CastShadows)}).ToArray()
+        End If
+        Return NifShaderOnlyPropertyNames
+    End Function
+
+    Public Sub ClearDirty()
+        _cleanSnapshot = Clone()
+    End Sub
+
+    Public Function IsDirty() As Boolean
+        If _cleanSnapshot Is Nothing Then Return False
+        Return GetDifferences(Me, _cleanSnapshot).Count > 0
+    End Function
+
+    ''' <summary>Dirty restringido al estado del ARCHIVO de material (lo que Save_To_Bgsm/Bgem
+    ''' persiste): ignora los campos solo-NIF de <see cref="NifShaderOnlyPropertyNames"/>. Es el que
+    ''' debe gatear los botones "Save/Save As material" — cambiar el shader type (que va al shader del
+    ''' NIF, no al .bgsm) no debe encenderlos.</summary>
+    Public Function IsMaterialFileDirty() As Boolean
+        If _cleanSnapshot Is Nothing Then Return False
+        Return GetDifferences(Me, _cleanSnapshot, CamposSoloDelNif()).Count > 0
+    End Function
+
+    ''' <summary>Diagnóstico: la lista COMPLETA de propiedades que difieren del snapshot de carga
+    ''' (las que hacen True a <see cref="IsDirty"/>), sin filtrar campos solo-NIF. Sirve para
+    ''' instrumentar "por qué se marca modificado" sin adivinar: el call site loguea los nombres.
+    ''' Vacía si no hay snapshot (material nunca cargado/limpiado).</summary>
+    Public Function GetDirtyDifferences() As List(Of MaterialDifference)
+        If _cleanSnapshot Is Nothing Then Return New List(Of MaterialDifference)
+        Return GetDifferences(Me, _cleanSnapshot)
+    End Function
+
+    ''' <summary>Deep-copy the wrapper by a FIELD-WISE copy of the concrete BGSM/BGEM (NOT a
+    ''' binary round-trip). The binary serializer only writes the fields the current Version
+    ''' persists, so a round-trip would silently drop every field gated above v2 (Translucency,
+    ''' Terrain, Glass, LumEmittance, …) and corrupt the dirty-tracking snapshot with false
+    ''' clean/dirty. Reflection copies every public settable property of the material, so the
+    ''' snapshot is a true copy regardless of Version. Transient wrapper fields not stored in the
+    ''' material (NIF ShaderType, sidecar envmap path, the three alpha-blend fields, skin-tint
+    ''' alpha) are copied explicitly.</summary>
+    Public Function Clone() As FO4UnifiedMaterial_Class
+        Dim copy As New FO4UnifiedMaterial_Class()
+        If Underlying_Material IsNot Nothing Then
+            Dim t = Underlying_Material.GetType()
+            Dim newMat As MaterialLib.BaseMaterialFile = Nothing
+            If t Is GetType(BGSM) Then
+                newMat = New BGSM()
+            ElseIf t Is GetType(BGEM) Then
+                newMat = New BGEM()
+            End If
+            If newMat IsNot Nothing Then
+                ' Version is not a [DataMember] (no public setter exclusion needed) but it IS a public
+                ' settable property; the reflection loop copies it like any other field.
+                For Each p In t.GetProperties(BindingFlags.Public Or BindingFlags.Instance)
+                    If Not p.CanRead OrElse Not p.CanWrite Then Continue For
+                    If p.GetIndexParameters().Length <> 0 Then Continue For
+                    p.SetValue(newMat, p.GetValue(Underlying_Material, Nothing), Nothing)
+                Next
+                copy.Underlying_Material = newMat
+            End If
+        End If
+        copy._NifShaderType = _NifShaderType
+        ' Los dos viajan por la MISMA razón que _NifShaderType: son estado de runtime que no vive en el
+        ' payload del .bgsm/.bgem, y los clones que se ESCRIBEN (ShapeMaterialTranscriber,
+        ' FaceTextureRepointer) resuelven el tipo efectivo con ellos.
+        copy._NifEyeEnvironmentMapping = _NifEyeEnvironmentMapping
+        copy._MaterialFileApplied = _MaterialFileApplied
+        copy._EnvmapMaskPath = _EnvmapMaskPath
+        ' SIN ESTA LINEA UN BGEM CON Cast_Shadows QUEDA `IsDirty` DESDE LA CARGA. `ClearDirty` hace
+        ' `_cleanSnapshot = Clone()` y `IsDirty` compara por reflexion TODAS las propiedades publicas — y
+        ' `CastShadows` es publica y ya no lleva <BGSMOnly>. Si el clon no copia el respaldo, el original
+        ' dice True y el snapshot False: diff permanente, la app pide guardar un material que nadie toco, y
+        ' se cae el invariante del que depende Editor_Form ("un dirty implica una mutacion post-carga").
+        ' Y peor: los clones que despues se ESCRIBEN (ShapeMaterialTranscriber, FaceTextureRepointer)
+        ' apagarian el bit en el NIF de salida, porque Save_To_Shader ahora si lo escribe. La misma linea
+        ' que arreglo la lectura convertiria una perdida silenciosa en una escritura destructiva.
+        copy._castShadowsDelNif = _castShadowsDelNif
+        copy._alphaBlendEnabled = _alphaBlendEnabled
+        copy._blendFunctionSource = _blendFunctionSource
+        copy._blendFunctionDest = _blendFunctionDest
+        copy._skinTintAlpha = _skinTintAlpha
+        copy._NifGlossiness = _NifGlossiness
+        copy._NifGlossinessFromShader = _NifGlossinessFromShader
+        ' Multiplicador runtime del tint (convención ×2 del pelo SSE): vive en el wrapper, no en el
+        ' BGSM, así que el loop de reflexión de arriba no lo alcanza. Sin esto un clon perdería el ×2.
+        copy.TintColorScale = TintColorScale
+        ' Decisión de escritura del alpha-test: vive en el wrapper (NO en el BGSM), así que el loop de
+        ' reflexión de arriba no lo alcanza. Sin esto un clon perdería el bit F4SPF2 Alpha_Test y el veto de
+        ' creación de la NiAlphaProperty. Ver NpcDiffuseAlphaTest.
+        copy.NpcDiffuseAlphaTest = NpcDiffuseAlphaTest
+        copy.VetoAlphaPropertyCreation = VetoAlphaPropertyCreation
+        Return copy
+    End Function
+
+    ' NIF ShaderType — not part of BGSM/BGEM file format, stored here as runtime field
+    Private _NifShaderType As NiflySharp.Enums.BSLightingShaderType = NiflySharp.Enums.BSLightingShaderType.Default
+
+    ''' <summary>SLSF1 bit 17 (Eye_Environment_Mapping) TAL COMO VIENE DEL NIF, guardado aparte del
+    ''' material porque el motor NUNCA lo pisa desde el archivo de material.
+    ''' <para>SYNC: <c>Tools\re-docs\RE_shader_report.md</c> §1.4, RE de <c>Fallout4.exe</c> —
+    ''' <c>FUN_142163560</c> (0x142163560) es el MERGE y hace overwrite incondicional de los bits
+    ''' 7/10/18/21/38/56 desde los bool del material, pero **no escribe el bit 17**: *"Eye sobrevive
+    ''' del NIF inline (SLSF1 bit 17). Es el único tipo que el material no controla por flag."*
+    ''' Por eso `EyeEnvironmentMapping` (que sale del BGSM) NO es la fuente del motor cuando hay
+    ''' archivo de material, y este campo sí.</para></summary>
+    Private _NifEyeEnvironmentMapping As Boolean = False
+
+    ''' <summary>True cuando sobre este material se aplicó un ARCHIVO de material (.bgsm/.bgem).
+    ''' <para>Es el disparador del motor, no una preferencia: <c>FUN_14216EFB0</c> (0x14216EFB0) saca el
+    ''' path del material del property y recién ahí corren el merge (<c>FUN_142163560</c>) y el factory
+    ''' (<c>FUN_142163BE0</c>). Sin path, ninguno de los dos corre y el enum inline del NIF ES el tipo
+    ''' (ver 30-fo4-material-vs-nif). Se sella en <see cref="Deserialize"/>, que es la única puerta por
+    ''' la que entra un payload de material (GetRelatedMaterial llama ahí).</para></summary>
+    Private _MaterialFileApplied As Boolean = False
+    ' Env mask path for BGSM — NIF texture set slot 5. Not serialized in the .bgsm binary
+    ' (BGSM has no envmapMaskTexture field; path lives only in the NIF texture set).
+    ' Evidence: BodySlide MaterialFile.cpp:91-113 (BGSM binary has 9 strings, none for envmask),
+    ' OutfitProject.cpp:2436-2450 (BodySlide never assigns texFiles[5] from BGSM;
+    ' solo la rama BGEM lo hace, :2449). Re-anclado 2026-08-29: el bloque se mudo desde
+    ' PreviewWindow.cpp, que upstream refactorizo de ~450 a 99 lineas.
+    ' Roundtrip across .bgsm Save/Load is preserved via a sidecar `.bgsm.json` written next
+    ' to the .bgsm — see Save_To_Bgsm and Deserialize(Diccionario,...).
+    Private _EnvmapMaskPath As String = ""
+    Private Shared ReadOnly GrayscaleTextureWidthCache As New ConcurrentDictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+
+    ' Requisito C: MaskWrites es visible en el grid pero deshabilitado en v2 (gate v>=6, no persistible en
+    ' FO4 v2; lo aplica FieldGates).
+    <Category("Rendering")>
+    Public Property MaskWrites As MaskWriteFlags
+        Get
+            Return Underlying_Material.MaskWrites
+        End Get
+        Set(value As MaskWriteFlags)
+            Underlying_Material.MaskWrites = value
+        End Set
+    End Property
+
+    <Category("(Type)")>
+    Public ReadOnly Property MaterialType As Type
+        Get
+            Return Underlying_Material.GetType
+        End Get
+    End Property
+
+    <Category("(Type)")>
+    <DefaultValue(NiflySharp.Enums.BSLightingShaderType.Default)>
+    <TypeConverter(GetType(ShaderTypeConverter))>
+    Public Property NifShaderType As NiflySharp.Enums.BSLightingShaderType
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return _NifShaderType
+                Case GetType(BGEM)
+                    Return NiflySharp.Enums.BSLightingShaderType.Default
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As NiflySharp.Enums.BSLightingShaderType)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' Desacoplado: setear el tipo NO toca flags. Tipo y flags son ejes
+                    ' ortogonales; los flags se editan por separado en el grid.
+                    _NifShaderType = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    ' Skin tint strength → shader SkinTintAlpha (FO4 shaderType=5 SkinTint). NOT a BGSM field:
+    ' the BGSM carries no skin-tint-alpha; it is an NPC-level value (QNAM TextureLighting's A /
+    ' the SkinTone tint-layer opacity) that the engine/CK bakes inline. Transient runtime field,
+    ' like NifShaderType: read from the shader in Create_From_Shader, written back in
+    ' Save_To_Shader (gated on SkinTint), never serialized to the .bgsm (disk round-trip unaffected).
+    ' The app sets it from the NPC's TextureLightingFloats.A before baking — same split as the skin
+    ' tone COLOR (app resolves it into HairTintColor, the library writes it). Defaults to 1.0 (full)
+    ' for materials with no NPC context (render / WM editing).
+    Private _skinTintAlpha As Single = 1.0F
+    <Category("Coloring")>
+    <BGSMOnly()>
+    Public Property SkinTintAlpha As Single
+        Get
+            Return _skinTintAlpha
+        End Get
+        Set(value As Single)
+            _skinTintAlpha = value
+        End Set
+    End Property
+
+    ' Glossiness CRUDA del shader SSE (shad.Glossiness, exponente ~2..2048). NO es campo BGSM:
+    ' el BGSM guarda la Smoothness normalizada (0..1). Se transporta para que el shader SSE use
+    ' el exponente crudo directo (pow(NdotH, glossiness)) en vez de reconstruirlo con exp2 desde
+    ' Smoothness. Friend para que GetDifferences/AreEqualWithTrace (reflexion solo Public) no lo
+    ' dupliquen con Smoothness. Solo se usa en el path SSE; en FO4 el shader deriva de Smoothness.
+    Private _NifGlossiness As Single = 1.0F
+    Public ReadOnly Property NifGlossiness As Single
+        Get
+            Return _NifGlossiness
+        End Get
+    End Property
+
+    ''' <summary>True sólo si <see cref="_NifGlossiness"/> se leyó de un shader REAL (no es el default 1.0).
+    ''' Sin esto, un material venido de un `.bgsm` suelto escribiría 1.0 como glossiness.</summary>
+    Private _NifGlossinessFromShader As Boolean = False
+
+    ''' <summary>La conversión Glossiness↔Smoothness NO es reversible, pero NO acumula.
+    ''' `SseGlossinessToSmoothness` (log2) y `SmoothnessToSseGlossiness` (pow) pasan por un Single de
+    ''' 24 bits de mantisa, y el exponente necesita más: MEDIDO sobre 3014 valores de glossiness reales,
+    ''' 2322 no vuelven al valor original — p.ej. **30.0 → 29,999996185302734** (`00 00 f0 41` →
+    ''' `fe ff ef 41`), y **80.0 → 80,00000762939453**: el error va para los DOS lados, no siempre baja.
+    ''' MEDIDO también que el segundo guardado ya no mueve el valor (30 → 29,999996 → 29,999996 → …): es una
+    ''' cuantización de UNA sola vez, no una deriva que empeora con el uso.
+    ''' <para>El arreglo NO es redondear: medido, hacen falta 9 decimales para volver exacto, y un Single
+    ''' no los sostiene (~7 dígitos). El arreglo es **no reconvertir lo que el usuario no tocó**: si
+    ''' `Smoothness` no divergió del snapshot de carga, se reescribe el glossiness CRUDO del NIF.
+    ''' Alcance: sólo el round-trip NIF SSE → material en memoria → NIF SSE. Un `.bgsm` en disco guarda
+    ''' `Smoothness` nativo y nunca pasa por esta conversión.</para>
+    ''' <para>NO cambiar `BGSM.Smoothness` a Double para arreglar esto: el campo vive en MaterialLib y su
+    ''' formato binario lo persiste como Single (ver `BGSM.Deserialize`/`Serialize`) — ensancharlo obliga
+    ''' a tocar la librería de materiales y no compra nada que esto no dé ya.</para></summary>
+    ''' <remarks>NO usar el seguimiento de cambios (`_cleanSnapshot`/`IsDirty`) para esto: eso
+    ''' responde "¿divergió del estado de carga?", que depende de que el snapshot exista y de por qué
+    ''' camino se editó. Acá la pregunta es más simple y no tiene estado oculto: **¿el crudo guardado
+    ''' sigue proyectando EXACTAMENTE a la Smoothness actual?** Si sí, nadie lo tocó y el crudo es el
+    ''' valor bueno. Si no, hubo una edición y hay que convertir. Función pura del estado actual.</remarks>
+    Private Function NifGlossinessStillMatchesSmoothness() As Boolean
+        If Not _NifGlossinessFromShader Then Return False
+        If Not (TypeOf Underlying_Material Is BGSM) Then Return False
+        Return SseGlossinessToSmoothness(_NifGlossiness) = Me.Smoothness
+    End Function
+
+    ' Modelo del estado de alpha-blend: los cuatro valores canonicos (None/Standard/Additive/Multiplicative)
+    ' fijan cada uno una tupla (enabled, src, dst). Unknown es la valvula de escape para combinaciones que no
+    ' matchean ninguno: ahi los tres campos de abajo son el estado autoritativo y vienen del NiAlphaProperty
+    ' del NIF, no del BGSM (cuyo serializador hardcodea (0,6,7) para Unknown y no puede llevar tuplas
+    ' arbitrarias). Los setters de los tres campos re-clasifican la tupla contra los 5 patrones y promueven o
+    ' degradan el enum; el setter del enum deriva los tres campos cuando el valor es canonico y los deja en paz
+    ' cuando es Unknown. Los renderers consumen NiAlphaProperty.Flags del NIF, asi que la persistencia en el NIF
+    ' es la fuente de verdad.
+    Private _alphaBlendEnabled As Boolean = False
+    Private _blendFunctionSource As NiflySharp.Enums.AlphaFunction = NiflySharp.Enums.AlphaFunction.SRC_ALPHA
+    Private _blendFunctionDest As NiflySharp.Enums.AlphaFunction = NiflySharp.Enums.AlphaFunction.INV_SRC_ALPHA
+    Private _suppressAutoPromotion As Boolean = False
+
+    <Category("Opacity")>
+    <DefaultValue(AlphaBlendModeType.Unknown)>
+    Public Property AlphaBlendMode As MaterialLib.BaseMaterialFile.AlphaBlendModeType
+        Get
+            Return Underlying_Material.AlphaBlendMode
+        End Get
+        Set(value As MaterialLib.BaseMaterialFile.AlphaBlendModeType)
+            Underlying_Material.AlphaBlendMode = value
+            If value <> AlphaBlendModeType.Unknown Then
+                Dim t = CanonicalTuple(value)
+                _suppressAutoPromotion = True
+                Try
+                    _alphaBlendEnabled = t.Enabled
+                    _blendFunctionSource = t.Src
+                    _blendFunctionDest = t.Dst
+                Finally
+                    _suppressAutoPromotion = False
+                End Try
+            End If
+        End Set
+    End Property
+
+    <Category("Opacity")>
+    <DefaultValue(False)>
+    Public Property AlphaBlendEnabled As Boolean
+        Get
+            Return _alphaBlendEnabled
+        End Get
+        Set(value As Boolean)
+            _alphaBlendEnabled = value
+            If Not _suppressAutoPromotion Then RecomputeAlphaBlendModeFromFields()
+        End Set
+    End Property
+
+    <Category("Opacity")>
+    <DefaultValue(NiflySharp.Enums.AlphaFunction.SRC_ALPHA)>
+    Public Property BlendFunctionSource As NiflySharp.Enums.AlphaFunction
+        Get
+            Return _blendFunctionSource
+        End Get
+        Set(value As NiflySharp.Enums.AlphaFunction)
+            _blendFunctionSource = value
+            If Not _suppressAutoPromotion Then RecomputeAlphaBlendModeFromFields()
+        End Set
+    End Property
+
+    <Category("Opacity")>
+    <DefaultValue(NiflySharp.Enums.AlphaFunction.INV_SRC_ALPHA)>
+    Public Property BlendFunctionDest As NiflySharp.Enums.AlphaFunction
+        Get
+            Return _blendFunctionDest
+        End Get
+        Set(value As NiflySharp.Enums.AlphaFunction)
+            _blendFunctionDest = value
+            If Not _suppressAutoPromotion Then RecomputeAlphaBlendModeFromFields()
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property NormalTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).NormalTexture
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).NormalTexture
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).NormalTexture = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).NormalTexture = value
+            End Select
+        End Set
+    End Property
+    Public Function IsBGEM() As Boolean
+        Select Case Underlying_Material.GetType
+            Case GetType(BGEM)
+                Return True
+            Case Else
+                Return False
+        End Select
+    End Function
+    Public Function IsBGSM() As Boolean
+        Select Case Underlying_Material.GetType
+            Case GetType(BGSM)
+                Return True
+            Case Else
+                Return False
+        End Select
+    End Function
+
+    ''' <summary>Tipo efectivo de BSLightingShader que el engine resuelve por prioridad del factory
+    ''' (Fallout4.exe FUN_142163BE0): Eye&gt;Envmap&gt;Glowmap&gt;Face&gt;SkinTint&gt;HairTint&gt;Default.
+    ''' MultiLayer se omite (no hay PS forward en Shaders011.fxp block 6). Sirve para rutear el GLSL
+    ''' engine-faithful de forma MUTUAMENTE EXCLUYENTE (el engine corre UN shader por tipo).</summary>
+    Public Enum EffectiveLightingType
+        [Default] = 0
+        Envmap = 1
+        Glowmap = 2
+        Face = 3
+        SkinTint = 4
+        HairTint = 5
+        Eye = 6
+    End Enum
+
+    ''' <summary>True si el slot diffuse es una textura de COLOR (sRGB), no datos. Excluye
+    ''' greyscale-to-palette (usa baseMap.g como indice de LUT) y BGEM. Gatea el decode
+    ''' sRGB-&gt;lineal in-shader (C1; el engine samplea t0 como SRV sRGB).</summary>
+    Public Function IsColorDiffuse() As Boolean
+        Return Not GrayscaleToPaletteColor AndAlso Not IsBGEM()
+    End Function
+
+    ''' <summary>Tipo efectivo por la prioridad del factory del engine (FUN_142163BE0).
+    ''' BGEM devuelve Default (su render va por el path bIsEffectShader, no por este tipo).</summary>
+    Public Function ResolveEffectiveType() As EffectiveLightingType
+        If IsBGEM() Then Return EffectiveLightingType.[Default]
+        If IsEngineEye() Then Return EffectiveLightingType.Eye
+        If EnvironmentMapping Then Return EffectiveLightingType.Envmap
+        ' ORDEN DE PRIORIDAD, NO TOCAR SIN ABRIR EL BINARIO. Esta rutina replica el factory de material
+        ' de Fallout4.exe, que es una cascada sobre los flags en este orden exacto:
+        '     Eye_Environment_Mapping > Environment_Mapping > GLOW_MAP > Face > Skin_Tint > HAIR
+        ' Glowmap va ANTES que Hair: un material de pelo con Glow_Map se vuelve material Glowmap en el
+        ' factory y tampoco recibe la técnica Hair — pierde el tint, y ESO es lo que hace el motor.
+        ' Afecta a 3 materiales vanilla y a todo el pelo de mods tipo KS Hairdos.
+        ' Razonar desde las TÉCNICAS del shader lleva al orden equivocado: son otra cosa (otro enum, otro
+        ' constructor). Antes de reordenar acá, abrir la función del factory.
+        If Glowmap Then Return EffectiveLightingType.Glowmap
+        If Facegen Then Return EffectiveLightingType.Face
+        If SkinTint Then Return EffectiveLightingType.SkinTint
+        If Hair Then Return EffectiveLightingType.HairTint
+        Return EffectiveLightingType.[Default]
+    End Function
+
+    ''' <summary>Bit 17 (Eye_Environment_Mapping) COMO LO VE EL MOTOR, no como lo declara el material.
+    ''' <para>El merge <c>FUN_142163560</c> pisa los bits de tipo desde los bool del .bgsm — pero el 17
+    ''' NO está en su lista, así que Eye sale del NIF inline aunque haya archivo de material
+    ''' (RE_shader_report.md §1.4: *"Eye sobrevive del NIF inline… es el único tipo que el material no
+    ''' controla por flag"*). Sin archivo de material el merge ni corre, y ahí el campo del material ES
+    ''' el del NIF por construcción (lo siembra <c>Create_From_Shader</c>), así que la rama de abajo da
+    ''' lo mismo en los dos sentidos.</para>
+    ''' <para>MEDIDO sobre el corpus (230.791 entradas .nif de FO4, 1.116.077 shapes con .bgsm
+    ''' resoluble): 70 shapes en 62 NIF tienen BGSM eye=1 con el bit 17 del NIF APAGADO — la app las
+    ''' ruteaba como Eye y el motor no (54 van a Envmap, 16 a Default). El caso inverso —motor Eye y app
+    ''' no— es <b>0 shapes</b>, así que este cambio no puede apagar un Eye legítimo.</para></summary>
+    Public Function IsEngineEye() As Boolean
+        If IsBGEM() Then Return False
+        If _MaterialFileApplied Then Return _NifEyeEnvironmentMapping
+        Return EyeEnvironmentMapping
+    End Function
+
+    ''' <summary>¿El motor trata esta shape como PIEL? Única puerta para los gates de sustitución de
+    ''' textura de piel; nadie compara <see cref="NifShaderType"/> contra SkinTint por su cuenta.
+    ''' <para>El motor decide por el MATERIAL: <c>FUN_142163560</c> hace overwrite incondicional del bit
+    ''' 21 (Skin_Tint) desde el bool <c>+0x97</c> del ARCHIVO de material, y el factory
+    ''' <c>FUN_142163BE0</c> reconstruye el material desde los flags ya merged. El enum inline del NIF se
+    ''' descarta. Con el nombre de material VACÍO no corre ninguno de los dos y el enum inline SÍ es el
+    ''' tipo — por eso la rama.</para>
+    ''' <para>MEDIDO: 20 shapes en 9 NIF de FO4 declaran SkinTint en el NIF y su .bgsm dice
+    ''' <c>bSkinTint = false</c> (los nueve de <c>Meshes\imAarwyn\AWNOveralls\</c>): la app les ponía las
+    ''' texturas del CUERPO a la ropa. Régimen inline: 95.583 shapes FO4 + 120.431 SSE, 0 discrepancias
+    ''' ⇒ esta rama no puede regresionar ahí y SSE no se mueve un bit.</para></summary>
+    Public Function IsEngineSkinTint() As Boolean
+        If IsBGEM() Then Return False
+        If _MaterialFileApplied Then Return ResolveEffectiveType() = EffectiveLightingType.SkinTint
+        Return NifShaderType = NiflySharp.Enums.BSLightingShaderType.SkinTint
+    End Function
+
+    <Category("Textures")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property Diffuse_or_Base_Texture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).DiffuseTexture
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).BaseTexture
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).DiffuseTexture = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).BaseTexture = value
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <BGSMOnly()>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property SmoothSpecTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).SmoothSpecTexture
+                Case GetType(BGEM)
+                    Return ""
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).SmoothSpecTexture = value
+                Case GetType(BGEM)
+                    ' No operation
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property GreyscaleTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).GreyscaleTexture
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).GrayscaleTexture
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).GreyscaleTexture = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).GrayscaleTexture = value
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property GlowTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).GlowTexture
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).GlowTexture
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).GlowTexture = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).GlowTexture = value
+            End Select
+        End Set
+    End Property
+    <Category("Textures")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property EnvmapTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).EnvmapTexture
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).EnvmapTexture
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).EnvmapTexture = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).EnvmapTexture = value
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property SpecularTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).SpecularTexture
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).SpecularTexture
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).SpecularTexture = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).SpecularTexture = value
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property LightingTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).LightingTexture
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).LightingTexture
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).LightingTexture = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).LightingTexture = value
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <BGSMOnly()>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property FlowTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).FlowTexture
+                Case GetType(BGEM)
+                    Return ""
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).FlowTexture = value
+                Case GetType(BGEM)
+                    ' No operation
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <BGSMOnly()>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property DisplacementTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).DisplacementTexture
+                Case GetType(BGEM)
+                    Return ""
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).DisplacementTexture = value
+                Case GetType(BGEM)
+                    ' No operation
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <BGSMOnly()>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property InnerLayerTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).InnerLayerTexture
+                Case GetType(BGEM)
+                    Return ""
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).InnerLayerTexture = value
+                Case GetType(BGEM)
+                    ' No operation
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <BGSMOnly()>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property WrinklesTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).WrinklesTexture
+                Case GetType(BGEM)
+                    Return ""
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).WrinklesTexture = value
+                Case GetType(BGEM)
+                    ' No operation
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <BGSMOnly()>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property DistanceFieldAlphaTexture As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).DistanceFieldAlphaTexture
+                Case GetType(BGEM)
+                    Return ""
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).DistanceFieldAlphaTexture = value
+                Case GetType(BGEM)
+                    ' No operation
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Textures")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property EnvmapMaskTexture As String
+        Get
+            ' BGSM has no native envmapMaskTexture field in its binary.
+            ' Path lives runtime in _EnvmapMaskPath (populated from NIF texture set slot 5
+            ' on load, or from sidecar `.bgsm.json` when deserializing from disk).
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return If(_EnvmapMaskPath, "")
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).EnvmapMaskTexture
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    _EnvmapMaskPath = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).EnvmapMaskTexture = value
+            End Select
+        End Set
+    End Property
+
+    ' Hidden from the grid: SEMANTIC ALIAS of DisplacementTexture (slot 3, SSE FaceTint detail mask).
+    ' Same backing slot -> showing both duplicated it. Kept as code accessor; edit via DisplacementTexture.
+    <Browsable(False)>
+    <BGSMOnly()>
+    Public Property DetailMaskTexture As String
+        Get
+            ' BGSM: shares slot 3 with DisplacementTexture (FO4=displacement, SSE FaceTint=detail mask)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).DisplacementTexture
+                Case GetType(BGEM)
+                    Return ""
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).DisplacementTexture = value
+                Case GetType(BGEM)
+                    ' No operation
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    ' Hidden from the grid: SEMANTIC ALIAS of LightingTexture (slot 6). Same backing slot -> showing both
+    ' duplicated it. The old tint-overlay use was removed; kept as code accessor; edit via LightingTexture.
+    <Browsable(False)>
+    <BGSMOnly()>
+    Public Property TintMaskTexture As String
+        Get
+            ' BGSM: shares slot 6 with LightingTexture (SSE FaceTint=tint mask)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).LightingTexture
+                Case GetType(BGEM)
+                    Return ""
+            End Select
+            Throw New Exception("Unsupported material type")
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).LightingTexture = value
+                Case GetType(BGEM)
+                    ' No operation
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Opacity")>
+    <DefaultValue(1.0F)>
+    Public Property Alpha As Single
+        Get
+            Return Underlying_Material.Alpha
+        End Get
+        Set(value As Single)
+            Underlying_Material.Alpha = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <DefaultValue(0F)>
+    Public Property UOffset As Single
+        Get
+            Return Underlying_Material.UOffset
+        End Get
+        Set(value As Single)
+            Underlying_Material.UOffset = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <DefaultValue(0F)>
+    Public Property VOffset As Single
+        Get
+            Return Underlying_Material.VOffset
+        End Get
+        Set(value As Single)
+            Underlying_Material.VOffset = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <DefaultValue(1.0F)>
+    Public Property UScale As Single
+        Get
+            Return Underlying_Material.UScale
+        End Get
+        Set(value As Single)
+            Underlying_Material.UScale = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <DefaultValue(1.0F)>
+    Public Property VScale As Single
+        Get
+            Return Underlying_Material.VScale
+        End Get
+        Set(value As Single)
+            Underlying_Material.VScale = value
+        End Set
+    End Property
+
+    <Category("Opacity")>
+    <DefaultValue(False)>
+    Public Property AlphaTest As Boolean
+        Get
+            Return Underlying_Material.AlphaTest
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.AlphaTest = value
+        End Set
+    End Property
+
+    ''' <summary><b>Decision del CONSUMIDOR sobre el alpha-test de la geometria que se ESCRIBE.</b> La libreria
+    ''' es agnostica: no sabe que es un NPC, un head part ni un texture set, solo recibe una decision.
+    ''' <para>Existe porque esta MEDIDO que la decision NO es funcion del material: sobre los 1489 NIFs
+    ''' horneados por el CK (16.883 shapes) el bit Alpha_Test esta puesto en EXACTAMENTE 1 shape, mientras que
+    ''' 10.995 shapes tienen NiAlphaProperty y NO tienen el bit. Un material con <see cref="AlphaTest"/>=True no
+    ''' implica el bit, asi que la lib no puede derivarlo.</para>
+    ''' <para>Semantica (las dos ramas estan medidas, no hay una tercera inventada): <c>Nothing</c> = sin
+    ''' decision externa, la lib deriva del material como siempre (es el default, ningun consumidor cambia de
+    ''' comportamiento); <c>False</c> = VETO, si el shape fuente no traia NiAlphaProperty no se le ESTRENA uno
+    ''' -el round-trip no se toca- y el bit queda limpio; <c>True</c> = se escribe el bit y se permite fabricar.</para>
+    ''' <para>⚠ï¸ NO implementado a proposito: forzar la fabricacion cuando el material NO tiene alpha. El CK si
+    ''' lo haria, pero no existe ni un caso (el unico consumidor que pone True es el bake FO4 y su unico NPC con
+    ''' el flag tiene material CON alpha).</para>
+    ''' <para>Vive en el WRAPPER, no en el BGSM: no se serializa al material en disco.</para></summary>
+    ''' <para>⛔ NO volver a mezclarlo con el VETO de creacion del NiAlphaProperty en un solo tri-estado, ni
+    ''' hacerlo viajar por el camino de TEXTURAS: asignado dentro de la rama del MNAM de
+    ''' ApplyTextureSetOverrides se EVAPORA cuando el TXST no trae MNAM (medido: 1.757 NPC en FO4, y SIEMPRE
+    ''' en SSE, cuyo TXST no tiene MNAM). El veto vive en <see cref="VetoAlphaPropertyCreation"/>.</para>
+    ''' <para>MEDIDO sobre el 100% de los head parts de los dos juegos: dejar que el MATERIAL gobierne las DOS
+    ''' direcciones coincide con el motor (ApplyMaterialToGeometry 0x142169BB0: aloca si el material pide
+    ''' alpha, desprende si no). Diferencia total contra el CK: SSE 0 shapes, FO4 1 shape (AikeaHeadband, que
+    ''' queda SIN el bloque que el motor SI le pone).</para>
+    ''' <para>Esto es un HECHO del record del NPC (flag ACBS Diffuse Alpha Test 0x01000000), con un unico
+    ''' consumidor: el bit F4SPF2 Alpha_Test. Ese bit NO es funcion del material y la lib no puede derivarlo.</para>
+    <Browsable(False)>
+    Public Property NpcDiffuseAlphaTest As Boolean
+
+    ''' <summary><b>Intención del CONSUMIDOR sobre la EXISTENCIA del NiAlphaProperty.</b> True = no estrenar
+    ''' un bloque que el shape fuente no traía (el round-trip de los que sí lo traían no se toca).
+    ''' <para>Separado de <see cref="NpcDiffuseAlphaTest"/> a propósito: en un único <c>Boolean?</c>, `Nothing`
+    ''' significa a la vez "sin opinión" y "comportamiento por defecto", y no se puede expresar el veto sin
+    ''' arrastrar el hecho del record (ni al revés).</para>
+    ''' <para>Default False = fabrica ⇒ sólo cambia de comportamiento el consumidor que lo prenda
+    ''' explícitamente.</para></summary>
+    <Browsable(False)>
+    Public Property VetoAlphaPropertyCreation As Boolean
+
+    <Category("Opacity")>
+    <DefaultValue(CType(128, Byte))>
+    Public Property AlphaTestRef As Byte
+        Get
+            Return Underlying_Material.AlphaTestRef
+        End Get
+        Set(value As Byte)
+            Underlying_Material.AlphaTestRef = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <DefaultValue(False)>
+    Public Property Decal As Boolean
+        Get
+            Return Underlying_Material.Decal
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.Decal = value
+        End Set
+    End Property
+
+
+    <Category("Rendering")>
+    <DefaultValue(False)>
+    Public Property DecalNoFade As Boolean
+        Get
+            Return Underlying_Material.DecalNoFade
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.DecalNoFade = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <DefaultValue(False)>
+    Public Property DepthBias As Boolean
+        Get
+            Return Underlying_Material.DepthBias
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.DepthBias = value
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <DefaultValue(False)>
+    Public Property GrayscaleToPaletteColor As Boolean
+        Get
+            Return Underlying_Material.GrayscaleToPaletteColor
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.GrayscaleToPaletteColor = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <DefaultValue(False)>
+    Public Property TwoSided As Boolean
+        Get
+            Return Underlying_Material.TwoSided
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.TwoSided = value
+        End Set
+    End Property
+
+
+    <Category("Specular")>
+    <DefaultValue(False)>
+    Public Property EnvironmentMapping As Boolean
+        Get
+            Return Underlying_Material.EnvironmentMapping
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.EnvironmentMapping = value
+        End Set
+    End Property
+
+
+    <Category("Specular")>
+    <DefaultValue(1.0F)>
+    Public Property EnvironmentMappingMaskScale As Single
+        Get
+            Return Underlying_Material.EnvironmentMappingMaskScale
+        End Get
+        Set(value As Single)
+            Underlying_Material.EnvironmentMappingMaskScale = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <DefaultValue(False)>
+    Public Property NonOccluder As Boolean
+        Get
+            Return Underlying_Material.NonOccluder
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.NonOccluder = value
+        End Set
+    End Property
+
+    <Category("Opacity")>
+    <DefaultValue(False)>
+    Public Property Refraction As Boolean
+        Get
+            Return Underlying_Material.Refraction
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.Refraction = value
+        End Set
+    End Property
+
+    <Category("Opacity")>
+    <DefaultValue(False)>
+    Public Property RefractionFalloff As Boolean
+        Get
+            Return Underlying_Material.RefractionFalloff
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.RefractionFalloff = value
+        End Set
+    End Property
+
+    <Category("Opacity")>
+    <DefaultValue(0F)>
+    Public Property RefractionPower As Single
+        Get
+            Return Underlying_Material.RefractionPower
+        End Get
+        Set(value As Single)
+            Underlying_Material.RefractionPower = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <DefaultValue(True)>
+    Public Property TileU As Boolean
+        Get
+            Return Underlying_Material.TileU
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.TileU = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <DefaultValue(True)>
+    Public Property TileV As Boolean
+        Get
+            Return Underlying_Material.TileV
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.TileV = value
+        End Set
+    End Property
+
+    ' P1: the version drives the binary layout, so editing it freely in the grid would silently
+    ' switch which fields serialize. It stays readable (and the public setter is preserved for the
+    ' frozen API and the roundtrip-preserve path), but the grid shows it read-only.
+    <Category("(Type)")>
+    <ComponentModel.ReadOnly(True)>
+    Public Property Version As UInteger
+        Get
+            Return Underlying_Material.Version
+        End Get
+        Set(value As UInteger)
+            Underlying_Material.Version = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <DefaultValue(False)>
+    Public Property WetnessControlScreenSpaceReflections As Boolean
+        Get
+            Return Underlying_Material.WetnessControlScreenSpaceReflections
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.WetnessControlScreenSpaceReflections = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <DefaultValue(True)>
+    Public Property ZBufferTest As Boolean
+        Get
+            Return Underlying_Material.ZBufferTest
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.ZBufferTest = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <DefaultValue(True)>
+    Public Property ZBufferWrite As Boolean
+        Get
+            Return Underlying_Material.ZBufferWrite
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.ZBufferWrite = value
+        End Set
+    End Property
+    <Category("Coloring")>
+    <DefaultValue(1.0F)>
+    Public Property GrayscaleToPaletteScale As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).GrayscaleToPaletteScale
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).BaseColorScale
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).GrayscaleToPaletteScale = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).BaseColorScale = value
+            End Select
+        End Set
+    End Property
+
+    <Category("Specular")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property EyeEnvironmentMapping As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).EnvironmentMappingEye
+                Case GetType(BGEM)
+                    Return False
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).EnvironmentMappingEye = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+
+    End Property
+
+
+    <Category("Specular")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property SpecularEnabled As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).SpecularEnabled
+                Case GetType(BGEM)
+                    Return False
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).SpecularEnabled = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property ModelSpaceNormals As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).ModelSpaceNormals
+                Case GetType(BGEM)
+                    Return False
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).ModelSpaceNormals = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property EmitEnabled As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).EmitEnabled
+                Case GetType(BGEM)
+                    Return False
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).EmitEnabled = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property SubsurfaceLighting As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).SubsurfaceLighting
+                Case GetType(BGEM)
+                    Return False
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).SubsurfaceLighting = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property BackLighting As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).BackLighting
+                Case GetType(BGEM)
+                    Return False
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).BackLighting = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property BackLightPower As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).BackLightPower
+                Case GetType(BGEM)
+                    Return 0
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).BackLightPower = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property RimLighting As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).RimLighting
+                Case GetType(BGEM)
+                    Return False
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).RimLighting = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(2.0F)>
+    Public Property RimPower As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).RimPower
+                Case GetType(BGEM)
+                    Return 0
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).RimPower = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+
+    <Category("Emissive")>
+    <DefaultValue(False)>
+    Public Property Glowmap As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).Glowmap
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).Glowmap
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).Glowmap = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).Glowmap = value
+            End Select
+        End Set
+    End Property
+    <Category("Specular")>
+    <BGSMOnly()>
+    <DefaultValue(1.0F)>
+    Public Property Smoothness As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).Smoothness
+                Case GetType(BGEM)
+                    Return 0
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).Smoothness = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+
+    <Category("Specular")>
+    <BGSMOnly()>
+    Public Property SpecularColor As Color
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return MaterialRgbToColor(CType(Underlying_Material, BGSM).SpecularColor)
+                Case GetType(BGEM)
+                    Return System.Drawing.Color.FromArgb(255, 255, 255, 255)
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Color)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).SpecularColor = ColorToMaterialRgb(value)
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    Public Property EmittanceColor As Color
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return MaterialRgbToColor(CType(Underlying_Material, BGSM).EmittanceColor)
+                Case GetType(BGEM)
+                    Return MaterialRgbToColor(CType(Underlying_Material, BGEM).EmittanceColor)
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Color)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' P3: no side-effect. The binary only persists EmittanceColor when EmitEnabled is set
+                    ' (BGSM.Serialize), and the grid disables this field when EmitEnabled=False, so the
+                    ' setter must not silently force EmitEnabled on a color change.
+                    CType(Underlying_Material, BGSM).EmittanceColor = ColorToMaterialRgb(value)
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).EmittanceColor = ColorToMaterialRgb(value)
+            End Select
+        End Set
+    End Property
+
+    <Category("Specular")>
+    <BGSMOnly()>
+    <DefaultValue(1.0F)>
+    Public Property SpecularMult As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).SpecularMult
+                Case GetType(BGEM)
+                    Return 1
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).SpecularMult = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    <BGSMOnly()>
+    <DefaultValue(1.0F)>
+    Public Property EmittanceMult As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).EmittanceMult
+                Case GetType(BGEM)
+                    Return 0
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).EmittanceMult = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Specular")>
+    <BGSMOnly()>
+    <DefaultValue(5.0F)>
+    Public Property FresnelPower As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).FresnelPower
+                Case GetType(BGEM)
+                    Return 0
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).FresnelPower = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(0.3F)>
+    Public Property SubsurfaceLightingRolloff As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).SubsurfaceLightingRolloff
+                Case GetType(BGEM)
+                    Return 0
+            End Select
+            Throw New Exception
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).SubsurfaceLightingRolloff = value
+                Case GetType(BGEM)
+                    ' No action: este campo es propio de BGSM y el material de efecto no lo tiene.
+                    Exit Select
+            End Select
+        End Set
+    End Property
+
+    ' Propiedades exclusivas BGSM
+
+    <Category("Textures")>
+    <BGSMOnly()>
+    <DefaultValue("")>
+    Public Property RootMaterialPath As String
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).RootMaterialPath
+                Case GetType(BGEM)
+                    Return ""
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As String)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).RootMaterialPath = CorrectMaterialPath(value).StripPrefix(MaterialsPrefix)
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property PBR As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).PBR
+                Case GetType(BGEM)
+                    Return False
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).PBR = value
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property CustomPorosity As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).CustomPorosity
+                Case GetType(BGEM)
+                    Return False
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).CustomPorosity = value
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property PorosityValue As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).PorosityValue
+                Case GetType(BGEM)
+                    Return 0
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).PorosityValue = value
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property Hair As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).Hair
+                Case GetType(BGEM)
+                    Return False
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).Hair = value
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    Public Property HairTintColor As Color
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return MaterialRgbToColor(CType(Underlying_Material, BGSM).HairTintColor)
+                Case GetType(BGEM)
+                    Return Color.Black
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Color)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).HairTintColor = ColorToMaterialRgb(value)
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    ''' <summary>Multiplicador de runtime (NO se serializa) aplicado al tint del material al convertirlo a color
+    ''' FLOAT, tanto al escribir el shader del NIF (bake) como al subir el uniform del render. Default 1.0.
+    ''' <para>Motivo: el storage del material son 3 BYTES (techo duro 255 = 1.0) pero el dominio del shader no
+    ''' esta acotado a 1.0. La convencion SSE de pelo dobla el color del CLFM y el CK hace ese x2 EN FLOAT, asi
+    ''' que doblar en espacio byte clampeaba y perdia el exceso. Este factor sube el x2 al dominio float y
+    ''' elimina el clamp estructural.</para>
+    ''' <para>⚠ï¸ HairTintColor y SkinTintColor comparten el MISMO storage BGSM, asi que el factor aplica a los
+    ''' dos por igual, que es exactamente lo que hacia el x2 en bytes. Quien lo setea debe hacerlo
+    ''' explicitamente (tambien a 1.0F) para no arrastrar estado si el material se reutiliza.</para></summary>
+    <Browsable(False)>
+    Public Property TintColorScale As Single = 1.0F
+
+    ''' <summary>Runtime marker (not serialized): a RaceMenu skin override explicitly set <see cref="SkinTintColor"/>
+    ''' via its key-7 tint, so the per-actor QNAM skin-tone pass (NpcFaceTintResolver) must NOT overwrite it — in
+    ''' skee a skin override replays over the base skin tone, so the override wins. Set per render on the fresh
+    ''' material by NpcMaterialResolver.</summary>
+    <Browsable(False)>
+    Public Property SkinTintFromOverride As Boolean = False
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    Public Property SkinTintColor As Color
+        Get
+            ' BGSM uses HairTintColor field for both hair and skin tint
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return MaterialRgbToColor(CType(Underlying_Material, BGSM).HairTintColor)
+                Case GetType(BGEM)
+                    Return Color.White
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Color)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).HairTintColor = ColorToMaterialRgb(value)
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property Tree As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).Tree
+                Case GetType(BGEM)
+                    Return False
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).Tree = value
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property Facegen As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).Facegen
+                Case GetType(BGEM)
+                    Return False
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).Facegen = value
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property SkinTint As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).SkinTint
+                Case GetType(BGEM)
+                    Return False
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).SkinTint = value
+                Case GetType(BGEM)
+                    ' No action
+                    Exit Select
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+    ' Propiedades exclusivas BGEM
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(False)>
+    Public Property FalloffEnabled As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return False
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).FalloffEnabled
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).FalloffEnabled = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(False)>
+    Public Property FalloffColorEnabled As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return False
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).FalloffColorEnabled
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).FalloffColorEnabled = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(1.0F)>
+    Public Property FalloffStartAngle As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return 0
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).FalloffStartAngle
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).FalloffStartAngle = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(1.0F)>
+    Public Property FalloffStopAngle As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return 0
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).FalloffStopAngle
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).FalloffStopAngle = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(0F)>
+    Public Property FalloffStartOpacity As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return 0
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).FalloffStartOpacity
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).FalloffStartOpacity = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(0F)>
+    Public Property FalloffStopOpacity As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return 0
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).FalloffStopOpacity
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).FalloffStopOpacity = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(1.0F)>
+    Public Property LightingInfluence As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return 0
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).LightingInfluence
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).LightingInfluence = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGEMOnly>
+    <DefaultValue(False)>
+    Public Property GrayscaleToPaletteAlpha As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return False
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).GrayscaleToPaletteAlpha
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).GrayscaleToPaletteAlpha = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGEMOnly>
+    Public Property BaseColor As Color
+        Get
+            ' BGEM.BaseColor is RGB-only; BGEM.Alpha carries opacity separately.
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return System.Drawing.Color.FromArgb(255, 255, 255, 255)
+                Case GetType(BGEM)
+                    Dim bgem = CType(Underlying_Material, BGEM)
+                    Return MaterialRgbToColor(bgem.BaseColor, ClampByte(bgem.Alpha * 255))
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Color)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    Dim bgem = CType(Underlying_Material, BGEM)
+                    bgem.BaseColor = ColorToMaterialRgb(value)
+                    bgem.Alpha = value.A / 255.0F
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGEMOnly>
+    <DefaultValue(1.0F)>
+    Public Property BaseColorScale As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return 0
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).BaseColorScale
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).BaseColorScale = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(False)>
+    Public Property BloodEnabled As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return False
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).BloodEnabled
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).BloodEnabled = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(False)>
+    Public Property EffectLightingEnabled As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return False
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).EffectLightingEnabled
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).EffectLightingEnabled = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(False)>
+    Public Property SoftEnabled As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return False
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).SoftEnabled
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).SoftEnabled = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(100.0F)>
+    Public Property SoftDepth As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return 0
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).SoftDepth
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).SoftDepth = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(False)>
+    Public Property EffectPbrSpecular As Boolean
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return False
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).EffectPbrSpecular
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Boolean)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    ' No action
+                    Exit Select
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).EffectPbrSpecular = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    <DefaultValue(0F)>
+    Public Property AdaptativeEmissive_ExposureOffset As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).AdaptativeEmissive_ExposureOffset
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).AdaptativeEmissive_ExposureOffset
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).AdaptativeEmissive_ExposureOffset = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).AdaptativeEmissive_ExposureOffset = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    <DefaultValue(0F)>
+    Public Property AdaptativeEmissive_FinalExposureMin As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).AdaptativeEmissive_FinalExposureMin
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).AdaptativeEmissive_FinalExposureMin
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).AdaptativeEmissive_FinalExposureMin = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).AdaptativeEmissive_FinalExposureMin = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    <DefaultValue(0F)>
+    Public Property AdaptativeEmissive_FinalExposureMax As Single
+        Get
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    Return CType(Underlying_Material, BGSM).AdaptativeEmissive_FinalExposureMax
+                Case GetType(BGEM)
+                    Return CType(Underlying_Material, BGEM).AdaptativeEmissive_FinalExposureMax
+                Case Else
+                    Throw New Exception
+            End Select
+        End Get
+        Set(value As Single)
+            Select Case Underlying_Material.GetType
+                Case GetType(BGSM)
+                    CType(Underlying_Material, BGSM).AdaptativeEmissive_FinalExposureMax = value
+                Case GetType(BGEM)
+                    CType(Underlying_Material, BGEM).AdaptativeEmissive_FinalExposureMax = value
+                Case Else
+                    Throw New Exception
+            End Select
+        End Set
+    End Property
+
+    ' ====================================================================================
+    ' Campos antes NO expuestos (requisito F). El gating por (tipo, versión) lo aplica
+    ' FieldGates / FilterProperties; estas propiedades solo exponen el campo del material.
+    ' Los que ya tienen mapeo en Create/Save (flags) no necesitan tocar el bridge aquí.
+    ' ====================================================================================
+
+    ' --- BaseMaterialFile ---
+    <Category("Rendering")>
+    <DefaultValue(False)>
+    Public Property ScreenSpaceReflections As Boolean
+        Get
+            Return Underlying_Material.ScreenSpaceReflections
+        End Get
+        Set(value As Boolean)
+            Underlying_Material.ScreenSpaceReflections = value
+        End Set
+    End Property
+
+    ' --- BGSM-only ---
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property EnableEditorAlphaRef As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.EnableEditorAlphaRef, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.EnableEditorAlphaRef = value
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property AnisoLighting As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.AnisoLighting, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.AnisoLighting = value
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property ExternalEmittance As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.ExternalEmittance, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.ExternalEmittance = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property ReceiveShadows As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.ReceiveShadows, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.ReceiveShadows = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property HideSecret As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.HideSecret, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.HideSecret = value
+        End Set
+    End Property
+
+    ''' <summary>Respaldo del bit <c>Cast_Shadows</c> (SF1 bit 9) del NIF, para los materiales que NO
+    ''' son BGSM.
+    ''' <para>EXISTE PORQUE EL CAMPO NO ESTA EN EL FORMATO BGEM. `Cast Shadows` es un campo del
+    ''' archivo .bgsm; el .bgem no lo tiene. Pero el BIT SI ESTA EN EL NIF, para cualquier
+    ''' BSShaderProperty, y hay que leerlo de ahi: un getter que haga
+    ''' <c>TryCast(Underlying_Material, BGSM)?.CastShadows</c> con fallback a <c>False</c> reporta False para
+    ''' TODO material de effect shader sin mirar el NIF ⇒ ninguna shape con BSEffectShaderProperty proyecta
+    ''' sombra jamas, aunque el bit este prendido.</para>
+    ''' <para>La regla que se respeta es la del proyecto: <b>en FO4 el material PISA al NIF</b> — pero
+    ''' solo para los campos que el material TIENE. Si el formato no lo tiene, manda el NIF.</para>
+    ''' </summary>
+    Private _castShadowsDelNif As Boolean = False
+
+    ''' <summary>Proyecta sombra. En BGSM sale del campo del material; en BGEM (que no tiene ese campo)
+    ''' sale del bit <c>Cast_Shadows</c> de SF1 del NIF, que es game-aware — SK y FO4 comparten el
+    ''' <c>1 &lt;&lt; 9</c>, ver <see cref="CastShadowsFlagValue"/>.
+    ''' <para>⛔ NO marcarla <c>&lt;BGSMOnly&gt;</c>: el property grid la ocultaria para BGEM, donde el usuario
+    ''' no podria ni verla ni corregirla. Aplica a los DOS tipos.</para>
+    ''' </summary>
+    <Category("Rendering")>
+    <DefaultValue(False)>
+    Public Property CastShadows As Boolean
+        Get
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then Return bgsm.CastShadows
+            Return _castShadowsDelNif
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.CastShadows = value
+            ' Se guarda SIEMPRE, no solo cuando no hay BGSM: asi el valor sobrevive si el material se
+            ' reemplaza por uno de otro tipo, y el camino de escritura del effect shader tiene de donde
+            ' sacarlo sin preguntar por el tipo.
+            _castShadowsDelNif = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property DissolveFade As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.DissolveFade, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.DissolveFade = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property AssumeShadowmask As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.AssumeShadowmask, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.AssumeShadowmask = value
+        End Set
+    End Property
+
+    <Category("Specular")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property EnvironmentMappingWindow As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.EnvironmentMappingWindow, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.EnvironmentMappingWindow = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property Tessellate As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.Tessellate, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.Tessellate = value
+        End Set
+    End Property
+
+    <Category("Specular")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property SkewSpecularAlpha As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.SkewSpecularAlpha, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.SkewSpecularAlpha = value
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property Terrain As Boolean
+        ' BGSM.Terrain flag (BSLightingShaderType MultitextureLandscape). Gate v>=3 → no persistible en FO4 v2.
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.Terrain, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.Terrain = value
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property TerrainThresholdFalloff As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TerrainThresholdFalloff, 0.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TerrainThresholdFalloff = value
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property TerrainTilingDistance As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TerrainTilingDistance, 0.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TerrainTilingDistance = value
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property TerrainRotationAngle As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TerrainRotationAngle, 0.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TerrainRotationAngle = value
+        End Set
+    End Property
+
+    <Category("Coloring")>
+    <BGSMOnly()>
+    Public Property TerrainUnkInt1 As UInteger
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.UnkInt1, 0UI)
+        End Get
+        Set(value As UInteger)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.UnkInt1 = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <BGSMOnly()>
+    <DefaultValue(-0.5F)>
+    Public Property DisplacementTextureBias As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.DisplacementTextureBias, -0.5F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.DisplacementTextureBias = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <BGSMOnly()>
+    <DefaultValue(10.0F)>
+    Public Property DisplacementTextureScale As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.DisplacementTextureScale, 10.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.DisplacementTextureScale = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <BGSMOnly()>
+    <DefaultValue(1.0F)>
+    Public Property TessellationPnScale As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TessellationPnScale, 1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TessellationPnScale = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <BGSMOnly()>
+    <DefaultValue(1.0F)>
+    Public Property TessellationBaseFactor As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TessellationBaseFactor, 1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TessellationBaseFactor = value
+        End Set
+    End Property
+
+    <Category("UVs")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property TessellationFadeDistance As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TessellationFadeDistance, 0.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TessellationFadeDistance = value
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property Translucency As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.Translucency, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.Translucency = value
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property TranslucencyThickObject As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TranslucencyThickObject, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TranslucencyThickObject = value
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property TranslucencyMixAlbedoWithSubsurfaceColor As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TranslucencyMixAlbedoWithSubsurfaceColor, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TranslucencyMixAlbedoWithSubsurfaceColor = value
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    Public Property TranslucencySubsurfaceColor As Color
+        Get
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            Return If(bgsm IsNot Nothing, MaterialRgbToColor(bgsm.TranslucencySubsurfaceColor), Color.Black)
+        End Get
+        Set(value As Color)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TranslucencySubsurfaceColor = ColorToMaterialRgb(value)
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property TranslucencyTransmissiveScale As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TranslucencyTransmissiveScale, 0.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TranslucencyTransmissiveScale = value
+        End Set
+    End Property
+
+    <Category("Lighting")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property TranslucencyTurbulence As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.TranslucencyTurbulence, 0.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.TranslucencyTurbulence = value
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    <BGSMOnly()>
+    <DefaultValue(0F)>
+    Public Property LumEmittance As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.LumEmittance, 0.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.LumEmittance = value
+        End Set
+    End Property
+
+    <Category("Emissive")>
+    <BGSMOnly()>
+    <DefaultValue(False)>
+    Public Property UseAdaptativeEmissive As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.UseAdaptativeEmissive, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.UseAdaptativeEmissive = value
+        End Set
+    End Property
+
+    ' Wetness raw (6 campos) editables. El sentinel -1 = heredar de RootMaterialPath/template
+    ' (la cadena la resuelve ResolveEffectiveWetness; los Resolved* Browsable(False) los consume el render).
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(-1.0F)>
+    Public Property WetnessControlSpecScale As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.WetnessControlSpecScale, -1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.WetnessControlSpecScale = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(-1.0F)>
+    Public Property WetnessControlSpecPowerScale As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.WetnessControlSpecPowerScale, -1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.WetnessControlSpecPowerScale = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(-1.0F)>
+    Public Property WetnessControlSpecMinvar As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.WetnessControlSpecMinvar, -1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.WetnessControlSpecMinvar = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(-1.0F)>
+    Public Property WetnessControlEnvMapScale As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.WetnessControlEnvMapScale, -1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.WetnessControlEnvMapScale = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(-1.0F)>
+    Public Property WetnessControlFresnelPower As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.WetnessControlFresnelPower, -1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.WetnessControlFresnelPower = value
+        End Set
+    End Property
+
+    <Category("Rendering")>
+    <BGSMOnly()>
+    <DefaultValue(-1.0F)>
+    Public Property WetnessControlMetalness As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGSM)?.WetnessControlMetalness, -1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgsm = TryCast(Underlying_Material, BGSM)
+            If bgsm IsNot Nothing Then bgsm.WetnessControlMetalness = value
+        End Set
+    End Property
+
+    ' --- BGEM-only ---
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    Public Property EnvmapMinLOD As Byte
+        Get
+            Return If(TryCast(Underlying_Material, BGEM)?.EnvmapMinLOD, CByte(0))
+        End Get
+        Set(value As Byte)
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            If bgem IsNot Nothing Then bgem.EnvmapMinLOD = value
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(False)>
+    Public Property GlassEnabled As Boolean
+        Get
+            Return If(TryCast(Underlying_Material, BGEM)?.GlassEnabled, False)
+        End Get
+        Set(value As Boolean)
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            If bgem IsNot Nothing Then bgem.GlassEnabled = value
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    Public Property GlassFresnelColor As Color
+        Get
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            Return If(bgem IsNot Nothing, MaterialRgbToColor(bgem.GlassFresnelColor), DefaultWhite)
+        End Get
+        Set(value As Color)
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            If bgem IsNot Nothing Then bgem.GlassFresnelColor = ColorToMaterialRgb(value)
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(0.05F)>
+    Public Property GlassRefractionScaleBase As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGEM)?.GlassRefractionScaleBase, 0.05F)
+        End Get
+        Set(value As Single)
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            If bgem IsNot Nothing Then bgem.GlassRefractionScaleBase = value
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(0.4F)>
+    Public Property GlassBlurScaleBase As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGEM)?.GlassBlurScaleBase, 0.4F)
+        End Get
+        Set(value As Single)
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            If bgem IsNot Nothing Then bgem.GlassBlurScaleBase = value
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue(1.0F)>
+    Public Property GlassBlurScaleFactor As Single
+        Get
+            Return If(TryCast(Underlying_Material, BGEM)?.GlassBlurScaleFactor, 1.0F)
+        End Get
+        Set(value As Single)
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            If bgem IsNot Nothing Then bgem.GlassBlurScaleFactor = value
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue("")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property GlassRoughnessScratch As String
+        Get
+            Return If(TryCast(Underlying_Material, BGEM)?.GlassRoughnessScratch, "")
+        End Get
+        Set(value As String)
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            If bgem IsNot Nothing Then bgem.GlassRoughnessScratch = value
+        End Set
+    End Property
+
+    <Category("Effect (BGEM)")>
+    <BGEMOnly>
+    <DefaultValue("")>
+    <Editor(GetType(DictionaryFilePickerEditor), GetType(UITypeEditor))>
+    Public Property GlassDirtOverlay As String
+        Get
+            Return If(TryCast(Underlying_Material, BGEM)?.GlassDirtOverlay, "")
+        End Get
+        Set(value As String)
+            Dim bgem = TryCast(Underlying_Material, BGEM)
+            If bgem IsNot Nothing Then bgem.GlassDirtOverlay = value
+        End Set
+    End Property
+
+    ' TIPO Y FLAGS ESTAN DESACOPLADOS: el tipo se lee/escribe fiel del shader (Create/Save) y los flags se
+    ' editan independientes en el grid. NO derivar el tipo desde los flags ni al reves.
+
+    ' P1 — Versiones. El probe (25.082 materiales reales) solo observó v1/v2; vanilla = v2.
+    ' Crear material (FO4 y contenedor Skyrim opción (b)) ⇒ siempre v2. El roundtrip preserva
+    ' la versión leída (v1 parsea idéntico a v2 en MaterialLib). FO76 (v>2) está FUERA DE ALCANCE: no
+    ' agregar constantes de versión ni escalados por versión sin respaldo en datos reales.
+    Private Const MaterialVersionFO4 As UInteger = 2UI
+
+    Public Shared Function DefaultMaterialVersionForNif(Nif As Nifcontent_Class_Manolo) As UInteger
+        Return MaterialVersionFO4
+    End Function
+
+    ' ====================================================================================
+    ' FieldGates - tabla estatica data-driven. Una entrada por propiedad del grid que necesita gating MAS ALLA
+    ' del applies-to por tipo (las que solo necesitan eso siguen gateadas por los atributos BGSMOnly/BGEMOnly).
+    ' Cada ventana de version sale de la columna "Gate binario" del spec.
+    '  - Persistible si Version >= Min y < MaxExcl para el tipo actual; fuera de la ventana, DISABLED.
+    '  - EnabledWhen: DISABLED cuando el flag habilitador esta off.  VisibleWhen: HIDDEN si el predicado es falso.
+    '  - SkyrimOnly: HIDDEN salvo en Skyrim.
+    ' ====================================================================================
+    Private Const NoMaxVersion As UInteger = UInteger.MaxValue
+
+    Private Shared Function Gate(applies As FieldApplies,
+                                 Optional bgsmMin As UInteger = 0UI, Optional bgsmMaxExcl As UInteger = NoMaxVersion,
+                                 Optional bgemMin As UInteger = 0UI, Optional bgemMaxExcl As UInteger = NoMaxVersion,
+                                 Optional enabledWhen As Func(Of FO4UnifiedMaterial_Class, Boolean) = Nothing,
+                                 Optional visibleWhen As Func(Of FO4UnifiedMaterial_Class, Boolean) = Nothing,
+                                 Optional skyrimOnly As Boolean = False,
+                                 Optional bgsmSkyrimSidecarBypass As Boolean = False) As FieldGate
+        Return New FieldGate With {
+            .AppliesTo = applies,
+            .BgsmMinVersion = bgsmMin, .BgsmMaxExclusive = bgsmMaxExcl,
+            .BgemMinVersion = bgemMin, .BgemMaxExclusive = bgemMaxExcl,
+            .EnabledWhen = enabledWhen, .VisibleWhen = visibleWhen, .SkyrimOnly = skyrimOnly,
+            .BgsmSkyrimSidecarBypass = bgsmSkyrimSidecarBypass}
+    End Function
+
+    Public Shared ReadOnly FieldGates As Dictionary(Of String, FieldGate) = BuildFieldGates()
+
+    Private Shared Function BuildFieldGates() As Dictionary(Of String, FieldGate)
+        Dim g As New Dictionary(Of String, FieldGate)(StringComparer.Ordinal)
+
+        ' --- BaseMaterialFile-level version gates ---
+        g(NameOf(DepthBias)) = Gate(FieldApplies.Both, bgsmMin:=10UI, bgemMin:=10UI)         ' v>=10
+        ' MaskWrites: v>=6. Visible pero deshabilitado en v2 (requisito C).
+        g(NameOf(MaskWrites)) = Gate(FieldApplies.Both, bgsmMin:=6UI, bgemMin:=6UI)
+
+        ' --- Texturas BGSM con gate de versión (v>2 ⇒ no persistible en FO4 v2) ---
+        ' SpecularTexture/LightingTexture: BGSM gate v>2 (Min=3); BGEM gate v>=11. GlowTexture:
+        ' BGSM incondicional; BGEM v>=11. Por eso ventanas separadas por tipo.
+        g(NameOf(SpecularTexture)) = Gate(FieldApplies.Both, bgsmMin:=3UI, bgemMin:=11UI)
+        ' LightingTexture/FlowTexture BGSM: v>2 en binario, PERO en Skyrim (opción b) son los
+        ' texset slots SSE 6/5 — Save_To_Shader los persiste al NIF y Save_To_Bgsm al sidecar,
+        ' así que el bypass los mantiene editables en modo Skyrim a v2.
+        g(NameOf(LightingTexture)) = Gate(FieldApplies.Both, bgsmMin:=3UI, bgemMin:=11UI, bgsmSkyrimSidecarBypass:=True)
+        g(NameOf(GlowTexture)) = Gate(FieldApplies.Both, bgsmMin:=0UI, bgemMin:=11UI)
+        g(NameOf(FlowTexture)) = Gate(FieldApplies.BGSM, bgsmMin:=3UI, bgsmSkyrimSidecarBypass:=True) ' BGSM v>2
+        g(NameOf(DistanceFieldAlphaTexture)) = Gate(FieldApplies.BGSM, bgsmMin:=17UI)          ' BGSM v>=17
+
+        ' --- BGSM flags/scalars con gate de versión ---
+        g(NameOf(PBR)) = Gate(FieldApplies.BGSM, bgsmMin:=3UI)                                 ' v>2
+        g(NameOf(CustomPorosity)) = Gate(FieldApplies.BGSM, bgsmMin:=9UI)                      ' v>=9
+        g(NameOf(PorosityValue)) = Gate(FieldApplies.BGSM, bgsmMin:=9UI)                       ' v>=9
+        g(NameOf(LumEmittance)) = Gate(FieldApplies.BGSM, bgsmMin:=12UI)                       ' v>=12
+        g(NameOf(UseAdaptativeEmissive)) = Gate(FieldApplies.BGSM, bgsmMin:=13UI)              ' v>=13
+        g(NameOf(Translucency)) = Gate(FieldApplies.BGSM, bgsmMin:=8UI)                        ' v>=8
+        g(NameOf(TranslucencyThickObject)) = Gate(FieldApplies.BGSM, bgsmMin:=8UI)
+        g(NameOf(TranslucencyMixAlbedoWithSubsurfaceColor)) = Gate(FieldApplies.BGSM, bgsmMin:=8UI)
+        g(NameOf(TranslucencySubsurfaceColor)) = Gate(FieldApplies.BGSM, bgsmMin:=8UI)
+        g(NameOf(TranslucencyTransmissiveScale)) = Gate(FieldApplies.BGSM, bgsmMin:=8UI)
+        g(NameOf(TranslucencyTurbulence)) = Gate(FieldApplies.BGSM, bgsmMin:=8UI)
+        ' RimLighting/RimPower/BackLightPower/SubsurfaceLighting*/BackLighting: v<8 (presentes en FO4 v2).
+        g(NameOf(RimLighting)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=8UI)
+        g(NameOf(RimPower)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=8UI)
+        g(NameOf(BackLightPower)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=8UI)
+        g(NameOf(SubsurfaceLighting)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=8UI)
+        g(NameOf(SubsurfaceLightingRolloff)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=8UI)
+        g(NameOf(BackLighting)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=8UI)
+        ' EnvironmentMappingWindow/EyeEnvironmentMapping: v<7 (presentes en FO4 v2).
+        g(NameOf(EnvironmentMappingWindow)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=7UI)
+        g(NameOf(EyeEnvironmentMapping)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=7UI)
+        ' Displacement/Tessellation*: v<3 (presentes en FO4 v2).
+        g(NameOf(DisplacementTextureBias)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=3UI)
+        g(NameOf(DisplacementTextureScale)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=3UI)
+        g(NameOf(TessellationPnScale)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=3UI)
+        g(NameOf(TessellationBaseFactor)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=3UI)
+        g(NameOf(TessellationFadeDistance)) = Gate(FieldApplies.BGSM, bgsmMaxExcl:=3UI)
+        ' SkewSpecularAlpha: v>=1 ⇒ persistible en FO4 v2 (sin gate de disable).
+        ' Terrain + campos: v>=3 (no persistible en FO4 v2); además los 4 escalares solo con Terrain=True.
+        g(NameOf(Terrain)) = Gate(FieldApplies.BGSM, bgsmMin:=3UI)
+        g(NameOf(TerrainThresholdFalloff)) = Gate(FieldApplies.BGSM, bgsmMin:=3UI, enabledWhen:=Function(m) m.Terrain)
+        g(NameOf(TerrainTilingDistance)) = Gate(FieldApplies.BGSM, bgsmMin:=3UI, enabledWhen:=Function(m) m.Terrain)
+        g(NameOf(TerrainRotationAngle)) = Gate(FieldApplies.BGSM, bgsmMin:=3UI, enabledWhen:=Function(m) m.Terrain)
+        ' UnkInt1: solo v==3 AND Terrain.
+        g(NameOf(TerrainUnkInt1)) = Gate(FieldApplies.BGSM, bgsmMin:=3UI, bgsmMaxExcl:=4UI, enabledWhen:=Function(m) m.Terrain)
+
+        ' --- BGSM/BGEM compartidas con gate distinto por tipo ---
+        ' EmittanceColor: BGSM condicional-por-valor EmitEnabled (persistible en v2 si EmitEnabled);
+        ' BGEM gate v>=11 (no persistible en FO4 v2). En BGEM no hay EmitEnabled (P3 no aplica).
+        g(NameOf(EmittanceColor)) = Gate(FieldApplies.Both, bgemMin:=11UI,
+                                         enabledWhen:=Function(m) (Not m.IsBGSM()) OrElse m.EmitEnabled)
+        ' Glowmap: BGSM incondicional; BGEM v>=16.
+        g(NameOf(Glowmap)) = Gate(FieldApplies.Both, bgemMin:=16UI)
+        ' AdaptativeEmissive_*: BGSM v>=13; BGEM v>=15.
+        g(NameOf(AdaptativeEmissive_ExposureOffset)) = Gate(FieldApplies.Both, bgsmMin:=13UI, bgemMin:=15UI)
+        g(NameOf(AdaptativeEmissive_FinalExposureMin)) = Gate(FieldApplies.Both, bgsmMin:=13UI, bgemMin:=15UI)
+        g(NameOf(AdaptativeEmissive_FinalExposureMax)) = Gate(FieldApplies.Both, bgsmMin:=13UI, bgemMin:=15UI)
+
+        ' --- BGEM-only con gate de versión ---
+        g(NameOf(EffectPbrSpecular)) = Gate(FieldApplies.BGEM, bgemMin:=20UI)                  ' v>=20
+        g(NameOf(GlassEnabled)) = Gate(FieldApplies.BGEM, bgemMin:=21UI)                       ' v>=21
+        g(NameOf(GlassRoughnessScratch)) = Gate(FieldApplies.BGEM, bgemMin:=21UI)
+        g(NameOf(GlassDirtOverlay)) = Gate(FieldApplies.BGEM, bgemMin:=21UI)
+        ' Glass color/escala: v>=21 AND GlassEnabled (BlurScaleFactor v>=22).
+        g(NameOf(GlassFresnelColor)) = Gate(FieldApplies.BGEM, bgemMin:=21UI, enabledWhen:=Function(m) m.GlassEnabled)
+        g(NameOf(GlassBlurScaleBase)) = Gate(FieldApplies.BGEM, bgemMin:=21UI, enabledWhen:=Function(m) m.GlassEnabled)
+        g(NameOf(GlassRefractionScaleBase)) = Gate(FieldApplies.BGEM, bgemMin:=21UI, enabledWhen:=Function(m) m.GlassEnabled)
+        g(NameOf(GlassBlurScaleFactor)) = Gate(FieldApplies.BGEM, bgemMin:=22UI, enabledWhen:=Function(m) m.GlassEnabled)
+
+        ' --- Aliases / visibilidad ---
+        ' GrayscaleToPaletteScale: solo BGSM en el grid (en BGEM el storage es BaseColorScale, expuesto aparte).
+        g(NameOf(GrayscaleToPaletteScale)) = Gate(FieldApplies.BGSM)
+        ' BaseColorScale: solo BGEM (ya BGEMOnly, redundante pero explícito).
+        g(NameOf(BaseColorScale)) = Gate(FieldApplies.BGEM)
+        ' SkinTintColor: visible solo si SkinTint=True (alias del mismo storage que HairTintColor).
+        g(NameOf(SkinTintColor)) = Gate(FieldApplies.BGSM, visibleWhen:=Function(m) m.SkinTint)
+        ' DetailMaskTexture / TintMaskTexture: aliases de slot SSE; visibles solo en Skyrim.
+        g(NameOf(DetailMaskTexture)) = Gate(FieldApplies.BGSM, skyrimOnly:=True)
+        g(NameOf(TintMaskTexture)) = Gate(FieldApplies.BGSM, skyrimOnly:=True)
+
+        ' --- Campos IGNORADOS POR EL MOTOR (gate por JUEGO, no por version) ---
+        ' No es un gate de persistencia: el campo se serializa igual. Se deshabilita porque en FO4 editarlo no
+        ' produce ningun cambio, ni en el juego ni en el preview, y dejarlo editable hacia creer lo contrario.
+        ' SpecularColor: en FO4 el motor lo carga y lo sube a una constante, pero NINGUN pixel shader lo lee
+        ' (barrido sobre la poblacion COMPLETA de los 974 PS que consumen BGSM). El unico multiplicador de 3
+        ' componentes del specular en el forward es el color de LUZ; confirmado in-game.
+        ' En SKYRIM si se usa, y por eso el gate es POR JUEGO en vez de un Browsable(False).
+        ' ⚠ï¸ Alcance honesto: en SSE esta medido sobre una MUESTRA de PS, no sobre la poblacion completa - alcanza
+        ' para afirmar que hay camino, no para cuantificar en cuantas tecnicas.
+        g(NameOf(SpecularColor)) = Gate(FieldApplies.BGSM,
+                                        enabledWhen:=Function(m) Config_App.Current.Game = Config_App.Game_Enum.Skyrim)
+
+        Return g
+    End Function
+
+    Public Structure AlphaBlendTuple
+        Public Enabled As Boolean
+        Public Src As NiflySharp.Enums.AlphaFunction
+        Public Dst As NiflySharp.Enums.AlphaFunction
+    End Structure
+
+    Public Shared Function CanonicalTuple(mode As AlphaBlendModeType) As AlphaBlendTuple
+        Select Case mode
+            Case AlphaBlendModeType.None
+                Return New AlphaBlendTuple With {.Enabled = False, .Src = NiflySharp.Enums.AlphaFunction.ONE, .Dst = NiflySharp.Enums.AlphaFunction.ZERO}
+            Case AlphaBlendModeType.Standard
+                Return New AlphaBlendTuple With {.Enabled = True, .Src = NiflySharp.Enums.AlphaFunction.SRC_ALPHA, .Dst = NiflySharp.Enums.AlphaFunction.INV_SRC_ALPHA}
+            Case AlphaBlendModeType.Additive
+                Return New AlphaBlendTuple With {.Enabled = True, .Src = NiflySharp.Enums.AlphaFunction.SRC_ALPHA, .Dst = NiflySharp.Enums.AlphaFunction.ONE}
+            Case AlphaBlendModeType.Multiplicative
+                Return New AlphaBlendTuple With {.Enabled = True, .Src = NiflySharp.Enums.AlphaFunction.DEST_COLOR, .Dst = NiflySharp.Enums.AlphaFunction.ZERO}
+            Case Else
+                ' Unknown: no canonical tuple. Caller should not invoke for Unknown.
+                Return New AlphaBlendTuple With {.Enabled = False, .Src = NiflySharp.Enums.AlphaFunction.SRC_ALPHA, .Dst = NiflySharp.Enums.AlphaFunction.INV_SRC_ALPHA}
+        End Select
+    End Function
+
+    Public Shared Function ClassifyTuple(enabled As Boolean, src As NiflySharp.Enums.AlphaFunction, dst As NiflySharp.Enums.AlphaFunction) As AlphaBlendModeType
+        If Not enabled AndAlso src = NiflySharp.Enums.AlphaFunction.ONE AndAlso dst = NiflySharp.Enums.AlphaFunction.ZERO Then
+            Return AlphaBlendModeType.None
+        End If
+        If enabled AndAlso src = NiflySharp.Enums.AlphaFunction.SRC_ALPHA AndAlso dst = NiflySharp.Enums.AlphaFunction.INV_SRC_ALPHA Then
+            Return AlphaBlendModeType.Standard
+        End If
+        If enabled AndAlso src = NiflySharp.Enums.AlphaFunction.SRC_ALPHA AndAlso dst = NiflySharp.Enums.AlphaFunction.ONE Then
+            Return AlphaBlendModeType.Additive
+        End If
+        If enabled AndAlso src = NiflySharp.Enums.AlphaFunction.DEST_COLOR AndAlso dst = NiflySharp.Enums.AlphaFunction.ZERO Then
+            Return AlphaBlendModeType.Multiplicative
+        End If
+        Return AlphaBlendModeType.Unknown
+    End Function
+
+    ' P4 — Flags shader SIEMPRE game-aware. HasFlagSF1/SF2 y SetFlagSF1/SF2 (NiflySharp, ShaderHelper)
+    ' YA hacen el branch por shad.Type, pero castean el valor que se les pasa al enum del juego en uso;
+    ' pasar un Fallout4ShaderPropertyFlags* incondicional escribe/lee el BIT correcto solo si SK comparte
+    ' esa posición de bit. Estos helpers devuelven, para el shader dado, el valor del flag correcto por
+    ' juego (o 0 = no-op cuando el flag NO existe en SK; verificado contra los enums generados
+    ' Bitflags.SkyrimShaderPropertyFlags{1,2}.g.cs y Fallout4ShaderPropertyFlags{1,2}.g.cs).
+    Private Shared Function IsSkShader(shad As INiShader) As Boolean
+        Return shad IsNot Nothing AndAlso shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.SK
+    End Function
+
+    ''' <summary>`shad.Type` NO se serializa: es propiedad escrita a mano (`BSShaderProperty.cs:9`),
+    ''' default `None`, y la puebla `BeforeSync` como EFECTO SECUNDARIO de sincronizar contra un stream.
+    ''' Un bloque recién construido o pasado por `Clone()` la trae en `None`.
+    ''' <para>`Clone()` la PIERDE: el generador copia sólo sus `_fields` y deja el estado a mano al
+    ''' hook `partial void CopyFromExtra`, que NADIE implementó (0 implementaciones en todo NiflySharp).
+    ''' Regresión de upstream `f1f3404` "Replace runtime reflection deep copying with generated clone
+    ''' logic" — antes la reflexión copiaba `Type` sola.</para>
+    ''' <para>Con `Type = None` los `switch` de `ShaderHelper` caen a `_ =&gt; false` (NO tiran excepción:
+    ''' devuelven "todo apagado", que es plausible y por eso el fallo es mudo). MEDIDO con
+    ''' `Tools\SkFlagAxisProbe --clone` sobre la cabeza vanilla SSE: el material derivado del clon
+    ''' pierde 8 campos vs el del original — `CastShadows`, `ZBufferWrite`, `ZBufferTest`,
+    ''' `SpecularEnabled`, `ModelSpaceNormals`, `SubsurfaceLighting`, **`Facegen`** y el `_sk` de
+    ''' `LightingTexture`. Con este backfill: 8 → 0.</para>
+    ''' <para>La escalera es la MISMA que aplican los dos <c>Save_To_Shader</c> de esta clase, y es
+    ''' byte-idéntica a la de <c>BSLightingShaderProperty.BeforeSync</c> (NiflySharp). El LECTOR tiene que
+    ''' protegerse igual que el ESCRITOR. NO reemplazar por el juego de `Config_App`: el eje
+    ''' es el vocabulario de flags del BLOQUE, y un NIF puede traer bloques de shader distintos.</para>
+    ''' <para>No-op para todo shader leído de disco (`BeforeSync` ya le puso el `Type`): medido en
+    ''' stream 83 → SK, 100 → SK, 130 → FO4.</para></summary>
+    Private Shared Sub EnsureShaderGameType(shad As INiShader, Nif As Nifcontent_Class_Manolo)
+        If shad Is Nothing OrElse Nif Is Nothing Then Exit Sub
+        If shad.Type <> NiflySharp.Helpers.ShaderHelper.ShaderGameType.None Then Exit Sub
+        Dim streamVer = Nif.Header.Version.StreamVersion
+        If streamVer = 155 Then
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.FO76SF
+        ElseIf streamVer >= 130 Then
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.FO4
+        Else
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.SK
+        End If
+    End Sub
+
+    ''' <summary>Lee el bit Cast_Shadows de SF1 de un shader, con el vocabulario del juego que
+    ''' corresponda. Existe como punto de entrada para que el gate `castshadows-bgem` pruebe la FUNCION
+    ''' REAL en vez de una maqueta: es la misma que usan Create_From_Shader y Deserialize.</summary>
+    Public Shared Function LeerCastShadowsDeShader(shad As INiShader) As Boolean
+        If shad Is Nothing Then Return False
+        Return ShaderHelper.HasFlagSF1(shad, CastShadowsFlagValue(shad))
+    End Function
+
+    ''' <summary>Escribe ese mismo bit. El parametro `fo4` elige el vocabulario cuando el shader recien
+    ''' creado todavia no lo declara.</summary>
+    Public Shared Sub EscribirCastShadowsEnShader(shad As INiShader, valor As Boolean, fo4 As Boolean)
+        If shad Is Nothing Then Return
+        ShaderHelper.SetFlagSF1(shad, If(fo4,
+            CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Cast_Shadows),
+            CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.Cast_Shadows)), valor)
+    End Sub
+
+    Private Shared Function CastShadowsFlagValue(shad As INiShader) As UInteger
+        ' SK Cast_Shadows (1<<9) == FO4 Cast_Shadows (1<<9).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.Cast_Shadows),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Cast_Shadows))
+    End Function
+
+    Private Shared Function HideSecretFlagValue(shad As INiShader) As UInteger
+        ' SK Localmap_Hide_Secret (1<<20) == FO4 Localmap_Hide_Secret (1<<20).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.Localmap_Hide_Secret),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Localmap_Hide_Secret))
+    End Function
+
+    Private Shared Function DecalFlagValue(shad As INiShader) As UInteger
+        ' SK Decal (1<<26) == FO4 Decal (1<<26).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.Decal),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Decal))
+    End Function
+
+    Private Shared Function ZBufferTestFlagValue(shad As INiShader) As UInteger
+        ' SK ZBuffer_Test (1<<31) == FO4 ZBuffer_Test (1<<31).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.ZBuffer_Test),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.ZBuffer_Test))
+    End Function
+
+    Private Shared Function RefractionFlagValue(shad As INiShader) As UInteger
+        ' SK Refraction (1<<15) == FO4 Refraction (1<<15).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.Refraction),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Refraction))
+    End Function
+
+    Private Shared Function SoftEffectFlagValue(shad As INiShader) As UInteger
+        ' SK Soft_Effect (1<<30) == FO4 Soft_Effect (1<<30).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.Soft_Effect),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Soft_Effect))
+    End Function
+
+    Private Shared Function EyeEnvironmentMappingFlagValue(shad As INiShader) As UInteger
+        ' SK Eye_Environment_Mapping (1<<17) == FO4 Eye_Environment_Mapping (1<<17).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags1.Eye_Environment_Mapping),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Eye_Environment_Mapping))
+    End Function
+
+    Private Shared Function HairFlagValue(shad As INiShader) As UInteger
+        ' FO4-only: Fallout4ShaderPropertyFlags1.Hair (1<<18). SK bit 1<<18 = Hair_Soft_Lighting
+        ' (distinto significado), por eso en SK es no-op (0).
+        Return If(IsSkShader(shad), 0UI, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Hair))
+    End Function
+
+    Private Shared Function SkinTintFlagValue(shad As INiShader) As UInteger
+        ' FO4-only: Fallout4ShaderPropertyFlags1.Skin_Tint (1<<21).
+        ' El 0 en SK NO es porque el bit no exista ni signifique otra cosa: SK 1<<21 es
+        ' FaceGen_RGB_Tint, que es el equivalente exacto. Es porque en SK ese bit lo maneja el bloque
+        ' tipo→flag de Save_To_Shader (~:3845), que por diseño es ASSERT-ON: nunca apaga nada. Un
+        ' SetFlagSF1 con Mat.SkinTint=False lo APAGARÍA, y eso es un cambio de comportamiento en SSE
+        ' que este fix no tiene por qué traer. No-op acá ⇒ SSE queda byte-idéntico por construcción.
+        Return If(IsSkShader(shad), 0UI, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Skin_Tint))
+    End Function
+
+    Private Shared Function FacegenFlagValue(shad As INiShader) As UInteger
+        ' FO4-only: Fallout4ShaderPropertyFlags1.Face (1<<10). Mismo criterio que SkinTintFlagValue:
+        ' SK 1<<10 es Facegen_Detail_Map (el equivalente), pero allá lo asserta el bloque tipo→flag.
+        Return If(IsSkShader(shad), 0UI, CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Face))
+    End Function
+
+    Private Shared Function ZBufferWriteFlagValue(shad As INiShader) As UInteger
+        ' SK ZBuffer_Write (1<<0) == FO4 ZBuffer_Write (1<<0).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags2.ZBuffer_Write),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.ZBuffer_Write))
+    End Function
+
+    Private Shared Function NoFadeFlagValue(shad As INiShader) As UInteger
+        ' SK No_Fade (1<<3) == FO4 No_Fade (1<<3).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags2.No_Fade),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.No_Fade))
+    End Function
+
+    Private Shared Function AnisotropicLightingFlagValue(shad As INiShader) As UInteger
+        ' SK Anisotropic_Lighting (1<<21) == FO4 Anisotropic_Lighting (1<<21).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags2.Anisotropic_Lighting),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Anisotropic_Lighting))
+    End Function
+
+    Private Shared Function WeaponBloodFlagValue(shad As INiShader) As UInteger
+        ' SK Weapon_Blood (1<<17) == FO4 Weapon_Blood (1<<17).
+        Return If(IsSkShader(shad),
+                  CUInt(NiflySharp.Enums.SkyrimShaderPropertyFlags2.Weapon_Blood),
+                  CUInt(NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Weapon_Blood))
+    End Function
+
+    Private Sub RecomputeAlphaBlendModeFromFields()
+        Underlying_Material.AlphaBlendMode = ClassifyTuple(_alphaBlendEnabled, _blendFunctionSource, _blendFunctionDest)
+    End Sub
+
+    Private Sub WriteBlendFlagsToAlphaProperty(alp As NiAlphaProperty)
+        alp.Flags.AlphaBlend = _alphaBlendEnabled
+        alp.Flags.SourceBlendMode = _blendFunctionSource
+        alp.Flags.DestinationBlendMode = _blendFunctionDest
+    End Sub
+
+    Friend Sub WriteAlphaPropertyToShape(shap As INiShape, Nif As Nifcontent_Class_Manolo)
+        Dim needAlphaProperty = _alphaBlendEnabled OrElse Underlying_Material.AlphaTest
+        If needAlphaProperty Then
+            Dim createdNew = False
+            If IsNothing(shap.AlphaPropertyRef) OrElse shap.AlphaPropertyRef.Index = -1 Then
+                ' VETO DE FABRICACIÓN — NO BORRARLO. El A/B del corpus lo refuta en una sola corrida:
+                ' DLCCoast.esm/00004639 (DiMA) pasa de 26 a 27 bloques porque su
+                ' shape 'SynthHeadGen2' recibió un NiAlphaProperty. Es EL caso contra el que se midió la ley
+                ' del bake — "DiMA no debe recibir NiAlphaProperty" (paridad CK). Fue el ÚNICO NIF que se
+                ' movió de los 2.877 de FO4 (SSE: 0 de 4.460), o sea que el veto tiene exactamente un
+                ' consumidor real y es load-bearing.
+                ' Y ojo con la auditoría estática: mirar el BGSM que NOMBRA el NIF da AlphaTest=False para
+                ' la cabeza de DiMA. El bake NO usa ese material sino el RESUELTO (cadena TXST→MNAM), que sí
+                ' pide alpha. Medir la fuente equivocada fue lo que hizo creer que este veto era inalcanzable.
+                ' ESTRENAR un NiAlphaProperty que el shape fuente NO traía es una decisión que el material NO
+                ' puede tomar: AlphaTest=True es condición NECESARIA pero no suficiente (10.995 shapes
+                ' horneados por el CK tienen el bloque sin que su material lo dicte, y a la inversa el CK NO
+                ' fabrica salvo bajo su propia regla de dominio).
+                If Me.VetoAlphaPropertyCreation Then Return
+                shap.AlphaPropertyRef = New NiBlockRef(Of NiAlphaProperty) With {.Index = Nif.AddBlock(New NiAlphaProperty)}
+                createdNew = True
+            End If
+            Dim alp = CType(Nif.Blocks(shap.AlphaPropertyRef.Index), NiAlphaProperty)
+            ' REGLA (FO4, bake CK): cuando el shape FUENTE no traia NiAlphaProperty, el CK NO deriva el bloque
+            ' del material: CONSTRUYE uno con SU default y le espeja UNICAMENTE el booleano AlphaTest del
+            ' material. Su base es 0x00EC (AlphaBlend=0, src=SRC_ALPHA, dst=INV_SRC_ALPHA, TestFunc=ALWAYS) mas
+            ' 0x200 si AlphaTest, o sea 0x02EC con threshold=0, ignorando alphaBlend y alphaTestRef del BGSM.
+            ' Medido con Valentine (shape SynthGen2Head1): CK flags=0x02EC threshold=0, nosotros dabamos
+            ' flags=0x12ED threshold=128 (default de NiflySharp + bit del BGSM + AlphaTestRef del BGSM).
+            ' El camino de round-trip (el shape ya tenia NiAlphaProperty) queda intacto: ahi el bloque clonado se
+            ' reescribe desde el material, que salio de ese mismo bloque. Solo FO4; Skyrim no se toca.
+            If createdNew AndAlso Nif.Header.Version.IsFO4 Then
+                alp.Flags.Value = &HECUS
+                alp.Flags.AlphaTest = Underlying_Material.AlphaTest
+                alp.Threshold = 0
+            Else
+                alp.Flags.AlphaTest = Underlying_Material.AlphaTest
+                alp.Threshold = Underlying_Material.AlphaTestRef
+                WriteBlendFlagsToAlphaProperty(alp)
+            End If
+        Else
+            If shap.AlphaPropertyRef IsNot Nothing AndAlso shap.AlphaPropertyRef.Index <> -1 Then
+                Nif.RemoveBlock(shap.AlphaPropertyRef.Index)
+            End If
+        End If
+    End Sub
+    Public Sub Create_From_Shader(Nif As Nifcontent_Class_Manolo, shap As INiShape, shad As BSLightingShaderProperty)
+        If Nif.Valid = False Then Exit Sub
+        EnsureShaderGameType(shad, Nif)
+
+        Dim mat As BGSM
+
+        If Not IsNothing(shad) Then
+
+            mat = New BGSM With {
+                .TwoSided = shad.DoubleSided,
+                .UOffset = shad.UVOffset.U,
+                .VOffset = shad.UVOffset.V,
+                .UScale = shad.UVScale.U,
+                .VScale = shad.UVScale.V,
+                .EmitEnabled = shad.Emissive,
+                .EmittanceColor = NifColor4ToMaterialRgb(shad.EmissiveColor),
+                .EmittanceMult = shad.EmissiveMultiple,
+                .Alpha = shad.Alpha,
+                .EnvironmentMapping = shad.HasEnvironmentMapping,
+                .EnvironmentMappingMaskScale = If(shad.IsTypeEyeEnvironmentMap, shad.EyeCubemapScale, shad.EnvironmentMapScale),
+                .ModelSpaceNormals = shad.ModelSpace,
+                .Facegen = If(IsSkShader(shad), shad.IsTypeFaceTint, (shad.ShaderFlags_F4SPF1 And NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Face) <> 0),
+                .Hair = If(IsSkShader(shad), shad.IsTypeHairTint, (shad.ShaderFlags_F4SPF1 And NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Hair) <> 0),
+                .SkinTint = If(IsSkShader(shad), shad.IsTypeSkinTint, (shad.ShaderFlags_F4SPF1 And NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Skin_Tint) <> 0),
+                .BackLighting = If(IsSkShader(shad), shad.HasBacklight, shad.BacklightPower > 0.0F),
+                .BackLightPower = shad.BacklightPower,
+                .SpecularEnabled = shad.HasSpecular,
+                .SpecularColor = NifColor3ToMaterialRgb(shad.SpecularColor),
+                .SpecularMult = shad.SpecularStrength,
+                .Glowmap = shad.HasGlowmap,
+                .Tree = shad.HasTreeAnim,
+                .SubsurfaceLighting = If(IsSkShader(shad), shad.HasSoftlight, shad.SubsurfaceRolloff > 0.0F),
+                .RimLighting = If(IsSkShader(shad), shad.HasRimlight, shad.RimlightPower < Single.MaxValue),
+                .RimPower = shad.RimlightPower,
+                .GrayscaleToPaletteColor = shad.HasGreyscaleToPaletteColor,
+                .GrayscaleToPaletteScale = shad.GrayscaleToPaletteScale,
+                .FresnelPower = shad.FresnelPower,
+                .HairTintColor = If(shad.IsTypeSkinTint,
+                                    NifColor3ToMaterialRgb(shad.SkinTintColor),
+                                    If(shad.IsTypeHairTint,
+                                        NifColor3ToMaterialRgb(shad.HairTintColor),
+                                        CUInt(&H808080UI))),
+                .Smoothness = If(IsSkShader(shad),
+                                  SseGlossinessToSmoothness(shad.Glossiness),
+                                  shad.Smoothness),
+                .SubsurfaceLightingRolloff = If(IsSkShader(shad), shad.Softlight, shad.SubsurfaceRolloff),
+                .ExternalEmittance = shad.HasExternalEmittance,
+                .EnvironmentMappingEye = shad.HasEyeEnvironmentMapping,
+                .RootMaterialPath = If(shad.RootMaterialName, ""),
+                .ScreenSpaceReflections = shad.UseScreenSpaceReflections,
+                .WetnessControlScreenSpaceReflections = shad.WetnessControl_UseSSR,
+                .RefractionPower = shad.RefractionStrength,
+                .WetnessControlSpecScale = shad.Wetness.SpecScale,
+                .WetnessControlSpecPowerScale = shad.Wetness.SpecPower,
+                .WetnessControlSpecMinvar = shad.Wetness.MinVar,
+                .WetnessControlEnvMapScale = shad.Wetness.EnvMapScale,
+                .WetnessControlFresnelPower = shad.Wetness.FresnelPower,
+                .WetnessControlMetalness = shad.Wetness.Metalness,
+                .CastShadows = ShaderHelper.HasFlagSF1(shad, CastShadowsFlagValue(shad)),
+                .HideSecret = ShaderHelper.HasFlagSF1(shad, HideSecretFlagValue(shad)),
+                .Decal = ShaderHelper.HasFlagSF1(shad, DecalFlagValue(shad)),
+                .DecalNoFade = ShaderHelper.HasFlagSF2(shad, NoFadeFlagValue(shad)),
+                .ZBufferWrite = ShaderHelper.HasFlagSF2(shad, ZBufferWriteFlagValue(shad)),
+                .ZBufferTest = ShaderHelper.HasFlagSF1(shad, ZBufferTestFlagValue(shad)),
+                .Refraction = ShaderHelper.HasFlagSF1(shad, RefractionFlagValue(shad)),
+                .AnisoLighting = ShaderHelper.HasFlagSF2(shad, AnisotropicLightingFlagValue(shad)),
+                .Tessellate = (Not IsSkShader(shad)) AndAlso ((shad.ShaderFlags_F4SPF1 And NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Tessellate) <> 0),
+                .SkewSpecularAlpha = (Not IsSkShader(shad)) AndAlso ((shad.ShaderFlags_F4SPF2 And NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Skew_Specular_Alpha) <> 0)
+            }
+            If Not IsNothing(shad.TextureSetRef) AndAlso shad.TextureSetRef.Index <> -1 Then
+                Dim texset = TryCast(Nif.Blocks(shad.TextureSetRef.Index), BSShaderTextureSet)
+                ReadBgsmTexturesFromTextureSet(mat, texset, IsSkShader(shad), _EnvmapMaskPath)
+            End If
+        Else
+            mat = New BGSM
+        End If
+        mat.Version = DefaultMaterialVersionForNif(Nif)
+        mat.AlphaTest = False
+        mat.AlphaTestRef = 128
+        mat.AlphaBlendMode = AlphaBlendModeType.None
+        Underlying_Material = mat
+        ' Guard: a null shader (NIF without a BSLightingShaderProperty) must not NRE here.
+        ' ShaderType_SK_FO4 is the unified accessor — same backing field as ShaderType in NiObjectNET,
+        ' used consistently with Save_To_Shader.
+        If Not IsNothing(shad) Then
+            _NifShaderType = shad.ShaderType_SK_FO4
+            _NifEyeEnvironmentMapping = ShaderHelper.HasFlagSF1(shad, EyeEnvironmentMappingFlagValue(shad))
+            _skinTintAlpha = shad.SkinTintAlpha
+            _NifGlossiness = shad.Glossiness
+            _NifGlossinessFromShader = True
+        Else
+            _NifShaderType = NiflySharp.Enums.BSLightingShaderType.Default
+            _NifEyeEnvironmentMapping = False
+            _skinTintAlpha = 1.0F
+            _NifGlossiness = 1.0F
+            _NifGlossinessFromShader = False
+        End If
+        ApplyAlphaPropertyFromNif(shap, Nif)
+        ' NO llamar ApplyShaderTypeToBgsm acá: los flags ya vienen FIELES del shader (Facegen/
+        ' SkinTint/Hair/Tree/Glowmap/EnvMapping leídos arriba, incluido .Hair desde el flag F4 y
+        ' .Tree desde HasTreeAnim). La llamada con semántica de asignación PISABA esos flags
+        ' cuando el tipo no era el correspondiente (humanhair01 perdía bHair; 118.996 tree shapes
+        ' perdían bTree) — medido con el probe `typeflags`.
+        ClearDirty()
+    End Sub
+
+    Private Sub ApplyAlphaPropertyFromNif(shap As INiShape, Nif As Nifcontent_Class_Manolo)
+        Dim alp As NiAlphaProperty = Nothing
+        If shap IsNot Nothing AndAlso Not IsNothing(shap.AlphaPropertyRef) AndAlso shap.AlphaPropertyRef.Index <> -1 Then
+            alp = TryCast(Nif.Blocks(shap.AlphaPropertyRef.Index), NiAlphaProperty)
+        End If
+        If alp Is Nothing Then
+            Underlying_Material.AlphaTest = False
+            Underlying_Material.AlphaTestRef = 128
+            _suppressAutoPromotion = True
+            Try
+                _alphaBlendEnabled = False
+                _blendFunctionSource = NiflySharp.Enums.AlphaFunction.SRC_ALPHA
+                _blendFunctionDest = NiflySharp.Enums.AlphaFunction.INV_SRC_ALPHA
+            Finally
+                _suppressAutoPromotion = False
+            End Try
+            Underlying_Material.AlphaBlendMode = AlphaBlendModeType.None
+            Return
+        End If
+        Underlying_Material.AlphaTest = alp.Flags.AlphaTest
+        Underlying_Material.AlphaTestRef = alp.Threshold
+        _suppressAutoPromotion = True
+        Try
+            _alphaBlendEnabled = alp.Flags.AlphaBlend
+            _blendFunctionSource = alp.Flags.SourceBlendMode
+            _blendFunctionDest = alp.Flags.DestinationBlendMode
+        Finally
+            _suppressAutoPromotion = False
+        End Try
+        Underlying_Material.AlphaBlendMode = ClassifyTuple(_alphaBlendEnabled, _blendFunctionSource, _blendFunctionDest)
+    End Sub
+
+    Public Sub Create_From_Shader(Nif As Nifcontent_Class_Manolo, shap As INiShape, shad As BSEffectShaderProperty)
+        If Nif.Valid = False Then Exit Sub
+        EnsureShaderGameType(shad, Nif)
+        Dim mat As BGEM
+        If Not IsNothing(shad) Then
+            mat = New BGEM With {
+            .TwoSided = shad.DoubleSided,
+            .BaseTexture = If(shad.SourceTexture?.Content, String.Empty),
+            .GrayscaleTexture = If(shad.GreyscaleTexture?.Content, String.Empty),
+            .NormalTexture = If(shad.NormalTexture?.Content, String.Empty),
+            .EnvmapMaskTexture = If(shad.EnvMaskTexture?.Content, String.Empty),
+            .EnvmapTexture = If(shad.EnvMapTexture?.Content, String.Empty),
+            .LightingTexture = If(shad.LightingTexture?.Content, String.Empty),
+            .SpecularTexture = If(shad.ReflectanceTexture?.Content, String.Empty),
+            .GlowTexture = If(shad.EmitGradientTexture?.Content, String.Empty),
+            .UOffset = shad.UVOffset.U,
+            .VOffset = shad.UVOffset.V,
+            .UScale = shad.UVScale.U,
+            .VScale = shad.UVScale.V,
+            .EnvironmentMapping = shad.HasEnvironmentMapping,
+            .EnvironmentMappingMaskScale = shad.EnvironmentMapScale,
+            .EmittanceColor = NifColor3ToMaterialRgb(shad.EmittanceColor),
+            .FalloffEnabled = ShaderHelper.HasFlagSF1(shad, ShaderHelper.FalloffFlagValue(shad)),
+            .FalloffColorEnabled = Not IsSkShader(shad) AndAlso (shad.ShaderFlags_F4SPF1 And NiflySharp.Enums.Fallout4ShaderPropertyFlags1.RGB_Falloff) <> 0,
+            .GrayscaleToPaletteColor = shad.HasGreyscaleToPaletteColor,
+            .GrayscaleToPaletteAlpha = shad.HasGreyscaleToPaletteAlpha,
+            .EffectLightingEnabled = (If(IsSkShader(shad),
+                                        (shad.ShaderFlags_SSPF2 And NiflySharp.Enums.SkyrimShaderPropertyFlags2.Effect_Lighting) <> 0,
+                                        (shad.ShaderFlags_F4SPF2 And NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Effect_Lighting) <> 0)),
+            .BaseColor = NifColor4ToMaterialRgb(shad.BaseColor),
+            .BaseColorScale = shad.BaseColorScale,
+            .FalloffStartAngle = shad.FalloffStartAngle,
+            .FalloffStopAngle = shad.FalloffStopAngle,
+            .FalloffStartOpacity = shad.FalloffStartOpacity,
+            .FalloffStopOpacity = shad.FalloffStopOpacity,
+            .LightingInfluence = shad.LightingInfluence / 255.0F,
+            .SoftDepth = shad.SoftFalloffDepth,
+            .Glowmap = shad.HasGlowmap,
+            .EnvmapMinLOD = shad.EnvMapMinLOD,
+            .BloodEnabled = ShaderHelper.HasFlagSF2(shad, WeaponBloodFlagValue(shad)),
+            .SoftEnabled = ShaderHelper.HasFlagSF1(shad, SoftEffectFlagValue(shad)),
+            .Decal = ShaderHelper.HasFlagSF1(shad, DecalFlagValue(shad)),
+            .DecalNoFade = ShaderHelper.HasFlagSF2(shad, NoFadeFlagValue(shad)),
+            .ZBufferWrite = ShaderHelper.HasFlagSF2(shad, ZBufferWriteFlagValue(shad)),
+            .ZBufferTest = ShaderHelper.HasFlagSF1(shad, ZBufferTestFlagValue(shad)),
+            .Refraction = ShaderHelper.HasFlagSF1(shad, RefractionFlagValue(shad))
+                       }
+        Else
+            mat = New BGEM
+        End If
+        ' EL BIT Cast_Shadows NO PUEDE IR EN EL `With`: el BGEM no tiene ese campo. Va al respaldo del
+        ' wrapper, que es de donde lo lee la propiedad cuando el material no es BGSM. Sin leerlo acá, toda
+        ' shape con effect shader queda en False y ninguna proyecta sombra.
+        _castShadowsDelNif = shad IsNot Nothing AndAlso ShaderHelper.HasFlagSF1(shad, CastShadowsFlagValue(shad))
+        mat.Version = DefaultMaterialVersionForNif(Nif)
+        mat.AlphaTest = False
+        mat.AlphaTestRef = 128
+        mat.AlphaBlendMode = AlphaBlendModeType.None
+        If shad IsNot Nothing Then
+            mat.Alpha = shad.BaseColor.A
+        End If
+        Underlying_Material = mat
+        ApplyAlphaPropertyFromNif(shap, Nif)
+        ClearDirty()
+    End Sub
+    Public Sub Save_To_Shader(Nif As Nifcontent_Class_Manolo, shap As INiShape, shad As BSEffectShaderProperty)
+        If Nif.Valid = False Then Exit Sub
+        Dim Mat = DirectCast(Underlying_Material, BGEM)
+        ' SIEMPRE se re-deriva del header del NIF **DESTINO**, no sólo cuando viene en None: el
+        ' único que sabe qué vocabulario de flags corresponde es el archivo donde se está ESCRIBIENDO.
+        ' Si el bloque arrastra un Type viejo — leído de otro NIF, o estampado por EnsureShaderGameType
+        ' durante la LECTURA — ese valor NO puede ganarle al destino: los switch de ShaderHelper caen a
+        ' `_ => false` y el material se escribiría con el idioma equivocado, EN SILENCIO. Cuando el Type
+        ' ya es el correcto (todos los casos vivos hoy) re-derivarlo da el mismo valor: no-op.
+        Dim streamVer = Nif.Header.Version.StreamVersion
+        If streamVer = 155 Then
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.FO76SF
+        ElseIf streamVer >= 130 Then
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.FO4
+        Else
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.SK
+        End If
+        shad.DoubleSided = Mat.TwoSided
+        shad.UVOffset = New TexCoord(Mat.UOffset, Mat.VOffset)
+        shad.UVScale = New TexCoord(Mat.UScale, Mat.VScale)
+        shad.HasEnvironmentMapping = Mat.EnvironmentMapping
+        shad.EnvironmentMapScale = Mat.EnvironmentMappingMaskScale
+        shad.EmittanceColor = MaterialRgbToNifColor3(Mat.EmittanceColor)
+        EnsureNiString4(shad.SourceTexture, Mat.BaseTexture)
+        EnsureNiString4(shad.NormalTexture, Mat.NormalTexture)
+        EnsureNiString4(shad.GreyscaleTexture, Mat.GrayscaleTexture)
+        EnsureNiString4(shad.EnvMapTexture, Mat.EnvmapTexture)
+        EnsureNiString4(shad.EnvMaskTexture, Mat.EnvmapMaskTexture)
+        EnsureNiString4(shad.LightingTexture, Mat.LightingTexture)
+        EnsureNiString4(shad.ReflectanceTexture, Mat.SpecularTexture)
+        EnsureNiString4(shad.EmitGradientTexture, Mat.GlowTexture)
+
+        Dim bcColor = Me.BaseColor
+        shad.BaseColor = New NiflySharp.Structs.Color4(
+            bcColor.R / 255.0F,
+            bcColor.G / 255.0F,
+            bcColor.B / 255.0F,
+            Mat.Alpha)
+        shad.BaseColorScale = Mat.BaseColorScale
+        shad.FalloffStartAngle = Mat.FalloffStartAngle
+        shad.FalloffStopAngle = Mat.FalloffStopAngle
+        shad.FalloffStartOpacity = Mat.FalloffStartOpacity
+        shad.FalloffStopOpacity = Mat.FalloffStopOpacity
+        shad.LightingInfluence = CByte(Math.Min(255, Math.Max(0, CInt(Mat.LightingInfluence * 255.0F))))
+        shad.HasGreyscaleToPaletteAlpha = Mat.GrayscaleToPaletteAlpha
+        shad.HasGreyscaleToPaletteColor = Mat.GrayscaleToPaletteColor
+        If Mat.SoftEnabled Then shad.SoftFalloffDepth = Mat.SoftDepth
+        shad.HasGlowmap = Mat.Glowmap
+        shad.EnvMapMinLOD = Mat.EnvmapMinLOD
+
+        ShaderHelper.SetFlagSF2(shad, WeaponBloodFlagValue(shad), Mat.BloodEnabled)
+        ShaderHelper.SetFlagSF1(shad, SoftEffectFlagValue(shad), Mat.SoftEnabled)
+        ' EL BIT SE ESCRIBE SIEMPRE. Dejarlo "como venia" no borra nada, pero vuelve la propiedad de SOLO
+        ' LECTURA en la practica para BGEM: editarla en el grid no llega al archivo. Escribirlo cierra el
+        ' round-trip — lo que se lee es lo que se escribe.
+        ShaderHelper.SetFlagSF1(shad, CastShadowsFlagValue(shad), Me.CastShadows)
+        ShaderHelper.SetFlagSF1(shad, DecalFlagValue(shad), Mat.Decal)
+        ShaderHelper.SetFlagSF2(shad, NoFadeFlagValue(shad), Mat.DecalNoFade)
+        ShaderHelper.SetFlagSF2(shad, ZBufferWriteFlagValue(shad), Mat.ZBufferWrite)
+        ShaderHelper.SetFlagSF1(shad, ZBufferTestFlagValue(shad), Mat.ZBufferTest)
+        ShaderHelper.SetFlagSF1(shad, RefractionFlagValue(shad), Mat.Refraction)
+        ShaderHelper.SetFlagSF1(shad, ShaderHelper.FalloffFlagValue(shad), Mat.FalloffEnabled)
+
+        If IsSkShader(shad) Then
+            If Mat.EffectLightingEnabled Then
+                shad.ShaderFlags_SSPF2 = shad.ShaderFlags_SSPF2 Or NiflySharp.Enums.SkyrimShaderPropertyFlags2.Effect_Lighting
+            Else
+                shad.ShaderFlags_SSPF2 = shad.ShaderFlags_SSPF2 And Not NiflySharp.Enums.SkyrimShaderPropertyFlags2.Effect_Lighting
+            End If
+        Else
+            If Mat.EffectLightingEnabled Then
+                shad.ShaderFlags_F4SPF2 = shad.ShaderFlags_F4SPF2 Or NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Effect_Lighting
+            Else
+                shad.ShaderFlags_F4SPF2 = shad.ShaderFlags_F4SPF2 And Not NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Effect_Lighting
+            End If
+            If Mat.FalloffColorEnabled Then
+                shad.ShaderFlags_F4SPF1 = shad.ShaderFlags_F4SPF1 Or NiflySharp.Enums.Fallout4ShaderPropertyFlags1.RGB_Falloff
+            Else
+                shad.ShaderFlags_F4SPF1 = shad.ShaderFlags_F4SPF1 And Not NiflySharp.Enums.Fallout4ShaderPropertyFlags1.RGB_Falloff
+            End If
+        End If
+
+        WriteAlphaPropertyToShape(shap, Nif)
+    End Sub
+
+    <Browsable(False)>
+    Public ReadOnly Property ResolvedWetnessControlSpecScale As Single
+        Get
+            Return ResolvedWetness()(0)
+        End Get
+    End Property
+    <Browsable(False)>
+    Public ReadOnly Property ResolvedWetnessControlSpecPowerScale As Single
+        Get
+            Return ResolvedWetness()(1)
+        End Get
+    End Property
+    <Browsable(False)>
+    Public ReadOnly Property ResolvedWetnessControlSpecMinvar As Single
+        Get
+            Return ResolvedWetness()(2)
+        End Get
+    End Property
+    <Browsable(False)>
+    Public ReadOnly Property ResolvedWetnessControlEnvMapScale As Single
+        Get
+            Return ResolvedWetness()(3)
+        End Get
+    End Property
+    <Browsable(False)>
+    Public ReadOnly Property ResolvedWetnessControlFresnelPower As Single
+        Get
+            Return ResolvedWetness()(4)
+        End Get
+    End Property
+    <Browsable(False)>
+    Public ReadOnly Property ResolvedWetnessControlMetalness As Single
+        Get
+            Return ResolvedWetness()(5)
+        End Get
+    End Property
+    Private _resolvedWetnessCache As Single()
+    Private _resolvedWetnessRaw As Single()
+    ' Entradas NO-crudas de la resolución (eligen el template del fallback / la cadena). El cache
+    ' debe invalidarse si cambian, no solo la wetness cruda — si no, queda stale: el valor cacheado
+    ' en el primer render refleja el estado de ESE momento aunque luego cambien flags/root.
+    Private _resolvedWetnessRootPath As String = Nothing
+    Private _resolvedWetnessFacegen As Boolean
+    Private _resolvedWetnessSkinTint As Boolean
+    Private _resolvedWetnessValid As Boolean = False
+
+    Private Function ResolvedWetness() As Single()
+        Dim bgsm = TryCast(Underlying_Material, BGSM)
+        ' No BGSM yet → -1 across the board, uncached: a wrapper can be constructed with the default
+        ' BGEM and have its BGSM assigned later, and that first real read must still resolve.
+        If bgsm Is Nothing Then Return New Single() {-1.0F, -1.0F, -1.0F, -1.0F, -1.0F, -1.0F}
+        Dim raw() As Single = {bgsm.WetnessControlSpecScale, bgsm.WetnessControlSpecPowerScale,
+                               bgsm.WetnessControlSpecMinvar, bgsm.WetnessControlEnvMapScale,
+                               bgsm.WetnessControlFresnelPower, bgsm.WetnessControlMetalness}
+        ' Cache válido solo si TODAS las entradas de ResolveEffectiveWetness coinciden con las
+        ' cacheadas: wetness cruda + RootMaterialPath + Facegen + SkinTint. MEDIDO: keyear sólo por la
+        ' cruda deja el Resolved* stale y produce un falso "material modificado" en WM Revisa_Material
+        ' (live cacheado 0.8 vs recomputado 0.6 con entradas idénticas).
+        If Not _resolvedWetnessValid _
+           OrElse Not SameRawWetness(raw, _resolvedWetnessRaw) _
+           OrElse Not String.Equals(If(bgsm.RootMaterialPath, ""), If(_resolvedWetnessRootPath, ""), StringComparison.OrdinalIgnoreCase) _
+           OrElse bgsm.Facegen <> _resolvedWetnessFacegen _
+           OrElse bgsm.SkinTint <> _resolvedWetnessSkinTint Then
+            _resolvedWetnessCache = ResolveEffectiveWetness(bgsm)
+            _resolvedWetnessRaw = raw
+            _resolvedWetnessRootPath = bgsm.RootMaterialPath
+            _resolvedWetnessFacegen = bgsm.Facegen
+            _resolvedWetnessSkinTint = bgsm.SkinTint
+            _resolvedWetnessValid = True
+        End If
+        Return _resolvedWetnessCache
+    End Function
+    Private Shared Function SameRawWetness(a As Single(), b As Single()) As Boolean
+        If a Is Nothing OrElse b Is Nothing Then Return False
+        For i = 0 To 5
+            If a(i) <> b(i) Then Return False
+        Next
+        Return True
+    End Function
+
+    Private Const DefaultWetTemplate As String = "template/defaultTemplate_wet.bgsm"
+    Private Const SkinWetTemplate As String = "template/SkinTemplate_Wet.bgsm"
+
+    Private Function ResolveEffectiveWetness(bgsm As BGSM) As Single()
+        Const SENTINEL As Single = -1.0F
+        Dim eff() As Single = {bgsm.WetnessControlSpecScale, bgsm.WetnessControlSpecPowerScale, bgsm.WetnessControlSpecMinvar,
+                               bgsm.WetnessControlEnvMapScale, bgsm.WetnessControlFresnelPower, bgsm.WetnessControlMetalness}
+        Dim rootPath = bgsm.RootMaterialPath
+        Dim seen As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        Dim defaultApplied = False
+        Dim depth = 0
+        While depth < 16 AndAlso Array.IndexOf(eff, SENTINEL) >= 0
+            If String.IsNullOrEmpty(rootPath) Then
+                ' Explicit chain ended but fields remain -1 → inherit from the engine template, once.
+                ' CK resuelve materiales de PIEL/CARA (Facegen/SkinTint) desde SkinTemplate_Wet (0.6...),
+                ' los genéricos desde defaultTemplate_wet (0.8...). Las shapes de cabeza ghoul embeben el
+                ' shader con RootMaterialName='' (matPath='') → caen acá; CK las bakea 0.6 (SkinTemplate),
+                ' no 0.8. Las cabezas humanas referencian su .bgsm externo (root=SkinTemplate explícito) y
+                ' nunca llegan a este fallback. Verificado con GhoulMatProbe + el log SHAPEMAT-FINAL
+                ' (root=''). SkinTemplate_Wet a su vez encadena a defaultTemplate_wet para lo que no cubra.
+                If defaultApplied Then Exit While
+                rootPath = If(bgsm.Facegen OrElse bgsm.SkinTint, SkinWetTemplate, DefaultWetTemplate)
+                defaultApplied = True
+            End If
+            Dim key = MaterialsPrefix & CorrectMaterialPath(rootPath).StripPrefix(MaterialsPrefix)
+            If Not seen.Add(key.ToLowerInvariant()) Then Exit While   ' cycle guard (incl. default self-ref)
+            Dim parent = LoadBgsmByKey(key)
+            If parent Is Nothing Then Exit While
+            Dim pv() As Single = {parent.WetnessControlSpecScale, parent.WetnessControlSpecPowerScale, parent.WetnessControlSpecMinvar,
+                                  parent.WetnessControlEnvMapScale, parent.WetnessControlFresnelPower, parent.WetnessControlMetalness}
+            For i = 0 To 5
+                If eff(i) = SENTINEL AndAlso pv(i) <> SENTINEL Then eff(i) = pv(i)
+            Next
+            rootPath = parent.RootMaterialPath
+            depth += 1
+        End While
+        Return eff
+    End Function
+    Private Shared Function LoadBgsmByKey(key As String) As BGSM
+        Try
+            Dim bytes = FilesDictionary_class.GetBytes(key)
+            If bytes Is Nothing OrElse bytes.Length = 0 Then Return Nothing
+            Dim m As New BGSM
+            Using ms As New MemoryStream(bytes)
+                Using rd As New BinaryReader(ms)
+                    m.Deserialize(rd)
+                End Using
+            End Using
+            Return m
+        Catch
+            Return Nothing
+        End Try
+    End Function
+
+    ''' <summary>Vuelca el skin-tone de ESTE material (color + alpha) al shader INLINE de un shape.
+    ''' Único escritor del campo: lo llaman el bake vía <see cref="Save_To_Shader"/> y el export a NIF,
+    ''' que necesita el MISMO gesto sin reescribir el resto del shader. No-op si el material no es de piel.
+    ''' <para>EL GATE DEL TIPO ES DEL CALLER, no de acá. `Skin Tint Color` sólo se SERIALIZA con
+    ''' `Shader Type == 5 (SkinTint)` y `Skin Tint Alpha` sólo en FO4 (nif.xml, BSLightingShaderProperty):
+    ''' escribirlo con otro tipo no rompe nada pero no viaja. Este método no fuerza el tipo — cambiarlo
+    ''' cambiaría el sombreado, que es otra cosa que copiar un color.</para>
+    ''' <para>MISMO problema que la Glossiness (ver NifGlossinessStillMatchesSmoothness). El viaje
+    ''' Color3(float) → bytes (NifColor3ToMaterialRgb) → Color3 (MaterialRgbToNifColor3) es LOSSY:
+    ''' cuantiza a la grilla de 1/255 por canal (0,37 → 0,36862746). NO acumula — MEDIDO: el segundo
+    ''' guardado ya no mueve el valor. Es pérdida de UNA sola vez.
+    ''' Guard: si el Color3 que YA tiene el shader proyecta exactamente a los bytes del material,
+    ''' nadie lo tocó ⇒ no se reescribe y el valor original sobrevive bit a bit. Sólo se toma el atajo con
+    ''' TintColorScale neutro: con escala ≠ 1 lectura y escritura no son inversas y la comparación no valdría.</para>
+    ''' <para>El guard NO puede suprimir un valor derivado: `SkinTintColor` y `HairTintColor` del material
+    ''' son EL MISMO campo del BGSM (ver el getter de SkinTintColor), así que cuando el resolver escribe el
+    ''' tono de piel del actor (ver <c>NpcMaterialResolver</c>) el valor DIFIERE del que trae el shader y el guard
+    ''' no salta. Sólo saltea cuando escribir sería un no-op salvo por la cuantización. Y por eso el
+    ''' HairTintColor de Save_To_Shader se escribe SIEMPRE y no lleva guard: ése es un valor DERIVADO del CLFM
+    ''' del NPC (2 × CLFM, paridad con el CK — verificado byte-exacto: NPC 0x00016F04 → CLFM
+    ''' HairColor12BlackTrue (16,18,18) → NIF horneado (32,36,36)/255). Preservarlo sería el bug.</para></summary>
+    Public Sub WriteSkinTintToShader(shad As BSLightingShaderProperty)
+        If shad Is Nothing Then Return
+        Dim mat = TryCast(Underlying_Material, BGSM)
+        If mat Is Nothing OrElse Not mat.SkinTint Then Return
+        Dim skinTintUntouched As Boolean =
+            Me.TintColorScale = 1.0F AndAlso
+            NifColor3ToMaterialRgb(shad.SkinTintColor) = mat.HairTintColor
+        If Not skinTintUntouched Then shad.SkinTintColor = MaterialRgbToNifColor3(mat.HairTintColor, Me.TintColorScale)
+        shad.SkinTintAlpha = Me.SkinTintAlpha
+    End Sub
+
+    Public Sub Save_To_Shader(Nif As Nifcontent_Class_Manolo, shap As INiShape, shad As BSLightingShaderProperty, Optional shaderType As NiflySharp.Enums.BSLightingShaderType = NiflySharp.Enums.BSLightingShaderType.Default, Optional envmapMaskPath As String = "")
+        If Nif.Valid = False Then Exit Sub
+        Dim Mat = DirectCast(Underlying_Material, BGSM)
+        ' SIEMPRE se re-deriva del header del NIF **DESTINO**, no sólo cuando viene en None: el
+        ' único que sabe qué vocabulario de flags corresponde es el archivo donde se está ESCRIBIENDO.
+        ' Si el bloque arrastra un Type viejo — leído de otro NIF, o estampado por EnsureShaderGameType
+        ' durante la LECTURA — ese valor NO puede ganarle al destino: los switch de ShaderHelper caen a
+        ' `_ => false` y el material se escribiría con el idioma equivocado, EN SILENCIO. Cuando el Type
+        ' ya es el correcto (todos los casos vivos hoy) re-derivarlo da el mismo valor: no-op.
+        Dim streamVer = Nif.Header.Version.StreamVersion
+        If streamVer = 155 Then
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.FO76SF
+        ElseIf streamVer >= 130 Then
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.FO4
+        Else
+            shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.SK
+        End If
+        shad.DoubleSided = Mat.TwoSided
+        shad.UVOffset = New TexCoord(Mat.UOffset, Mat.VOffset)
+        shad.UVScale = New TexCoord(Mat.UScale, Mat.VScale)
+        shad.Emissive = Mat.EmitEnabled
+        shad.EmissiveColor = MaterialRgbToNifColor4(Mat.EmittanceColor, 0.0F)
+        shad.EmissiveMultiple = Mat.EmittanceMult
+        shad.Alpha = Mat.Alpha
+        ' Sin downgrade EnvironmentMap→Default cuando falta la textura: lo refuta vanilla (50.303 shapes
+        ' EnvironmentMap sin textura conservan el tipo — probe `invariantes`). La invariante confirmada
+        ' que SÍ se conserva: EnvironmentMapScale = 1.0 cuando env mapping está OFF (882k shapes).
+        Dim effectiveShaderType = shaderType
+        Dim effectiveEnvMapping = Mat.EnvironmentMapping
+        shad.HasEnvironmentMapping = effectiveEnvMapping
+        If effectiveShaderType = NiflySharp.Enums.BSLightingShaderType.EyeEnvmap Then
+            ' Simétrico a Create (lee EyeCubemapScale para IsTypeEyeEnvironmentMap).
+            shad.EyeCubemapScale = Mat.EnvironmentMappingMaskScale
+        Else
+            shad.EnvironmentMapScale = If(effectiveEnvMapping, Mat.EnvironmentMappingMaskScale, 1.0F)
+        End If
+        ' Ver SmoothnessUnchangedSinceLoad: reconvertir Smoothness→Glossiness cuando el usuario NO tocó
+        ' la Smoothness corrompe el valor (30.0 → 29,999996) y ACUMULA a cada guardado. Si no la tocó, se
+        ' reescribe el crudo del NIF.
+        If IsSkShader(shad) Then
+            shad.Glossiness = If(NifGlossinessStillMatchesSmoothness(), _NifGlossiness, SmoothnessToSseGlossiness(Mat.Smoothness))
+        Else
+            shad.Smoothness = Mat.Smoothness
+        End If
+        ' Rolloff del soft-lighting al campo correcto por juego (simetrico con la lectura en ExtractFromNif):
+        ' SSE lo guarda en Lighting Effect 1 y FO4 en SubsurfaceRolloff. Escribir siempre a SubsurfaceRolloff
+        ' dejaba el valor en un campo que el motor SSE ignora, rompiendo el round-trip.
+        ' ⛔ LA COMPUERTA POR EL FLAG ES SOLO DE FO4. En Skyrim el valor vive en el NIF y el CK lo copia
+        ' VERBATIM, sin mirar el flag Soft_Lighting: medido sobre el FaceGeom vanilla del BSA, fuente y CK traen
+        ' el bit APAGADO y aun asi LightingEffect1 = 0,3; con la compuerta puesta nuestro bake escribia 0 y
+        ' destruia el campo en 14.616 shapes / 3.141 NPCs (97,7 % del corpus SSE).
+        ' Por que no puede haber regresion: con el flag apagado el motor no consume LightingEffect1, asi que el
+        ' valor es INERTE; y con el flag encendido, gatear o no gatear deja pasar el mismo valor.
+        ' FO4 no se toca: alli la compuerta replica una del motor, verificada por RE en los dos binarios.
+        If IsSkShader(shad) Then
+            shad.Softlight = Mat.SubsurfaceLightingRolloff
+        Else
+            shad.SubsurfaceRolloff = If(Mat.SubsurfaceLighting, Mat.SubsurfaceLightingRolloff, 0.0F)
+        End If
+        shad.ModelSpace = Mat.ModelSpaceNormals
+        shad.ShaderType_SK_FO4 = effectiveShaderType
+        ' Convenciones tipo→flag de Skyrim (sweep SSE: ~99-100% en 73.128 shapes
+        ' vanilla): sin su flag el engine SK no aplica el comportamiento del tipo (un SkinTint
+        ' sin FaceGen_RGB_Tint no tintea). Assert-on solamente — nunca se apaga nada. Miembros
+        ' verificados en Bitflags.SkyrimShaderPropertyFlags{1,2}.g.cs. Path FO4 intocado.
+        If shad.Type = NiflySharp.Helpers.ShaderHelper.ShaderGameType.SK Then
+            Select Case effectiveShaderType
+                Case NiflySharp.Enums.BSLightingShaderType.FaceTint
+                    shad.ShaderFlags_SSPF1 = shad.ShaderFlags_SSPF1 Or NiflySharp.Enums.SkyrimShaderPropertyFlags1.Facegen_Detail_Map
+                    shad.ShaderFlags_SSPF2 = shad.ShaderFlags_SSPF2 Or NiflySharp.Enums.SkyrimShaderPropertyFlags2.Soft_Lighting
+                Case NiflySharp.Enums.BSLightingShaderType.SkinTint
+                    shad.ShaderFlags_SSPF1 = shad.ShaderFlags_SSPF1 Or NiflySharp.Enums.SkyrimShaderPropertyFlags1.FaceGen_RGB_Tint
+                Case NiflySharp.Enums.BSLightingShaderType.HairTint
+                    shad.ShaderFlags_SSPF1 = shad.ShaderFlags_SSPF1 Or NiflySharp.Enums.SkyrimShaderPropertyFlags1.Hair_Soft_Lighting
+                Case NiflySharp.Enums.BSLightingShaderType.GlowShader
+                    shad.ShaderFlags_SSPF2 = shad.ShaderFlags_SSPF2 Or NiflySharp.Enums.SkyrimShaderPropertyFlags2.Glow_Map
+                Case NiflySharp.Enums.BSLightingShaderType.EnvironmentMap
+                    shad.ShaderFlags_SSPF1 = shad.ShaderFlags_SSPF1 Or NiflySharp.Enums.SkyrimShaderPropertyFlags1.Environment_Mapping
+                Case NiflySharp.Enums.BSLightingShaderType.EyeEnvmap
+                    shad.ShaderFlags_SSPF1 = shad.ShaderFlags_SSPF1 Or NiflySharp.Enums.SkyrimShaderPropertyFlags1.Eye_Environment_Mapping
+            End Select
+        End If
+        ' TintColorScale sube el ×2 del pelo SSE al dominio FLOAT (el storage BGSM es de bytes, techo 1.0).
+        Dim hairTintNifColor = MaterialRgbToNifColor3(Mat.HairTintColor, Me.TintColorScale)
+        shad.HairTintColor = hairTintNifColor
+        ' El skin-tone tiene UN solo escritor, compartido con el export a NIF: WriteSkinTintToShader.
+        WriteSkinTintToShader(shad)
+        shad.HasBacklight = Mat.BackLighting
+        ' GATE SOLO EN SKYRIM. ⛔ En FO4 el CK **no** gatea el power por el flag (no es simetrico con el
+        ' rolloff): MEDIDO en los DOS binarios — en la transferencia BGSM -> material hay
+        ' EXACTAMENTE DOS compuertas booleanas y ninguna es el backlight (una gatea fSubsurfaceLightingRolloff y
+        ' la otra bWetnessControl_ScreenSpaceReflections). fBackLightPower y fRimPower se copian con un mov
+        ' pelado, sin consultar bBackLighting.
+        ' Alcance vanilla: 171 de los 6616 BGSM del BA2 tienen bBackLighting=False con power > 0 y el motor les
+        ' aplica la transmision igual; ninguno es Facegen, asi que el bake de la cara no cambia por esto.
+        ' En SKYRIM el gate SI corresponde: alli HasBacklight es un flag REAL del NIF, mientras que en FO4 se
+        ' sintetiza con power > 0 al leer.
+        shad.BacklightPower = If(Config_App.Current.Game = Config_App.Game_Enum.Skyrim AndAlso Not Mat.BackLighting,
+                                 0.0F, Mat.BackLightPower)
+        shad.HasSpecular = Mat.SpecularEnabled AndAlso Mat.SpecularMult <> 0.0F
+        shad.SpecularColor = MaterialRgbToNifColor3(Mat.SpecularColor)
+        shad.SpecularStrength = Mat.SpecularMult
+        shad.HasGlowmap = Mat.Glowmap
+        shad.HasTreeAnim = Mat.Tree
+        shad.HasSoftlight = Mat.SubsurfaceLighting
+        shad.HasRimlight = Mat.RimLighting
+        Dim streamVerForRim = Nif.Header.Version.StreamVersion
+        If streamVerForRim >= 130 AndAlso streamVerForRim <= 139 Then
+            shad.RimlightPower = Single.MaxValue
+        Else
+            shad.RimlightPower = Mat.RimPower
+        End If
+        shad.HasGreyscaleToPaletteColor = Mat.GrayscaleToPaletteColor
+        shad.GrayscaleToPaletteScale = Mat.GrayscaleToPaletteScale
+        shad.FresnelPower = Mat.FresnelPower
+
+        shad.HasExternalEmittance = Mat.ExternalEmittance
+        shad.HasEyeEnvironmentMapping = Mat.EnvironmentMappingEye
+        shad.RootMaterialName = Mat.RootMaterialPath
+        shad.UseScreenSpaceReflections = Mat.ScreenSpaceReflections
+        shad.WetnessControl_UseSSR = Mat.WetnessControlScreenSpaceReflections
+        shad.RefractionStrength = Mat.RefractionPower
+        Dim wet = shad.Wetness
+        wet.SpecScale = Me.ResolvedWetnessControlSpecScale
+        wet.SpecPower = Me.ResolvedWetnessControlSpecPowerScale
+        wet.MinVar = Me.ResolvedWetnessControlSpecMinvar
+        wet.EnvMapScale = Me.ResolvedWetnessControlEnvMapScale
+        wet.FresnelPower = Me.ResolvedWetnessControlFresnelPower
+        wet.Metalness = Me.ResolvedWetnessControlMetalness
+        shad.Wetness = wet
+
+        ' P4: game-aware. For FO4 (the byte-faithful FaceGen path) these helpers return the same
+        ' Fallout4ShaderPropertyFlags* values as before, so the FO4 output is byte-identical. For SK
+        ' they return the homonymous SK bit, or 0 (safe no-op in SetFlagSF*) when SK has no equivalent
+        ' (Hair is FO4-only).
+        ShaderHelper.SetFlagSF1(shad, CastShadowsFlagValue(shad), Mat.CastShadows)
+        ShaderHelper.SetFlagSF1(shad, HideSecretFlagValue(shad), Mat.HideSecret)
+        ShaderHelper.SetFlagSF1(shad, DecalFlagValue(shad), Mat.Decal)
+        ShaderHelper.SetFlagSF2(shad, NoFadeFlagValue(shad), Mat.DecalNoFade)
+        ShaderHelper.SetFlagSF2(shad, ZBufferWriteFlagValue(shad), Mat.ZBufferWrite)
+        ShaderHelper.SetFlagSF1(shad, ZBufferTestFlagValue(shad), Mat.ZBufferTest)
+        ShaderHelper.SetFlagSF1(shad, RefractionFlagValue(shad), Mat.Refraction)
+        ShaderHelper.SetFlagSF2(shad, AnisotropicLightingFlagValue(shad), Mat.AnisoLighting)
+        ShaderHelper.SetFlagSF1(shad, HairFlagValue(shad), Mat.Hair)
+        ' Skin_Tint y Face CIERRAN la asimetría lector/escritor: Create_From_Shader los LEE del flag
+        ' F4SPF1 (~:3349/:3351) y hasta acá nadie los ESCRIBÍA, así que el bit sobrevivía del bloque
+        ' destino en vez de salir del material. Con el shape todavía nombrando su .bgsm eso era inerte
+        ' (el motor reemplaza el material entero, 0x142169BB0); pero en cuanto se corta el nombre —bake de
+        ' FaceGen y export a NIF, los dos— el shader inline pasa a ser LEY y el bit rancio manda.
+        ' Se veía con una fuente MODDEADA que delega en su BGSM: su NIF trae Skin_Tint apagado inline
+        ' (al autor no le importa, el BGSM lo pisa), el BGSM trae bSkinTint=True, y el shape exportado
+        ' salía con ShaderType=SkinTint y el flag en 0 ⇒ el cuerpo no se tintaba mientras manos y nuca
+        ' —mallas VANILLA, que sí traen el bit inline— sí. Por eso el corpus vanilla nunca lo exhibió:
+        ' ahí el valor rancio COINCIDE con el correcto.
+        ' Son los 2 únicos huecos: de los 5 bools que derivan el ShaderType horneado (Glowmap, Facegen,
+        ' SkinTint, Hair, EnvironmentMapping), Glowmap/EnvMapping viajan por accessor propio de NiflySharp
+        ' y Hair ya tenía su helper; estos dos no tenían ninguno de los dos y quedaron afuera.
+        ShaderHelper.SetFlagSF1(shad, SkinTintFlagValue(shad), Mat.SkinTint)
+        ShaderHelper.SetFlagSF1(shad, FacegenFlagValue(shad), Mat.Facegen)
+        ShaderHelper.SetFlagSF1(shad, EyeEnvironmentMappingFlagValue(shad), Mat.EnvironmentMappingEye)
+
+        If Not IsSkShader(shad) Then
+            If Mat.Tessellate Then
+                shad.ShaderFlags_F4SPF1 = shad.ShaderFlags_F4SPF1 Or NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Tessellate
+            Else
+                shad.ShaderFlags_F4SPF1 = shad.ShaderFlags_F4SPF1 And Not NiflySharp.Enums.Fallout4ShaderPropertyFlags1.Tessellate
+            End If
+            ' F4SPF2 Alpha_Test: NO espejar acá Mat.AlphaTest. Está MEDIDO que este bit NO es función del
+            ' material — hay ~11.000 shapes con NiAlphaProperty y SIN el bit, y en todo el juego + DLC el CK
+            ' lo pone en UNA sola shape. Espejarlo incondicionalmente lo pone en 3465 shapes donde el CK no
+            ' lo pone.
+            ' El árbitro real es el flag de record ACBS\Diffuse Alpha Test, pero eso NO se decide acá: la lib
+            ' sólo TRANSPORTA el HECHO del record vía NpcDiffuseAlphaTest. False (el default) = bit limpio,
+            ' que es el comportamiento de todo consumidor que no sea el bake de FO4.
+            ' Ley completa y evidencia: 40-bake-leyes-fo4.md §8.
+            If Me.NpcDiffuseAlphaTest Then
+                shad.ShaderFlags_F4SPF2 = shad.ShaderFlags_F4SPF2 Or NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Alpha_Test
+            Else
+                shad.ShaderFlags_F4SPF2 = shad.ShaderFlags_F4SPF2 And Not NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Alpha_Test
+            End If
+            If Mat.SkewSpecularAlpha Then
+                shad.ShaderFlags_F4SPF2 = shad.ShaderFlags_F4SPF2 Or NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Skew_Specular_Alpha
+            Else
+                shad.ShaderFlags_F4SPF2 = shad.ShaderFlags_F4SPF2 And Not NiflySharp.Enums.Fallout4ShaderPropertyFlags2.Skew_Specular_Alpha
+            End If
+        End If
+        If IsNothing(shad.TextureSetRef) OrElse shad.TextureSetRef.Index = -1 Then
+            Dim texset1 = New BSShaderTextureSet
+            shad.TextureSetRef = New NiBlockRef(Of BSShaderTextureSet) With {.Index = Nif.AddBlock(texset1)}
+            texset1.Textures = New List(Of NiString4)
+        End If
+
+        Dim texset = CType(Nif.Blocks(shad.TextureSetRef.Index), BSShaderTextureSet)
+        WriteBgsmTexturesToTextureSet(Mat, texset, IsSkShader(shad), envmapMaskPath)
+        WriteAlphaPropertyToShape(shap, Nif)
+    End Sub
+    ''' <summary>
+    ''' Sync a shader's NiString4 texture slot with a target content string. If the
+    ''' slot is null (typical for in-memory cloned shaders that never went through
+    ''' BeforeSync), allocate a new NiString4; otherwise just update its Content.
+    ''' Used to deduplicate the 8 identical IsNothing/New/Else/Content blocks in
+    ''' Save_To_Shader(BGEM) for SourceTexture, NormalTexture, GreyscaleTexture,
+    ''' EnvMapTexture, EnvMaskTexture, LightingTexture, ReflectanceTexture and
+    ''' EmitGradientTexture.
+    ''' </summary>
+    Private Shared Sub EnsureNiString4(ByRef target As NiString4, content As String)
+        If target Is Nothing Then
+            target = New NiString4(content)
+        Else
+            target.Content = content
+        End If
+    End Sub
+
+    Private Shared Sub EnsureShaderTextureSetSlots(texset As BSShaderTextureSet)
+        If IsNothing(texset) Then Exit Sub
+
+        If IsNothing(texset.Textures) Then
+            texset.Textures = New List(Of NiString4)
+        End If
+
+        While texset.Textures.Count < 8
+            texset.Textures.Add(New NiString4 With {.Content = ""})
+        End While
+
+        For i As Integer = 0 To 7
+            If IsNothing(texset.Textures(i)) Then
+                texset.Textures(i) = New NiString4 With {.Content = ""}
+            ElseIf IsNothing(texset.Textures(i).Content) Then
+                texset.Textures(i).Content = ""
+            End If
+        Next
+    End Sub
+
+    Private Const textset_dDiffuseTexture As Integer = 0
+    Private Const textset_NormalTexture As Integer = 1
+    Private Const textset_GlowTexture As Integer = 2
+    Private Const textset_DisplacementTexture As Integer = 3
+    Private Const textset_EnvmapTexture As Integer = 4
+    Private Const textset_FlowTexture As Integer = 5
+    Private Const textset_LightingTexture As Integer = 6
+    Private Const textset_SmoothSpecTextureAs As Integer = 7
+    ''' <summary>⛔ El parámetro NO es `isSSE`, y el nombre importa: lo que decide NO es
+    ''' "¿el archivo es SSE?" sino "¿este shader habla el vocabulario de SKYRIM?" — verdadero para
+    ''' Oldrim (stream 83) Y para SSE (stream 100). El llamador (único) pasa `IsSkShader(shad)`.
+    ''' Con el eje equivocado, una malla de Oldrim se rutea con slots de Fallout 4: el `_sk` cae en
+    ''' GlowTexture, el detail en GreyscaleTexture y el slot 6 (facetint) no se leía nunca. MEDIDO
+    ''' con `Tools\SkFlagAxisProbe`. Ver [[31-sse-nif-le-stream83-eje-equivocado]].</summary>
+    Private Shared Sub ReadBgsmTexturesFromTextureSet(mat As BGSM, texset As BSShaderTextureSet, isSkyrim As Boolean, ByRef envmapMaskPath As String)
+        If IsNothing(mat) OrElse IsNothing(texset) Then Exit Sub
+
+        EnsureShaderTextureSetSlots(texset)
+
+        mat.DiffuseTexture = texset.Textures(textset_dDiffuseTexture).Content
+        mat.NormalTexture = texset.Textures(textset_NormalTexture).Content
+        ' Slot 3: FO4 = Greyscale palette (BodySlide GLMaterial.cpp:70, OutfitProject.cpp:2440, fo4_default.frag:15).
+        ' SSE legacy kept on DisplacementTexture until evidence says otherwise.
+        If isSkyrim Then
+            mat.DisplacementTexture = texset.Textures(textset_DisplacementTexture).Content
+        Else
+            mat.GreyscaleTexture = texset.Textures(textset_DisplacementTexture).Content
+        End If
+        mat.EnvmapTexture = texset.Textures(textset_EnvmapTexture).Content
+        ' Slot 5: FO4 = EnvMask (lives only in NIF texture set, not in BGSM binary).
+        ' SSE legacy kept on FlowTexture.
+        If isSkyrim Then
+            mat.FlowTexture = texset.Textures(textset_FlowTexture).Content
+        Else
+            envmapMaskPath = texset.Textures(textset_FlowTexture).Content
+        End If
+        mat.SmoothSpecTexture = texset.Textures(textset_SmoothSpecTextureAs).Content
+
+        ' Slot 2: glow OR lightmask/subsurface (SSE dual-purpose). FaceTint (technique 4) does subsurface
+        ' UNCONDITIONALLY in the engine -- the facegen PS has NO Soft_Lighting gate (verified
+        ' sse_facegen_skin.asm) -- so include Facegen: the _sk lands on LightingTexture even when the
+        ' head's Soft_Lighting flag is not set (it often isn't).
+        Dim slot2 = texset.Textures(textset_GlowTexture).Content
+        If isSkyrim AndAlso Not mat.Glowmap AndAlso (mat.SubsurfaceLighting OrElse mat.RimLighting OrElse mat.Facegen) Then
+            mat.LightingTexture = slot2
+            mat.GlowTexture = ""
+        Else
+            mat.GlowTexture = slot2
+            ' Slot 6: FO4 has no sampler here; BGSM.LightingTexture is the 8th binary string,
+            ' not slot 6. Do not cross-assign. SSE dual-purpose handled below.
+        End If
+
+        ' Slot 6 (SSE dual-purpose): lightmask OR TINTMASK. For a FaceTint head (Facegen), slot 6 is the
+        ' facegen TINT MASK (the baked facetint _d) — the engine's FaceTint technique samples it over the
+        ' diffuse. It must land on its OWN field (InnerLayerTexture), NOT LightingTexture, because slot 2's
+        ' subsurface (_sk) already occupies LightingTexture — otherwise the facetint is lost/clobbered (WM
+        ' dropped it, leaving the head without its tint). Game-gated (SSE) + facegen-gated. FO4: untouched.
+        If isSkyrim Then
+            If mat.Facegen Then
+                mat.InnerLayerTexture = texset.Textures(textset_LightingTexture).Content
+            ElseIf String.IsNullOrEmpty(mat.LightingTexture) Then
+                mat.LightingTexture = texset.Textures(textset_LightingTexture).Content
+            End If
+        End If
+    End Sub
+
+    Private Shared Sub WriteBgsmTexturesToTextureSet(mat As BGSM, texset As BSShaderTextureSet, isSkyrim As Boolean, envmapMaskPath As String)
+        If IsNothing(mat) OrElse IsNothing(texset) Then Exit Sub
+
+        EnsureShaderTextureSetSlots(texset)
+
+        texset.Textures(textset_dDiffuseTexture).Content = mat.DiffuseTexture
+        texset.Textures(textset_NormalTexture).Content = mat.NormalTexture
+        ' Slot 3: FO4 = Greyscale palette (BodySlide GLMaterial.cpp:70, OutfitProject.cpp:2440, fo4_default.frag:15).
+        ' SSE legacy kept on DisplacementTexture until evidence says otherwise.
+        If isSkyrim Then
+            texset.Textures(textset_DisplacementTexture).Content = mat.DisplacementTexture
+        Else
+            texset.Textures(textset_DisplacementTexture).Content = mat.GreyscaleTexture
+        End If
+        texset.Textures(textset_EnvmapTexture).Content = mat.EnvmapTexture
+        ' Slot 5: FO4 = EnvMask (runtime path, no BGSM binary field).
+        ' SSE legacy writes FlowTexture here.
+        If isSkyrim Then
+            texset.Textures(textset_FlowTexture).Content = mat.FlowTexture
+        Else
+            texset.Textures(textset_FlowTexture).Content = If(envmapMaskPath, "")
+        End If
+        texset.Textures(textset_SmoothSpecTextureAs).Content = mat.SmoothSpecTexture
+
+        ' Slot 2/6: glow vs lightmask/subsurface remapping (SSE dual-purpose). Mirror the read: facegen
+        ' ignores the Soft_Lighting flag (engine does subsurface unconditionally for technique 4).
+        If isSkyrim AndAlso Not mat.Glowmap AndAlso (mat.SubsurfaceLighting OrElse mat.RimLighting OrElse mat.Facegen) Then
+            texset.Textures(textset_GlowTexture).Content = mat.LightingTexture
+            ' Slot 6: a FaceTint head keeps its TINT MASK (facetint) from InnerLayerTexture; else clear (the
+            ' _sk subsurface lives on slot 2 via LightingTexture). Mirror of the read. Game+facegen gated.
+            texset.Textures(textset_LightingTexture).Content = If(mat.Facegen, mat.InnerLayerTexture, "")
+        Else
+            texset.Textures(textset_GlowTexture).Content = mat.GlowTexture
+            ' Slot 6: SSE writes LightingTexture; FO4 has no sampler here, so we
+            ' clear slot 6 explicitly. Without this, reusing a texset from a SSE
+            ' source NIF on a FO4 save would leave stale data behind.
+            If isSkyrim Then
+                texset.Textures(textset_LightingTexture).Content = mat.LightingTexture
+            Else
+                texset.Textures(textset_LightingTexture).Content = ""
+            End If
+        End If
+
+    End Sub
+    Public Sub Deserialize(Memory As Byte(), type As Type, shap As INiShape, Nif As Nifcontent_Class_Manolo)
+        ' LA SIEMBRA DEL BIT VA PRIMERO, ANTES DE TODO `Exit Sub`/`Return` DE ESTE METODO.
+        ' Este dato NO viene del payload del material: viene del SHADER DEL NIF. Ponerlo despues de un
+        ' early-return lo convierte en un LECTOR CON GUARDA contra un ESCRITOR SIN GUARDA
+        ' (`Save_To_Shader` escribe el bit SIEMPRE), y esa asimetria no deja el valor viejo: lo APAGA.
+        ' Los dos caminos concretos que lo saltean:
+        '   1. `Memory.Length = 0` — material presente pero vacio.
+        '   2. el guard de payload JSON de mas abajo: los 5 BGEM vanilla de `Fallout4 - Startup.ba2`
+        '      estan guardados como texto JSON. Entraban al guard, salian por su `Return` con
+        '      `_castShadowsDelNif` en su default False, y el export de escena —que en FO4 transcribe
+        '      TODA shape— les borraba el bit 9 que el NIF traia encendido.
+        ' Es la misma clase de defecto que este archivo ya documenta para los tres campos de alpha,
+        ' vuelta a aparecer por otra puerta. Ver 00-reglas-paridad-canonica-como-no-cagarla.
+        Dim shadCast = Nif?.GetShader(shap)
+        If shadCast IsNot Nothing Then
+            _castShadowsDelNif = ShaderHelper.HasFlagSF1(shadCast, CastShadowsFlagValue(shadCast))
+            ' MISMA REGLA QUE EL BIT DE ARRIBA, Y POR LA MISMA RAZON: este dato sale del SHADER DEL NIF,
+            ' no del payload, asi que va ANTES de todo early-return. El motor nunca lo pisa desde el
+            ' material (ver el doc de _NifEyeEnvironmentMapping), o sea que el NIF es su unica sede.
+            _NifEyeEnvironmentMapping = ShaderHelper.HasFlagSF1(shadCast, EyeEnvironmentMappingFlagValue(shadCast))
+        End If
+        ' Se llego aca ⇒ el property NOMBRA un archivo de material, que es exactamente el disparador de
+        ' FUN_14216EFB0. Va antes de los early-returns por lo mismo: un .bgem guardado como JSON o un
+        ' archivo vacio son igual de "material aplicado" para el motor.
+        _MaterialFileApplied = True
+        If Memory.Length = 0 Then Exit Sub
+        ' P5 — JSON payload guard. A handful of vanilla materials (5 BGEM in Fallout4 - Startup.ba2)
+        ' are stored as JSON text, not the binary BGSM/BGEM layout. MaterialLib's binary Deserialize
+        ' would throw on them. If the first non-whitespace byte is '{', degrade with grace: leave a
+        ' fresh default instance of the requested type and return cleanly (no throw). The three alpha
+        ' fields keep their constructor defaults; the caller's ClearDirty (Deserialize(Diccionario))
+        ' still runs.
+        Dim firstByteIdx = 0
+        While firstByteIdx < Memory.Length AndAlso (Memory(firstByteIdx) = AscW(" "c) OrElse Memory(firstByteIdx) = AscW(vbTab) OrElse Memory(firstByteIdx) = AscW(vbCr) OrElse Memory(firstByteIdx) = AscW(vbLf))
+            firstByteIdx += 1
+        End While
+        If firstByteIdx < Memory.Length AndAlso Memory(firstByteIdx) = AscW("{"c) Then
+            Select Case type
+                Case GetType(BGSM)
+                    Underlying_Material = New BGSM
+                Case GetType(BGEM)
+                    Underlying_Material = NewBgemNormalized()
+                Case Else
+                    Throw New Exception("Unsupported type in Deserialize.")
+            End Select
+            Return
+        End If
+        ' Step 1: seed the three independent alpha fields from the NIF's NiAlphaProperty.
+        ' Required so the Unknown branch below can preserve the NIF state (BGSM Unknown can't
+        ' carry the alpha state independently — the byte tuple is hardcoded to (0,6,7) by ME).
+        ApplyAlphaPropertyFromNif(shap, Nif)
+        ' (El bit Cast_Shadows se sembro AL TOPE del metodo, antes de los early-returns: ver el bloque
+        ' de arriba. Cuando el shader nombra un .bgem/.bgsm, GetRelatedMaterial llama ACA y NUNCA a
+        ' Create_From_Shader, asi que sembrarlo solo alla no alcanzaba; y el .bgem no tiene el campo,
+        ' con lo cual el bit del NIF es su UNICA sede.)
+        ' Step 2: deserialize the BGSM/BGEM payload. Reassigns Underlying_Material — anything
+        ' Step 1 wrote into Underlying_Material (AlphaTest, AlphaBlendMode, etc.) is discarded;
+        ' only the three private backing fields survive.
+        Using ms As New MemoryStream(Memory)
+            Using reader As New BinaryReader(ms)
+                Select Case type
+                    Case GetType(BGSM)
+                        Underlying_Material = New BGSM
+                    Case GetType(BGEM)
+                        Underlying_Material = New BGEM
+                    Case Else
+                        Throw New Exception("Unsupported type in Deserialize.")
+                End Select
+                Underlying_Material.Deserialize(reader)
+                reader.Close()
+            End Using
+            ms.Close()
+        End Using
+        ' Step 3: apply the canonical-vs-Unknown rule:
+        '   - Canonical (None/Standard/Additive/Multiplicative): BGSM wins. Overwrite the three
+        '     fields with the canonical tuple (discards what Step 1 read from the NIF).
+        '   - Unknown: BGSM serializer hardcodes (0,6,7) and can't carry the actual state, so
+        '     the NIF wins. Leave the three fields as Step 1 set them (or as a prior caller did).
+        '     Round-trip preservation: Underlying_Material.AlphaBlendMode stays Unknown, so a
+        '     subsequent Save round-trips the BGSM disk byte tuple verbatim.
+        Dim mode = Underlying_Material.AlphaBlendMode
+        If mode <> AlphaBlendModeType.Unknown Then
+            Dim t = CanonicalTuple(mode)
+            _suppressAutoPromotion = True
+            Try
+                _alphaBlendEnabled = t.Enabled
+                _blendFunctionSource = t.Src
+                _blendFunctionDest = t.Dst
+            Finally
+                _suppressAutoPromotion = False
+            End Try
+        End If
+        If type Is GetType(BGSM) Then
+            ' Nif/shap pueden venir Nothing cuando se carga un material SUELTO sin NIF asociado
+            ' (p.ej. el preview de paleta greyscale del editor MSWP, que sólo necesita los campos
+            ' de textura del .bgsm). Sin NIF no hay shader inline que preservar → saltar el bloque.
+            ' Antes, Nif.GetShader(Nothing) lanzaba NullReferenceException, que el Catch de
+            ' TryLoadMaterialFromDictionary tragaba devolviendo Nothing (= "no palette").
+            If _NifShaderType = NiflySharp.Enums.BSLightingShaderType.Default AndAlso Nif IsNot Nothing AndAlso shap IsNot Nothing Then
+                ' Desacoplado: el tipo NO se deriva de los flags del .bgsm (el .bgsm no lleva
+                ' tipo). Se preserva el tipo real del shader inline del NIF. Tipo y flags son
+                ' ejes ortogonales.
+                Dim bslsp = TryCast(Nif.GetShader(shap), BSLightingShaderProperty)
+                If bslsp IsNot Nothing Then _NifShaderType = bslsp.ShaderType_SK_FO4
+            End If
+        End If
+        ' NOTE: ClearDirty() is NOT called here. The single snapshot is taken by the caller
+        ' Deserialize(Diccionario,...) AFTER it loads the sidecar, so the sidecar-sourced
+        ' _EnvmapMaskPath/flow/lighting state is part of the clean baseline (was a double
+        ' ClearDirty before). Direct callers of this byte overload would need to ClearDirty
+        ' themselves — but no external caller uses it (all go through the Diccionario overload).
+    End Sub
+
+    Public Sub Deserialize(Diccionario As String, type As Type, shap As INiShape, Nif As Nifcontent_Class_Manolo)
+        Deserialize(FilesDictionary_class.GetBytes(Diccionario), type, shap, Nif)
+        ResolveSidecarJson(Diccionario, type)
+        ' Fresh load (including sidecar) → clean state.
+        ClearDirty()
+    End Sub
+
+    ''' <summary>Byte-source overload that mirrors <see cref="Deserialize(String, Type, INiShape, Nifcontent_Class_Manolo)"/>
+    ''' exactly: deserialize from the already-fetched <paramref name="memory"/> bytes, then resolve the
+    ''' `&lt;file&gt;.bgsm.json` / `.bgem.json` sidecar via <paramref name="diccionarioForSidecar"/>, then
+    ''' ClearDirty. Lets a caller that has already located the dictionary entry pass the bytes directly
+    ''' (avoiding a redundant dictionary lookup) without dropping the sidecar. The extra String parameter
+    ''' disambiguates this from the <c>(Byte(), Type, …)</c> overload.</summary>
+    Public Sub Deserialize(memory As Byte(), diccionarioForSidecar As String, type As Type, shap As INiShape, Nif As Nifcontent_Class_Manolo)
+        Deserialize(memory, type, shap, Nif)
+        ResolveSidecarJson(diccionarioForSidecar, type)
+        ' Fresh load (including sidecar) → clean state.
+        ClearDirty()
+    End Sub
+
+    ''' <summary>Resolve the `&lt;file&gt;.bgsm.json` (or `.bgem.json`) sidecar that lives next to the
+    ''' material, resolvable via FilesDictionary the same way (loose or BA2/BSA). Carries fields the
+    ''' binary BGSM/BGEM cannot persist — today: envmapMaskTexture for BGSM, plus the Skyrim-container
+    ''' flow/lighting textures. Missing or invalid sidecar is silent (regla Q3=a): _EnvmapMaskPath stays "".
+    ''' Extracted verbatim from the Diccionario overload so both byte and string entry points share it.</summary>
+    Private Sub ResolveSidecarJson(diccionario As String, type As Type)
+        Try
+            Dim sidecarKey = diccionario & ".json"
+            Dim sidecarBytes = FilesDictionary_class.GetBytes(sidecarKey)
+            If sidecarBytes IsNot Nothing AndAlso sidecarBytes.Length > 0 Then
+                Try
+                    Using doc = JsonDocument.Parse(sidecarBytes, New JsonDocumentOptions With {.CommentHandling = JsonCommentHandling.Skip, .AllowTrailingCommas = True})
+                        Dim root = doc.RootElement
+                        If type Is GetType(BGSM) Then
+                            Dim envmask As JsonElement = Nothing
+                            If root.TryGetProperty("envmapMaskTexture", envmask) AndAlso envmask.ValueKind = JsonValueKind.String Then
+                                _EnvmapMaskPath = If(envmask.GetString(), "")
+                            End If
+                            ' Skyrim container (option (b)): the v2 binary has no slot for the SSE
+                            ' flow (slot 5) / lighting (slot 6) textures, so they live in the sidecar.
+                            ' Only present when non-empty; absent key leaves the field as deserialized.
+                            Dim bgsm = TryCast(Underlying_Material, BGSM)
+                            If bgsm IsNot Nothing Then
+                                Dim flow As JsonElement = Nothing
+                                If root.TryGetProperty("flowTexture", flow) AndAlso flow.ValueKind = JsonValueKind.String Then
+                                    bgsm.FlowTexture = If(flow.GetString(), "")
+                                End If
+                                Dim lighting As JsonElement = Nothing
+                                If root.TryGetProperty("lightingTexture", lighting) AndAlso lighting.ValueKind = JsonValueKind.String Then
+                                    bgsm.LightingTexture = If(lighting.GetString(), "")
+                                End If
+                            End If
+                        End If
+                    End Using
+                Catch jsonEx As Exception
+                    ' Q3=a: ignore invalid JSON silently.
+                End Try
+            End If
+        Catch ex As Exception
+            ' Q3=a: any failure (read, dictionary miss, etc.) is silent.
+        End Try
+    End Sub
+
+    ''' <summary>Serializa un material .bgsm/.bgem al stream que abrió <c>EscrituraEnElLugar</c>, SIN
+    ''' cerrarlo. ⛔ ESTA ES LA UNICA CASA DE ESTA LEY: vive acá, en la librería base, porque la usan los
+    ''' DOS caminos que escriben materiales — el guardado del editor (<see cref="Save_To_Bgsm"/> /
+    ''' <see cref="Save_To_Bgem"/>, acá al lado) y el clone de Wardrobe Manager
+    ''' (<c>Clone_Materials_class.CommitMaterialJobs</c>, que no puede tener la suya porque entonces
+    ''' habría dos). WM referencia esta librería; al revés no se puede.
+    ''' <para>⛔ POR QUÉ NO SE LLAMA A <c>BaseMaterialFile.Save(FileStream)</c>, que sería lo obvio. Ese
+    ''' método es de MaterialLib (árbol de un tercero, <c>Material-Editor-master</c>) y hace:</para>
+    ''' <code>using BinaryWriter writer = new(file);   // BaseMaterialFile.cs:312 — sin leaveOpen</code>
+    ''' <para>o sea CIERRA el FileStream que no es suyo. Medido: después de <c>material.Save(fs)</c>,
+    ''' <c>fs.CanWrite = False</c>. Es el mismo defecto que se llevó puesta la app en
+    ''' <c>OSD_Class.Save_As</c>. Con la guarda del contrato en <c>EscribirNucleo</c> (que exige que el
+    ''' cuerpo escriba y NO cierre) pasaría a tirar en CADA guardado de material.</para>
+    ''' <para>⛔ NO se arregla en MaterialLib: es un tercero, y actualizarlo mueve las citas de todo el
+    ''' que lo referencia. Se entra por <c>Serialize(BinaryWriter)</c>, que es público y es exactamente lo
+    ''' que <c>Save</c> hace adentro — sin el <c>using</c> que cierra.</para>
+    ''' <para>⛔ SEGUNDO DEFECTO QUE ESTO CIERRA: <c>Save</c> devuelve <c>Boolean</c> y se traga la
+    ''' excepción (<c>catch { return false; }</c>, BaseMaterialFile.cs:310-323), y los llamadores
+    ''' DESCARTABAN ese retorno — una serialización fallida dejaba el destino truncado y reportaba éxito.
+    ''' Llamando a <c>Serialize</c> derecho, la excepción sale y la ley de escritura hace lo suyo. Es la
+    ''' misma razón por la que <c>NifContent_Class.Save_As_Manolo</c> mira el código de retorno ADENTRO
+    ''' del cuerpo.</para></summary>
+    Public Shared Sub SerializarMaterial(material As BaseMaterialFile, fs As Stream)
+        If material Is Nothing Then Throw New ArgumentNullException(NameOf(material))
+        If fs Is Nothing Then Throw New ArgumentNullException(NameOf(fs))
+        ' `UTF8Encoding(False, True)` es EXACTAMENTE lo que construye `New BinaryWriter(stream)` de un
+        ' parámetro — que es lo que usaba `Save` —, así que los bytes emitidos no se mueven. NO se pone
+        ' `Encoding.UTF8`: ése lleva preámbulo BOM y fallback de reemplazo en vez de tirar, o sea otra
+        ' política ante un string inválido.
+        Using w As New BinaryWriter(fs, New System.Text.UTF8Encoding(False, True), leaveOpen:=True)
+            material.Serialize(w)
+            w.Flush()
+        End Using
+    End Sub
+
+    ''' <summary>Serialize the underlying BGSM to disk and write a `.bgsm.json` sidecar
+    ''' next to it carrying the envmapMaskTexture path (which the BGSM binary cannot
+    ''' persist). If _EnvmapMaskPath is empty, no sidecar is written and any existing
+    ''' loose sidecar is removed so stale state doesn't survive.
+    ''' <para>⛔ VA POR <c>GuardarConCopia</c>, NO POR <c>Escribir</c>, y el motivo es el LLAMADOR (censo:
+    ''' los dos únicos son <c>Editor_Form.ButtonMatSave_Click</c> y <c>ButtonMatSaveAs_Click</c>): es un
+    ''' archivo por click del usuario, a una ruta que él eligió, y pisa un suelto YA INSTALADO bajo el
+    ''' Data del juego (<c>Directorios.Fallout4data</c> = <c>Config_App.Current.FO4EDataPath</c>) que
+    ''' esta app no produjo y no puede regenerar. Es el mismo reparto que ya aplica
+    ''' <c>NifContent_Class.Save_As_Manolo_ConCopia</c> frente a <c>Save_As_Manolo</c>. El camino
+    ''' REGENERABLE de materiales es el clone (<c>WriteMaterialJob</c> → <c>Escribir</c>), y por eso la
+    ''' palabra "materiales" en el docstring de <c>Escribir</c> se refiere a AQUEL, no a éste.</para>
+    ''' <para>⛔ Y NO <c>File.Open(FileMode.Create)</c>, que es lo que había: CREATE_ALWAYS sobre un
+    ''' destino con FILE_ATTRIBUTE_HIDDEN devuelve ERROR_ACCESS_DENIED (medido: las tres primitivas
+    ''' —<c>File.Open(Create)</c>, <c>WriteAllText</c>, <c>WriteAllBytes</c>— tiran
+    ''' <c>UnauthorizedAccessException</c>; <c>OpenOrCreate</c>+<c>SetLength(0)</c> escribe y CONSERVA el
+    ''' atributo), y bajo Mod Organizer / Vortex un archivo nuevo o borrado rompe el VFS y el hardlink.
+    ''' Ver la cabecera de <c>EscrituraEnElLugar</c>, que es la única casa de esa ley.</para></summary>
+    Public Sub Save_To_Bgsm(filePath As String)
+        Dim bgsm = TryCast(Underlying_Material, BGSM)
+        If bgsm Is Nothing Then
+            Throw New InvalidOperationException("Save_To_Bgsm: Underlying_Material is not a BGSM (" & Underlying_Material?.GetType().Name & ")")
+        End If
+        ' ⛔ EL .bgsm Y SU SIDECAR SON UN LOTE DE DOS, NO DOS GUARDADOS SEGUIDOS. El docstring de
+        ' `WriteMaterialSidecar` ya nombraba el dano exacto -el .bgsm restaurado (viejo) al lado de un
+        ' .json nuevo, un par inconsistente que ningun lector puede detectar- y creia cerrarlo haciendo
+        ' que los dos fueran por la misma ley. NO alcanzaba: `GuardarConCopia` restaura CADA archivo
+        ' por su cuenta, asi que el binario podia quedar CONFIRMADO y el sidecar fallar despues. El par
+        ' mixto seguia siendo posible, y es el peor modo porque cada mitad se ve valida por separado.
+        ' Con el lote, si CUALQUIERA de las dos etapas falla se restauran las anteriores en orden
+        ' inverso: el par queda CONSISTENTE-VIEJO y el estado mixto deja de existir.
+        Using lote = BSA_BA2_Library_DLL.EscrituraEnElLugar.NuevoLote()
+            lote.Guardar(filePath, Sub(fs) SerializarMaterial(bgsm, fs))
+            ' Sidecar carries fields the v2 binary cannot persist: the runtime envmap-mask path
+            ' (NIF slot 5, FO4) plus the Skyrim-container (option (b)) flow (slot 5) / lighting
+            ' (slot 6) textures. Each key is written only when non-empty.
+            WriteMaterialSidecar(filePath, _EnvmapMaskPath, bgsm.FlowTexture, bgsm.LightingTexture, lote)
+            lote.Confirmar()
+        End Using
+        ' Just persisted to disk → state in memory matches the file → clean.
+        ClearDirty()
+    End Sub
+
+    ''' <summary>Serialize the underlying BGEM to disk. BGEM has a native envmapMaskTexture
+    ''' field, so no sidecar is required — mirrors Save_To_Bgsm for symmetry (misma ley de escritura y
+    ''' mismo motivo: ver <see cref="Save_To_Bgsm"/>).</summary>
+    Public Sub Save_To_Bgem(filePath As String)
+        Dim bgem = TryCast(Underlying_Material, BGEM)
+        If bgem Is Nothing Then
+            Throw New InvalidOperationException("Save_To_Bgem: Underlying_Material is not a BGEM (" & Underlying_Material?.GetType().Name & ")")
+        End If
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(filePath, Sub(fs) SerializarMaterial(bgem, fs))
+        ClearDirty()
+    End Sub
+
+    ''' <summary>⛔ EL SIDECAR VA POR LA MISMA LEY QUE EL .bgsm, y eso es deliberado: son las DOS MITADES
+    ''' DE UN ARTEFACTO. Si el binario tuviera red y el sidecar no, un guardado que falla a la mitad
+    ''' dejaría el .bgsm restaurado (viejo) al lado de un .json nuevo — un par inconsistente que ningún
+    ''' lector puede detectar, porque cada archivo por separado se ve válido.
+    ''' <para>⛔ Y NO <c>File.WriteAllText</c>, que es lo que había: pide CREATE_ALWAYS igual que el
+    ''' <c>File.Open(FileMode.Create)</c> del binario, y sobre un destino OCULTO devuelve ACCESS_DENIED
+    ''' (medido). El sidecar vive AL LADO del material, o sea en el mismo Data bajo gestor de mods.</para>
+    ''' <para>⚠️ HUECO DECLARADO, y se dice en vez de taparlo: el <c>File.Delete</c> de abajo —borrar un
+    ''' sidecar que quedó sin contenido— NO pasa por la ley y NO está medido contra usvfs. La cabecera de
+    ''' <c>EscrituraEnElLugar</c> prohíbe el Delete+Create (que rompe VFS y hardlink), no el Delete solo;
+    ''' qué hace MO2 con un <c>DeleteFile</c> sobre un archivo del mod no está medido en este árbol. Se
+    ''' deja como está hasta que alguien lo mida, y la medición va ACÁ.</para></summary>
+    Private Shared Sub WriteMaterialSidecar(materialPath As String, envmapMask As String, flowTexture As String,
+                                            lightingTexture As String,
+                                            lote As BSA_BA2_Library_DLL.EscrituraEnElLugar.LoteConCopias)
+        Dim sidecarPath = materialPath & ".json"
+        Dim payload As New Dictionary(Of String, String)
+        If Not String.IsNullOrEmpty(envmapMask) Then payload("envmapMaskTexture") = envmapMask
+        If Not String.IsNullOrEmpty(flowTexture) Then payload("flowTexture") = flowTexture
+        If Not String.IsNullOrEmpty(lightingTexture) Then payload("lightingTexture") = lightingTexture
+        If payload.Count = 0 Then
+            ' Nothing to persist — remove a previous sidecar so we don't leak stale state.
+            ' ⛔⛔ BORRADO COMO ETAPA DEL LOTE, y el `Catch` tragon SE FUE. Era un `File.Delete` crudo con
+            ' `Catch: ignore`: dos agujeros a la vez. (1) SIN VUELTA — si una etapa posterior del lote
+            ' fallaba, el `.bgsm` volvia a su version anterior y este sidecar quedaba borrado igual, o sea
+            ' el par material+sidecar terminaba MEZCLADO, que es justo lo que el lote existe para impedir.
+            ' (2) MUDO — un borrado que no se puede hacer (archivo tomado, solo lectura) se tragaba, y el
+            ' sidecar rancio sobrevivia diciendo cosas que el material ya no dice; el propio docstring de
+            ' este metodo lo declaraba "hueco".
+            ' Ahora `BorrarDelLote` respalda antes de borrar y el rollback lo recrea con sus atributos; sin
+            ' lote sigue siendo best-effort, que es la conducta que tenia.
+            ' ⚠️ La nota usvfs se conserva: bajo MO2 el borrado lo ve el VFS, no hay que hacer nada especial.
+            BSA_BA2_Library_DLL.EscrituraEnElLugar.BorrarDelLote(sidecarPath, lote)
+            Return
+        End If
+        Dim opts = New JsonSerializerOptions With {.WriteIndented = True}
+        ' Los bytes se arman ENTEROS antes de tocar el disco: si el serializador tirara, el destino no se
+        ' llegó a abrir y queda intacto. (`EscribirNucleo` trunca ANTES de correr el cuerpo.)
+        Dim bytes = Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(payload, opts))
+        ' ⛔ ETAPA DEL LOTE, no un guardado propio: si esta escritura falla, el lote deshace el .bgsm
+        ' que ya se escribio y el par queda consistente-viejo. Ver el ⛔ de `Save_To_Bgsm`.
+        lote.Guardar(sidecarPath, Sub(fs) fs.Write(bytes, 0, bytes.Length))
+    End Sub
+
+    ' MaterialLib stores BGSM/BGEM colors as RGB-only uint values: 0x00RRGGBB.
+    ' Alpha belongs either to UI-only System.Drawing.Color, NIF Color4, or a
+    ' separate material field such as BGEM.Alpha. Do not treat material uints as ARGB.
+    Private Shared Function MaterialRgbToColor(rgb As UInteger, Optional alpha As Integer = 255) As Color
+        rgb = rgb And &HFFFFFFUI
+        Dim r = ((rgb >> 16) And &HFF)
+        Dim g = ((rgb >> 8) And &HFF)
+        Dim b = (rgb And &HFF)
+        Return System.Drawing.Color.FromArgb(ClampByte(alpha), r, g, b)
+    End Function
+
+    Private Shared Function ColorToMaterialRgb(c As Color) As UInteger
+        Return CType((CUInt(c.R) << 16) Or (CUInt(c.G) << 8) Or CUInt(c.B), UInteger)
+    End Function
+
+    Private Shared Function MaterialRgbToNifColor3(rgb As UInteger, Optional scale As Single = 1.0F) As NiflySharp.Structs.Color3
+        rgb = rgb And &HFFFFFFUI
+        Dim r = ((rgb >> 16) And &HFF)
+        Dim g = ((rgb >> 8) And &HFF)
+        Dim b = (rgb And &HFF)
+        ' scale se aplica EN FLOAT (post /255) a propósito: el dominio del NIF Color3 no está acotado a
+        ' 1.0, mientras que el storage del material es de 3 BYTES (0..255) — escalar antes de dividir
+        ' clamparía a 1.0 y perdería el exceso. Ver TintColorScale.
+        Return New Color3(CSng(r / 255) * scale, CSng(g / 255) * scale, CSng(b / 255) * scale)
+    End Function
+
+    Private Shared Function MaterialRgbToNifColor4(rgb As UInteger, alpha As Single) As NiflySharp.Structs.Color4
+        rgb = rgb And &HFFFFFFUI
+        Dim r = ((rgb >> 16) And &HFF)
+        Dim g = ((rgb >> 8) And &HFF)
+        Dim b = (rgb And &HFF)
+        Return New Color4(r / 255, g / 255, b / 255, Math.Min(1.0F, Math.Max(0.0F, alpha)))
+    End Function
+    Private Shared Function ClampByte(value As Single) As Integer
+        If Single.IsNaN(value) OrElse value <= 0 Then Return 0
+        If value >= 255 Then Return 255
+        Return Math.Min(255, Math.Max(0, CInt(value)))
+    End Function
+    Private Shared Function NifColor3ToMaterialRgb(color As NiflySharp.Structs.Color3) As UInteger
+        Return CType((CUInt(ClampByte(color.R * 255)) << 16) Or
+                     (CUInt(ClampByte(color.G * 255)) << 8) Or
+                     CUInt(ClampByte(color.B * 255)), UInteger)
+    End Function
+
+    Private Shared Function NifColor4ToMaterialRgb(color As NiflySharp.Structs.Color4) As UInteger
+        Return CType((CUInt(ClampByte(color.R * 255)) << 16) Or
+                     (CUInt(ClampByte(color.G * 255)) << 8) Or
+                     CUInt(ClampByte(color.B * 255)), UInteger)
+    End Function
+
+    ' Dominio representable del par Smoothness (FO4) <-> Glossiness (SSE) = exp2(Smoothness*10+1) y su
+    ' inversa. OJO: aca NO hay oraculo de motor -- Skyrim no tiene campo Smoothness ni FO4 tiene
+    ' Glossiness, o sea esta conversion es transporte NUESTRO entre juegos, no una ley de ninguno.
+    ' El exponente se acota a [1, 127]:
+    '   1   = Smoothness 0 -> Glossiness 2, que es EXACTAMENTE el piso que la inversa ya asumia
+    '         (el viejo Math.Max(Glossiness, 2.0)); asi las dos guardas quedan simetricas.
+    '   127 = el ultimo 2^n que entra en un Single (2^127 = 1,70e38 < Single.MaxValue = 3,40e38).
+    ' POR QUE HACE FALTA (medido 2026-08-05): CSng NO tira OverflowException con un Double fuera de
+    ' rango, devuelve +Infinity. Sin este clamp, un Smoothness > 12,7 escribia 0x7F800000 en el campo
+    ' Glossiness del NIF SSE sin avisar (12,8 -> Inf; el outfit que lo destapo traia Smoothness = 80),
+    ' y al releerlo daba Smoothness = Inf -> roughness = -Inf -> r2 = Inf -> Inf/(Inf+0,09) = NaN en el
+    ' Oren-Nayar de los dos fragments (que quedaron SIN clamp a proposito, por fidelidad al motor).
+    ' POR QUE NO SE ACOTA A [0,1]: 90 de los 6616 BGSM vanilla traen Smoothness > 1 (hasta 10, el
+    ' MirelurkHunterLegendary). Con [1,127] todo lo vanilla hace round-trip intacto y solo se fija lo
+    ' mal autorado; con [0,1] se perderian esos 90 en cada conversion FO4->SSE.
+    Private Const SseGlossinessExponentMin As Double = 1.0
+    Private Const SseGlossinessExponentMax As Double = 127.0
+
+    Private Shared Function SmoothnessToSseGlossiness(smoothness As Single) As Single
+        Dim expo = CDbl(smoothness) * 10.0 + 1.0
+        If Double.IsNaN(expo) Then expo = SseGlossinessExponentMin
+        expo = Math.Min(Math.Max(expo, SseGlossinessExponentMin), SseGlossinessExponentMax)
+        Return CSng(Math.Pow(2.0, expo))
+    End Function
+
+    Private Shared Function SseGlossinessToSmoothness(glossiness As Single) As Single
+        Dim expo = Math.Log(Math.Max(CDbl(glossiness), 2.0), 2.0)
+        If Double.IsNaN(expo) Then expo = SseGlossinessExponentMin
+        expo = Math.Min(Math.Max(expo, SseGlossinessExponentMin), SseGlossinessExponentMax)
+        Return CSng((expo - 1.0) / 10.0)
+    End Function
+
+    Private Shared Function NormalizeGameRelativePath(rawPath As String, rootPrefix As String) As String
+        If String.IsNullOrWhiteSpace(rawPath) Then Return ""
+
+        Dim normalized As String = rawPath.Correct_Path_Separator.Trim().Trim(""""c)
+        Dim rootLower As String = rootPrefix.ToLowerInvariant()
+        Dim lowered As String = normalized.ToLowerInvariant()
+
+        ' Caso 1: viene absoluto o con prefijo extra, por ejemplo:
+        ' C:\...\Data\materials\foo.bgsm
+        ' D:\mods\textures\bar.dds
+        Dim idx As Integer = lowered.IndexOf("\" & rootLower, StringComparison.OrdinalIgnoreCase)
+        If idx >= 0 Then
+            normalized = normalized.Substring(idx + 1)
+        Else
+            ' Caso 2: ya viene relativo pero con slash inicial: \materials\foo.bgsm
+            normalized = normalized.TrimStart("\"c)
+
+            ' Caso 3: viene relativo sin prefijo: foo\bar.bgsm
+            If Not normalized.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) Then
+                normalized = rootPrefix & normalized
+            End If
+        End If
+
+        normalized = normalized.TrimStart("\"c)
+
+        If Not normalized.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase) Then
+            normalized = rootPrefix & normalized.StripPrefix(rootPrefix)
+        End If
+
+        Return normalized.ToLowerInvariant()
+    End Function
+
+    ''' <summary>Memo de <see cref="NormalizeGameRelativePath"/>: función PURA ⇒ bit-idéntico por construcción.
+    ''' Existe porque Render.ApplyMaterial llama a CorrectTexturePath 13 veces por malla por frame y cada una
+    ''' aloca ~7 strings. Comparador Ordinal a propósito (garantía trivial "misma clave ⇒ mismo valor").</summary>
+    Private Shared ReadOnly TexturePathCache As New ConcurrentDictionary(Of String, String)(StringComparer.Ordinal)
+    Private Shared ReadOnly MaterialPathCache As New ConcurrentDictionary(Of String, String)(StringComparer.Ordinal)
+    Private Shared ReadOnly MeshPathCache As New ConcurrentDictionary(Of String, String)(StringComparer.Ordinal)
+
+    Public Shared Function CorrectTexturePath(Texture As String) As String
+        If String.IsNullOrWhiteSpace(Texture) Then Return NormalizeGameRelativePath(Texture, TexturesPrefix)
+        Dim hit As String = Nothing
+        If TexturePathCache.TryGetValue(Texture, hit) Then Return hit
+        Dim v = NormalizeGameRelativePath(Texture, TexturesPrefix)
+        TexturePathCache(Texture) = v
+        Return v
+    End Function
+
+    Public Shared Function CorrectMaterialPath(Texture As String) As String
+        If String.IsNullOrWhiteSpace(Texture) Then Return NormalizeGameRelativePath(Texture, MaterialsPrefix)
+        Dim hit As String = Nothing
+        If MaterialPathCache.TryGetValue(Texture, hit) Then Return hit
+        Dim v = NormalizeGameRelativePath(Texture, MaterialsPrefix)
+        MaterialPathCache(Texture) = v
+        Return v
+    End Function
+
+    Public Shared Function CorrectMeshPath(Mesh As String) As String
+        If String.IsNullOrWhiteSpace(Mesh) Then Return NormalizeGameRelativePath(Mesh, MeshesPrefix)
+        Dim hit As String = Nothing
+        If MeshPathCache.TryGetValue(Mesh, hit) Then Return hit
+        Dim v = NormalizeGameRelativePath(Mesh, MeshesPrefix)
+        MeshPathCache(Mesh) = v
+        Return v
+    End Function
+
+    ''' <summary>La MISMA normalización, elegida por su raíz. Existe para que la UI pueda sembrar un
+    ''' picker con la MISMA regla con la que el render resuelve el string — que es el punto: si la caja
+    ''' y el render no coinciden sobre qué archivo nombra ese texto, el picker abre en la raíz del árbol
+    ''' y el render igual encuentra el archivo, o al revés.
+    ''' <para>⛔ No hay una cuarta regla acá: esto DESPACHA a las tres que ya existen (con sus cachés).
+    ''' Una raíz desconocida PERO NO VACÍA cae en <c>NormalizeGameRelativePath</c> con esa raíz, que es
+    ''' la sede única. La raíz VACÍA tiene rama propia y no delega — ver la guarda del cuerpo: delegar
+    ''' ahí mangla la ruta, porque el anclaje es <c>"\" &amp; raíz</c> y sin raíz eso corta en la primera
+    ''' barra.</para></summary>
+    Public Shared Function CorrectGameRelativePath(path As String, rootPrefix As String) As String
+        If String.Equals(rootPrefix, TexturesPrefix, StringComparison.OrdinalIgnoreCase) Then Return CorrectTexturePath(path)
+        If String.Equals(rootPrefix, MaterialsPrefix, StringComparison.OrdinalIgnoreCase) Then Return CorrectMaterialPath(path)
+        If String.Equals(rootPrefix, MeshesPrefix, StringComparison.OrdinalIgnoreCase) Then Return CorrectMeshPath(path)
+        ' ⛔⛔ RAÍZ VACÍA: NO SE PUEDE DELEGAR, PORQUE MANGLA LA RUTA. `NormalizeGameRelativePath`
+        ' ancla en `"\" & raíz`, y con la raíz vacía eso es `IndexOf("\")` — o sea que corta en la
+        ' PRIMERA barra y devuelve `character\x.nif` para `actors\character\x.nif`. No es hipotético:
+        ' `ALLMeshesDictionary_Filter` declara `RootPrefix = ""` y Wardrobe Manager lo usa para el
+        ' esqueleto. El comentario que había acá declaraba ese caso como seguro; era justo el que
+        ' rompía. Sin raíz no hay nada que sacar ni que agregar: se normalizan separadores y caja, que
+        ' es lo único que la clave del diccionario necesita.
+        If String.IsNullOrWhiteSpace(rootPrefix) Then
+            Return If(path, "").Correct_Path_Separator().Trim().Trim(""""c).TrimStart("\"c).ToLowerInvariant()
+        End If
+        Return NormalizeGameRelativePath(path, rootPrefix)
+    End Function
+
+
+    Shared Sub New()
+
+    End Sub
+    Public Shared Function AreEquivalentGrayscaleScale(currentScale As Single, newScale As Single, texturePath As String) As Boolean
+        If currentScale = newScale Then Return True
+
+        Dim width = GetGrayscaleTextureWidth(texturePath)
+        If width <= 0 Then Return False
+
+        Return ScaleToGrayscaleSlot(currentScale, width) = ScaleToGrayscaleSlot(newScale, width)
+    End Function
+    Public Shared Function ScaleToGrayscaleSlot(scale As Single, width As Integer) As Integer
+        If width <= 0 Then Return 0
+        Return Math.Max(0, Math.Min(width, CInt(width * scale)))
+    End Function
+    Private Shared Function GetGrayscaleTextureWidth(texturePath As String) As Integer
+        If String.IsNullOrWhiteSpace(texturePath) Then Return 0
+
+        Dim normalized = CorrectTexturePath(texturePath)
+        If String.IsNullOrWhiteSpace(normalized) Then Return 0
+
+        Return GrayscaleTextureWidthCache.GetOrAdd(normalized,
+            Function(key)
+                Dim bmp As Bitmap = Nothing
+                Try
+                    bmp = CreateBitmapFromDDS(FilesDictionary_class.GetBytes(key))
+                    Return If(bmp IsNot Nothing, bmp.Width, 0)
+                Catch
+                    Return 0
+                Finally
+                    If bmp IsNot Nothing Then bmp.Dispose()
+                End Try
+            End Function)
+    End Function
+    ''' <summary>One difference found by <see cref="GetDifferences"/>: the public property
+    ''' name and the two values that did not compare equal. Either value may be Nothing.</summary>
+    Public Class MaterialDifference
+        Public Property PropertyName As String
+        Public Property ValueA As Object
+        Public Property ValueB As Object
+        Public Sub New(name As String, a As Object, b As Object)
+            PropertyName = name
+            ValueA = a
+            ValueB = b
+        End Sub
+    End Class
+
+    ''' <summary>Inspecciona cada propiedad publica de instancia y devuelve las que no comparan iguales, con el
+    ''' mismo set de reglas por tipo que <see cref="AreEqualWithTrace"/>: Single por igualdad (con la excepcion
+    ''' de <see cref="GrayscaleToPaletteScale"/>), String por OrdinalIgnoreCase, Type por Equals Nothing-safe,
+    ''' <see cref="MaterialLib.BaseMaterialFile"/> siempre igual (es el subyacente) y el resto por Object.Equals.
+    ''' <para>Con uno de los dos en Nothing devuelve un unico entry "&lt;instance&gt;" reflejando la asimetria;
+    ''' con los dos en Nothing, lista vacia.</para>
+    ''' <para><c>NifShaderType</c> entra como cualquier otra propiedad y ninguno de los dos caminos lo excluye:
+    ''' tipo y flags estan desacoplados (el tipo se lee y escribe fiel del shader, no se deriva de los flags),
+    ''' asi que compararlo es legitimo y util para el diagnostico del bake contra el FaceGen del CK.</para>
+    ''' <para>Existe para que los call sites que necesitan reportar QUE difiere no dupliquen el bucle de
+    ''' reflexion; AreEqualWithTrace delega aca, asi que toda propiedad nueva queda cubierta en los dos.</para></summary>
+    ''' <param name="ignoreNames">Propiedades a OMITIR. Nothing = comparar todo (contrato historico). El gating
+    ''' del editor pasa <see cref="NifShaderOnlyPropertyNames"/> para excluir el estado solo-NIF.</param>
+    Public Shared Function GetDifferences(a As FO4UnifiedMaterial_Class, b As FO4UnifiedMaterial_Class,
+                                          Optional ignoreNames As ICollection(Of String) = Nothing) As List(Of MaterialDifference)
+        Dim diffs As New List(Of MaterialDifference)
+
+        ' Edge case nulls — replica el contrato de AreEqualWithTrace ("a Is b").
+        If a Is Nothing AndAlso b Is Nothing Then Return diffs
+        If a Is Nothing OrElse b Is Nothing Then
+            diffs.Add(New MaterialDifference("<instance>", a, b))
+            Return diffs
+        End If
+
+        ' ESTE DIFF SE ARMA POR REFLEXIÓN SOBRE LAS PROPIEDADES **PUBLIC** DE ESTA CLASE.
+        ' O sea: `Public` acá NO es decoración de superficie, es lo que hace que un campo se COMPARE.
+        ' Demotar una propiedad a `Friend` no rompe la compilación — la saca de esta enumeración y el
+        ' diff deja de mirarla, en silencio, devolviendo "no hay diferencias" sobre un campo que cambió.
+        ' Es el peor modo de falla posible para un comparador: un gate que no puede ponerse rojo.
+        ' ⇒ NO demotar propiedades de FO4UnifiedMaterial_Class sin cambiar ANTES este mecanismo.
+        Dim tipo As Type = GetType(FO4UnifiedMaterial_Class)
+        Dim props = tipo.GetProperties(BindingFlags.Public Or BindingFlags.Instance) _
+                       .Where(Function(p) p.GetIndexParameters().Length = 0).ToList()
+        ' ESTA RED NO CUBRE EL CASO CONTRA EL QUE SE ESCRIBIÓ, y conviene decirlo en vez de dar una
+        ' sensación falsa: sólo salta si desaparecen TODAS las propiedades públicas, y el escenario real
+        ' —demotar UNA a Friend— deja el contador alto, el gate verde y el comparador ciego a ese campo.
+        ' Un gate que no puede ponerse rojo por su propio defecto (00-reglas-epistemica §9).
+        ' La protección de verdad es la de arriba: NO demotar propiedades de esta clase. Esto es sólo un
+        ' cable-trampa para el colapso total (p.ej. si alguien cambia el tipo sobre el que se reflexiona).
+        If props.Count = 0 Then
+            Throw New InvalidOperationException(
+                "FO4UnifiedMaterial_Class no expone propiedades públicas de instancia: el diff por reflexión " &
+                "no puede comparar nada. Si alguien las demotó a Friend, este comparador quedó ciego.")
+        End If
+
+        For Each prop In props
+            If ignoreNames IsNot Nothing AndAlso ignoreNames.Contains(prop.Name) Then Continue For
+            Dim valA = prop.GetValue(a, Nothing)
+            Dim valB = prop.GetValue(b, Nothing)
+            Dim equal As Boolean
+            Select Case prop.PropertyType
+                Case GetType(Single)
+                    If prop.Name.Equals(NameOf(GrayscaleToPaletteScale), StringComparison.Ordinal) Then
+                        Dim texturePath = If(String.IsNullOrWhiteSpace(a.GreyscaleTexture), b.GreyscaleTexture, a.GreyscaleTexture)
+                        equal = AreEquivalentGrayscaleScale(CType(valA, Single), CType(valB, Single), texturePath)
+                    Else
+                        equal = CType(valA, Single) = CType(valB, Single)
+                    End If
+                Case GetType(String)
+                    equal = String.Equals(TryCast(valA, String), TryCast(valB, String), StringComparison.OrdinalIgnoreCase)
+                Case GetType(Type)
+                    If valA Is Nothing OrElse valB Is Nothing Then
+                        equal = valA Is valB
+                    Else
+                        equal = valA.Equals(valB)
+                    End If
+                Case GetType(MaterialLib.BaseMaterialFile)
+                    equal = True
+                Case Else
+                    equal = Object.Equals(valA, valB)
+            End Select
+
+            If Not equal Then
+                diffs.Add(New MaterialDifference(prop.Name, valA, valB))
+            End If
+        Next
+
+        Return diffs
+    End Function
+
+    ''' <summary>
+    ''' Compara dos instancias de FO4UnifiedMaterial_Class inspeccionando
+    ''' cada propiedad y trazando su valor y resultado.
+    ''' Nothing vs Nothing = True; Nothing vs objeto real = False.
+    '''
+    ''' Implementado en términos de <see cref="GetDifferences"/>: cualquier propiedad nueva
+    ''' se cubre automáticamente, incluyendo <c>NifShaderType</c>, que ahora es un campo
+    ''' independiente (tipo y flags desacoplados; el tipo no se deriva de los flags).
+    ''' </summary>
+    Public Shared Function AreEqualWithTrace(a As FO4UnifiedMaterial_Class, b As FO4UnifiedMaterial_Class) As Boolean
+        ' Edge case nulls — preservar contrato histórico exacto.
+        If a Is Nothing OrElse b Is Nothing Then
+            Return a Is b
+        End If
+        Return GetDifferences(a, b).Count = 0
+    End Function
+
+    ''' <summary>
+    ''' Compara dos instancias de FO4UnifiedMaterial_Class usando el comparador generado.
+    ''' </summary>
+    Public Function AreEqualTo(b As FO4UnifiedMaterial_Class) As Boolean
+        If Me Is Nothing OrElse b Is Nothing Then Return Me Is b
+        Return AreEqualWithTrace(Me, b)
+    End Function
+
+    ''' <summary>Igualdad restringida al estado del ARCHIVO de material: ignora los campos solo-NIF
+    ''' de <see cref="NifShaderOnlyPropertyNames"/>. La usa Revisa_Material (WM) para no exigir
+    ''' "grabar el material" cuando el único cambio es el shader type (que vive en el NIF).</summary>
+    Public Function AreEqualToMaterialFile(b As FO4UnifiedMaterial_Class) As Boolean
+        If Me Is Nothing OrElse b Is Nothing Then Return Me Is b
+        Return GetDifferences(Me, b, CamposSoloDelNif()).Count = 0
+    End Function
+
+    ' --- ShouldSerialize / Reset for Color properties (PropertyGrid bold detection) ---
+    Private Shared ReadOnly DefaultWhite As Color = Color.FromArgb(255, 255, 255, 255)
+    Private Shared ReadOnly DefaultGray As Color = Color.FromArgb(255, 128, 128, 128)
+
+    Public Function ShouldSerializeSpecularColor() As Boolean
+        Return SpecularColor <> DefaultWhite
+    End Function
+    Public Sub ResetSpecularColor()
+        SpecularColor = DefaultWhite
+    End Sub
+
+    Public Function ShouldSerializeEmittanceColor() As Boolean
+        Return EmittanceColor <> DefaultWhite
+    End Function
+    Public Sub ResetEmittanceColor()
+        EmittanceColor = DefaultWhite
+    End Sub
+
+    Public Function ShouldSerializeHairTintColor() As Boolean
+        Return HairTintColor <> DefaultGray
+    End Function
+    Public Sub ResetHairTintColor()
+        HairTintColor = DefaultGray
+    End Sub
+
+    Public Function ShouldSerializeSkinTintColor() As Boolean
+        Return SkinTintColor <> DefaultGray
+    End Function
+    Public Sub ResetSkinTintColor()
+        SkinTintColor = DefaultGray
+    End Sub
+
+    Public Function ShouldSerializeBaseColor() As Boolean
+        Return BaseColor <> DefaultWhite
+    End Function
+    Public Sub ResetBaseColor()
+        BaseColor = DefaultWhite
+    End Sub
+
+End Class
+
+Public Class ShaderTypeConverter
+    Inherits ComponentModel.EnumConverter
+
+    Public Sub New()
+        MyBase.New(GetType(NiflySharp.Enums.BSLightingShaderType))
+    End Sub
+End Class
+
+Public Class DictionaryFilePickerEditor
+    Inherits UITypeEditor
+    Public Overrides Function GetEditStyle(context As ITypeDescriptorContext) As UITypeEditorEditStyle
+        Return UITypeEditorEditStyle.Modal
+    End Function
+    Public Overrides Function EditValue(context As ITypeDescriptorContext, provider As IServiceProvider, value As Object) As Object
+        Dim dictProvider = FilesDictionary_class.TexturesDictionary_Filter.DictionaryProvider
+        If dictProvider Is Nothing Then
+            MessageBox.Show("Set DictionaryFilePickerConfig.DictionaryProvider before using.", "Dictionary Selector", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return value
+        End If
+
+        Dim filtered = FilesDictionary_class.GetFilteredKeys(FilesDictionary_class.TexturesDictionary_Filter)
+        Dim initialKey As String = FO4UnifiedMaterial_Class.CorrectTexturePath(TryCast(value, String))
+
+        Using frm As New DictionaryFilePicker_Form(filtered, FilesDictionary_class.TexturesDictionary_Filter.RootPrefix, FilesDictionary_class.TexturesDictionary_Filter.AllowedExtensions, initialKey)
+            If frm.ShowDialog() = DialogResult.OK Then
+                Dim sel = frm.DictionaryPicker_Control1.SelectedKey
+                If Not String.IsNullOrEmpty(sel) Then Return IO.Path.GetRelativePath(TexturesPrefix, sel)
+            End If
+        End Using
+
+        Return value
+    End Function
+
+
+End Class
+
+Public Class InhertedBGEMShader
+    Inherits BSEffectShaderProperty
+End Class
+Public Class InhertedBGSMshader
+    Inherits BSLightingShaderProperty
+End Class
+
+

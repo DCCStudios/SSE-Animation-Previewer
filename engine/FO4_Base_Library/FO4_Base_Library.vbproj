@@ -1,0 +1,231 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <Configurations>Debug;Release;Publish</Configurations>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x86;x64</Platforms>
+    <!-- ⛔ NETSDK1047 INTERMITENTE: "project.assets.json no tiene un destino para net8.0-windows/win-x64".
+         LEY: `obj\project.assets.json` es UN SOLO archivo por proyecto, y `RuntimeIdentifier` (SINGULAR,
+         abajo) esta condicionado por $(Platform) — asi que la RESTAURACION escribe SOLO el target de la
+         plataforma con la que corrio, y la ultima que corre PISA a la anterior. Un build en Debug|x64
+         despues de un restore en AnyCPU muere sin que se toque una linea de codigo.
+         MEDIDO (2026-08-23): `dotnet restore` sin -p:Platform deja `targets: [net8.0-windows]` a secas;
+         con -p:Platform=x64 agrega `net8.0-windows/win-x64`. Mismo archivo, ultimo restore gana.
+         CONTRAEJEMPLO de lo que uno supondria: el $(Platform) que un proyecto se pone en su PROPIO .vbproj
+         no es propiedad GLOBAL, asi que NO baja por el ProjectReference. Medido: restaurar
+         Tools\HavokLayoutGate — y tambien Tools\ParityGate, que tiene el guard `Platform=x64` — deja esta
+         lib en AnyCPU. O sea que cualquiera de los ~113 probes de Tools\ rompe el build de VS.
+         La otra fuente: FO4_NPC_Manager.sln mapea esta lib `Debug|Any CPU` -> `Debug|Any CPU` de verdad
+         (no lo remapea a x64 como hace Wardrobe_Manager.sln). De ahi salieron `obj\Any CPU\` y `bin\Any CPU\`.
+         `RuntimeIdentifiers` (PLURAL) es la declaracion que lee la RESTAURACION: emite los DOS targets
+         siempre, corra con la plataforma que corra, y el build encuentra el suyo.
+         NO elige plataforma ni cambia la salida — eso lo siguen decidiendo `RuntimeIdentifier`/
+         `PlatformTarget` de los grupos condicionales. A/B con el MISMO Restore+Rebuild en los dos lados:
+         PlatformTarget, RuntimeIdentifier, SelfContained y TargetPath identicos en x64 y en x86;
+         `deps.json` byte-identico; bin identico (13 archivos, mismos tamanos) salvo los .pdb, que no son
+         deterministas ni entre dos rebuilds seguidos del MISMO arbol (control corrido: dos Rebuild
+         identicos dan .dll con md5 distinto, asi que el hash del binario NO sirve de instrumento aca). -->
+    <RuntimeIdentifiers>win-x64;win-x86</RuntimeIdentifiers>
+    <RootNamespace>FO4_Base_Library</RootNamespace>
+    <UseWindowsForms>true</UseWindowsForms>
+    <MyType>Windows</MyType>
+  </PropertyGroup>
+
+  <!-- Identidad que ve el usuario: Propiedades del archivo en Windows y el volcado de ensamblados
+       de un reporte de caida. El NUMERO no esta aca: sale del Directory.Build.props del repo. -->
+  <PropertyGroup>
+    <Product>FO4 Base Library</Product>
+    <AssemblyTitle>FO4 Base Library</AssemblyTitle>
+    <Description>Shared engine library for the Fallout 4 / Skyrim SE toolset: plugins, archives, meshes and rendering.</Description>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Platform)'=='x86'">
+    <PlatformTarget>x86</PlatformTarget>
+    <RuntimeIdentifier>win-x86</RuntimeIdentifier>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Platform)'=='x64'">
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Tools/MotorFisicaGate: los gates del MOTOR DE FISICA canonico (Havok/Motor/). Ese motor entero
+         vive dentro de `#If DEBUG` y todos sus tipos son `Friend`, asi que el gate no puede verlo desde
+         afuera sin esto. ⛔ Y tiene que verlo: dos de sus rutinas —la normalizacion SIMD y la
+         descomposicion polar— son EXACTAMENTE la clase de codigo que ya fallo una vez en este arbol (la
+         ortonormalizacion del deform, con dos filas intercambiadas = 180 grados, invisible para un gate
+         que solo media traslacion). Sin gate directo sobre ellas no hay forma de falsearlas.
+         NADA se vuelve Public por esto, y en Release no hay ni tipos que exponer. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>MotorFisicaGate</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/ClothPhysicsGate: el arnes VISUAL, el unico que corre el motor sobre prendas REALES y
+         saca PNG. Necesita llegar a `ClothCanonico.PrendasVivas` y a `OpDeformar` / `Polar` (todos
+         `Friend`) para medir el `|a x b|` del marco de triangulo de un cloth-bone concreto: la
+         explicacion de por que un hueso se va 120 u en el estado `Animate` dice que el estiron entra
+         AL CUADRADO por ese termino, y sin medirlo sobre la prenda de verdad la explicacion es una
+         deduccion, no una medicion (motor-84). `Havok.Motor` vive entero dentro de `#If DEBUG`, asi
+         que en Release no hay ni tipos que exponer. NADA se vuelve Public por esto. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>ClothPhysicsGate</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/HkxLoadOrderAudit: es la probe que corre sobre el CORPUS REAL (BA2 + loose). El censo
+         M14 construye la `Forma` de cada `hclCollidable` de verdad con `Havok.Motor.Fachada` y
+         comprueba que el tipo salga el del archivo. Sin eso, la unica prueba de la traduccion son
+         formas que escribo yo en el gate de unidad: un fixture no puede decir si la fachada cubre lo
+         que HAY. `Havok.Motor` ademas vive entero dentro de `#If DEBUG`, asi que en Release no hay
+         ni tipos que exponer. NADA se vuelve Public por esto. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>HkxLoadOrderAudit</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/ParityGate corre los self-tests que NO dependen de la maquina del usuario (leyes del
+         resolver, lexico del GLSL, golden absolutos). Vivian DENTRO de esta lib y corrian en el proceso
+         del usuario; salieron el 2026-08-08. Esto les da acceso a los miembros `Friend` que ya usaban,
+         SIN volver Public nada: la superficie de API que se distribuye no cambia.
+         Ver memoria 00-reglas-self-tests-no-van-en-el-binario. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>ParityGate</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Idem: ObtsRoundTripSelfTest (386 lineas) vivia en ESP/ DE ESTA LIB y no lo llamaba NINGUNA de las
+         tres apps — solo esta probe. Se mudo el 2026-08-08 y llega a ParseOBTSPayload / BuildObtsPayload
+         (Friend) desde afuera, que era la unica razon por la que estaba adentro. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>ObtsBlockRoundtripProbe</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/ShadowGate: arnes GL de las sombras del previewer. Es lo que SI depende del rig ajeno
+         (compilar el GLSL, dibujar el shadow map, medir ms/frame), asi que no puede ser un gate de
+         ParityGate; y es un probe, asi que tampoco entra al binario que se distribuye. Necesita llegar
+         a ShadowMapMath / ShadowMapTarget / PreviewModel.ShadowActive y al angulo de la camara, todos
+         Friend. NADA se vuelve Public por esto. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>ShadowGate</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/TexCodecPerfProbe: arnes del codec de texturas. Mide (depende de la maquina: nucleos y
+         ancho SIMD) y ademas es el GATE DE BYTES del encode/decode. Necesita llegar a
+         EmpaquetarPixeles / CanalesDelFormatoDecodificado / EsBgra8, que son `Friend`.
+         ⚠️ El atributo SI viaja en los metadatos del DLL distribuido y no es gratis del todo: como el
+         ensamblado no esta firmado, CUALQUIER assembly que se llame `TexCodecPerfProbe` entra a los
+         `Friend`. Lo que no cambia es la superficie PUBLICA ni el costo en runtime; el arnes en si no se
+         distribuye. Ver 00-reglas-scope-y-libreria y 00-reglas-self-tests-no-van-en-el-binario. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>TexCodecPerfProbe</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/PreflightScanProbe: gate del POOL DE READERS de archives. Necesita LeaseReader / ReturnReader
+         (`Friend`) para poner un lease EN VUELO de forma determinista —lease → UnregisterArchive → Return en
+         un solo hilo— y observar que el reader de la generacion vieja no vuelve al pool. Sin esa costura el
+         unico test posible es una carrera con sleeps, o sea un gate que pasa en verde por casualidad; ver
+         81-gates-que-pasaban-en-vacio. NADA se vuelve Public por esto. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>PreflightScanProbe</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/RecordParserSweepProbe: CABLEA `RecordDispatcher.ParseRecord` contra los dos juegos reales.
+         Ese modulo es `Friend` y HOY NO TIENE NI UN LLAMADOR en las tres apps, asi que ~6.000 lineas de
+         parsers de records no se ejercitan nunca; el probe es lo unico que las corre sobre bytes reales.
+         Necesita `RecordDispatcher.ParseRecord` + `SupportedSignatures` (Friend) y leer por reflexion los
+         campos `Friend` de las clases *_Data. NADA se vuelve Public por esto y el probe no se distribuye. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>LoadOrderActivatorProbe</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/SlotResolutionProbe: Case18 gatea `PluginManager.AllowsHardcodedRange` por juego Y por
+         variante. Necesita `PluginWriter.HedrVersionFor` (Friend) para preguntarle a LA FUNCION que version
+         de HEDR emite este escritor, en vez de repetir el numero en el probe.
+         ⛔ Esto no es comodidad: hasta el 2026-08-22 el caso 18b afirmaba "la version que ESTA APP emite
+         (0.95)" con el 0.95 escrito a mano; cuando la constante paso a 1.0 el gate siguio verde afirmando
+         algo falso. Gatear el PREDICADO no es gatear la FUNCION (00-reglas-predicciones-que-no-pueden-fallar).
+         NADA se vuelve Public por esto. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>SlotResolutionProbe</_Parameter1>
+    </AssemblyAttribute>
+    <!-- Tools/TbnWeldSelfTest y Tools/TbnPerfProbe: los DOS arneses del kernel de TBN. Trabajan sobre
+         geometria SINTETICA (mallas fabricadas para aislar welding, clausura de sucios y costo), o sea
+         SIN una shape con autor detras, asi que la puerta publica `RecalcularParaShape` no les sirve:
+         necesitan `KernelTBN` (Friend) directo.
+         ⛔ Ese `Friend` es justamente lo que hace que la ley del autor no se pueda saltear desde la app
+         (BC30456 en compilacion). Estos dos entran por aca y NADA se vuelve Public. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>TbnWeldSelfTest</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>TbnPerfProbe</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>RecordParserSweepProbe</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <!-- Shared\ NO se compila dentro de esta lib: son fuentes que cada APP linkea a su propio ensamblado.
+       CrashReport tiene que sobrevivir a que este DLL no cargue (cuarentena del antivirus, extraccion
+       parcial) — adentro de la lib se caeria junto con ella y el usuario volveria al silencio.
+       Linkeado desde: FO4_NPC_Manager y Wardrobe_Manager. Ver Shared\CrashReport.vb. -->
+  <ItemGroup>
+    <Compile Remove="Shared\**" />
+  </ItemGroup>
+
+  <!-- FO4_Base_Library_CSharpHelpers\ es un PROYECTO propio anidado en esta carpeta (mismo repositorio,
+       se versiona y se publica con esta lib). Sus fuentes NO son de esta lib: se sacan de los globs por
+       defecto del SDK para que no entren como None ni ensucien el Explorador de soluciones.
+       ⛔ Existe SOLO para lo que VB.NET no puede compilar; la regla de admisión y la lista de lo que
+       hay adentro están en FO4_Base_Library_CSharpHelpers\_LEEME.md. -->
+  <ItemGroup>
+    <Compile Remove="FO4_Base_Library_CSharpHelpers\**" />
+    <None Remove="FO4_Base_Library_CSharpHelpers\**" />
+    <EmbeddedResource Remove="FO4_Base_Library_CSharpHelpers\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Import Include="System.Data" />
+    <Import Include="System.Drawing" />
+    <Import Include="System.Windows.Forms" />
+  </ItemGroup>
+
+  <!-- El MSB3825 de IconFormBase.resx se apaga a proposito. Dice que el recurso "se deserializara a
+       traves de BinaryFormatter, que se quito de .NET 9", y es FALSO: Bitmap e ImageListStreamer
+       estan en la lista blanca de tipos que WinForms lee sin BinaryFormatter. Medido 2026-08-17 con
+       el blob real del disenador: carga identico en .NET 8.0.30, 9.0.19 y 10.0.9. Microsoft ya esta
+       sacando el warning para .NET 9+. Ver Resources\Icons\_LEEME.txt. -->
+  <PropertyGroup>
+    <GenerateResourceWarnOnBinaryFormatterUse>false</GenerateResourceWarnOnBinaryFormatterUse>
+  </PropertyGroup>
+
+  <!-- ============================ ICONOS COMPARTIDOS ============================
+       Resources\Icons\<medida>\<Nombre>.png es EL LUGAR UNICO donde viven los iconos de la UI de
+       las tres apps. NO se compilan ni se incrustan: son la fuente desde la cual el disenador de
+       cada formulario importa al ImageList (boton "..." de la propiedad Images). Por eso van como
+       None y no como EmbeddedResource — el que los lleva al binario es el .resx de cada form.
+
+       Para agregar un icono: se copia el PNG en la carpeta de su medida y ya esta disponible para
+       importar desde cualquiera de las tres apps. Ver Resources\Icons\_LEEME.txt. -->
+  <ItemGroup>
+    <None Include="Resources\Icons\**\*.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpZipLib" Version="1.4.2" />
+    <PackageReference Include="K4os.Compression.LZ4.Streams" Version="1.3.8" />
+    <PackageReference Include="OpenTK.GLControl" Version="4.0.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="FO4_Base_Library_CSharpHelpers\FO4_Base_Library_CSharpHelpers.csproj" />
+    <!-- SSE Animation Previewer: the native DDS wrapper is linked prebuilt from lib\, so this builds with the
+         .NET SDK alone. Its source is in native\DirectXTextWrapper; see docs\building.md to rebuild it. -->
+    <Reference Include="DirectXTexWrapper"><HintPath>$(MSBuildThisFileDirectory)..\..\lib\DirectXTexWrapper.dll</HintPath></Reference>
+    <ProjectReference Include="..\Ba2_Bsa_Library\BSA_BA2_Library_DLL.vbproj" />
+    <ProjectReference Include="..\Material-Editor-master\MaterialLib\MaterialLib.csproj" />
+    <ProjectReference Include="..\NiflySharp\NiflySharp\NiflySharp.csproj" />
+  </ItemGroup>
+
+  <!-- Fija la plataforma del wrapper NATIVO. Va en LOS SEIS proyectos, no solo en los dos que lo
+       referencian de verdad: el SDK inyecta el ProjectReference transitivo sin la metadata. Ver el .targets. -->
+
+  <!-- Avisa si un formulario quedo con COPIA PROPIA de los iconos compartidos. Solo lee; no
+       modifica nada. Warning en Debug, error en Release. Ver el comentario del .targets. -->
+  <Import Project="IconosCompartidos.targets" />
+  <!-- La configuracion Publish: es Release con carpeta propia. Sin esto compilaria SIN
+       OPTIMIZAR, en verde. Ver el comentario del .targets. -->
+  <Import Project="ConfiguracionPublish.targets" />
+</Project>

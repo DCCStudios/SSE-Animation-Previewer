@@ -1,0 +1,1401 @@
+﻿Imports System.IO
+Imports System.Linq
+Imports System.Text
+Imports FO4_Base_Library.Canon.CanonInterpretacion
+
+' Save NPC ESP/ESM — emite un plugin de Bethesda con uno o más overrides de NPC_, con limpieza de
+' masters: se descartan los masters que ya no tienen ninguna referencia.
+'
+' Secuencia: se recolectan los FormID que referencia cada override y se mapean a (plugin origen, ObjectID
+' local) → se arma la MAST list nueva (el master del juego siempre primero, después todo plugin que sea
+' dueño de algún FormID referenciado, ordenados por load order) → con eso se arma el remapper
+' (global → (nuevo índice MAST << 24) | ObjectID) → se serializa cada NPC_ con ese remapper, se envuelven
+' en un GRUP y se emite el TES4.
+'
+' ⛔ LA ESCRITURA NO ES ATOMICA y NO es `.tmp` + fsync + rename — esta linea lo afirmaba y el propio
+' archivo la desmiente 1.000 lineas mas abajo (ver el comentario de Step 7 y el `GuardarConCopia` que
+' lo sigue). Es escritura EN EL LUGAR con copia previa VERIFICADA, y la garantia —con el motivo por el
+' que no puede ser atomica bajo MO2/Vortex— vive en UN solo lugar: la cabecera de
+' `BSA_BA2_Library_DLL.EscrituraEnElLugar`. No se repite aca.
+'
+' Al actualizar un plugin existente, los records ajenos se re-emiten VERBATIM, pero sus FormID y los
+' embebidos dentro de ellos se remapean contra la MAST list NUEVA — que es justamente lo que hace
+' CleanMasters cuando la lista de masters se corre.
+
+Public Module SaveNpcEspWriter
+
+    ''' <summary>Traduce un identificador del espacio del ORDEN DE CARGA al del archivo que se
+    ''' esta escribiendo: byte alto = indice en la MAST nueva, 24 bits bajos = el ObjectID de
+    ''' siempre. Lo arma quien escribe el plugin, que es el unico que conoce esa lista.</summary>
+    Public Delegate Function FormIdRemapper(globalFormID As UInteger) As UInteger
+
+    ''' <summary>One NPC_ override to write. Caller provides the type-safe parse model
+    ''' and the source plugin name (for FormID master resolution).</summary>
+    Public Class NpcOverrideEntry
+        ''' <summary>El NPC_ a grabar. Su <see cref="NPC_Data.Record"/> ES el cuerpo: lo que el
+        ''' usuario no toco se reproduce solo, incluidos los bytes que el formato declara como
+        ''' relleno. Obligatorio.</summary>
+        Public Npc As NPC_Data
+        ''' <summary>Plugin name (with extension, e.g. "Fallout4.esm") that originally
+        ''' DEFINES this NPC. Used to resolve the FormID's source master and emit the
+        ''' record FormID on the override side.</summary>
+        Public SourcePluginName As String
+        ''' <summary>Original record header (Flags, VCS, Version) — preserved verbatim
+        ''' when re-emitting except for DataSize (recomputed) and the IsCompressed flag
+        ''' which we always strip (we emit uncompressed bodies for tooling friendliness).</summary>
+        Public OriginalHeader As RecordHeader
+    End Class
+
+    ''' <summary>One NPC_ NEW record (not override) to write into the plugin. The writer assigns a real
+    ''' self-index FormID via draftRemap exactly like NEW <see cref="OtftRecordEntry"/> / <see cref="LvliRecordEntry"/>:
+    ''' the caller hands a PROVISIONAL sentinel (high byte 0xFF) in <see cref="ProvisionalFormID"/>; the writer
+    ''' rewrites every reference to it (including the record's own header FormID) through the single remapper.
+    ''' Use case: cloning a vanilla NPC into N variants with distinct FormIDs (debug tools, derivation experiments,
+    ''' or future "Duplicate NPC" features in NPC_Manager). The caller fully populates <see cref="NpcData"/> with
+    ''' the modifications (EditorID, TINI/TINC/TIAS for tint intensity, MSDV for morph values, etc.) BEFORE passing.
+    ''' Record header values (Flags, VCS1, Version, VCS2) are emitted as defaults — see SerializeNpcCreateRecord.
+    ''' All FormID references inside NpcData (RNAM, HEAD parts, factions, etc.) are remapped against the new
+    ''' MAST list — the master discovery walk includes creates so referenced plugins land in the MAST list.</summary>
+    Public Class NpcCreateEntry
+        ''' <summary>El NPC_ a grabar. Su <see cref="NPC_Data.Record"/> ES el cuerpo, y quien clona lo
+        ''' trae del original: asi el clon conserva todo lo que ningun editor toca (datos de IA, ataques,
+        ''' sonidos). Sin record el NPC_ arranca con los campos que el formato marca como obligatorios y
+        ''' solo lleva lo que la aplicacion escriba.</summary>
+        Public NpcData As NPC_Data
+        ''' <summary>Provisional sentinel FormID (high byte 0xFF). Used by the writer to allocate a real
+        ''' self-index FormID and remap every reference to this NPC. Each create entry must have a unique
+        ''' provisional FormID (caller responsibility — typically counter-based: 0xFFFFFFFF, 0xFFFFFFFE, ...).</summary>
+        Public ProvisionalFormID As UInteger
+        ''' <summary>Plugin name (with extension, e.g. "Fallout4.esm") used as the "source" context for FormID
+        ''' master resolution of references INSIDE the cloned NpcData (RNAM=race, HDPT head parts, etc.).
+        ''' Typically the plugin that owns the base NPC being cloned. Optional: defaults to game master if empty.</summary>
+        Public BaseSourcePluginName As String = ""
+    End Class
+
+    ''' <summary>⛔ LA LEY DE ESTAS SEIS CLASES, en un solo lugar.
+    ''' <para><b>El cuerpo del record sale de <see cref="OtftRecordEntry.Record"/> y de ningun otro
+    ''' lado.</b> Todo campo que NO sea Record / FormID / OriginalVcs1 / OriginalVcs2 / IsOverride /
+    ''' IsNpcList es INDICE DE LA APLICACION y no llega al archivo: alimenta la clausura de borradores,
+    ''' la deduplicacion de identificadores o el reuso de color, nada mas.</para>
+    ''' <para>Se aprendio caro: cuando la emision paso a salir del arbol, los productores de OTFT
+    ''' quedaron sin migrar y siguieron llenando los campos viejos. El atuendo no llegaba al .esp —un
+    ''' GRUP de 24 bytes, cero records, con el NPC_ apuntandole igual— y el guardado decia que habia
+    ''' salido bien. El campo se veia vivo porque OTROS lo leian, sin ser el emisor.</para>
+    ''' <para>⚠️ El censo que decidio cuales quedaban se hizo con el COMPILADOR (cada campo convertido
+    ''' en <c>WriteOnly Property</c>, con lo que toda LECTURA pasa a ser error), no con grep: los
+    ''' nombres se repiten entre la ficha y el arbol —y <c>ChanceNone</c> esta declarado dos veces en
+    ''' este mismo archivo—, asi que ninguna busqueda por texto los distingue. Ese instrumento sirve
+    ''' mientras <c>Option Infer</c> siga en <c>On</c> (default del SDK): con Off, los <c>Dim x = ...</c>
+    ''' pasan a <c>Object</c>, sus accesos son late-bound y el compilador deja de verlos.</para>
+    ''' <para><b>Leyes que vivian en los helpers borrados y no tienen otro lugar:</b></para>
+    ''' <list type="bullet">
+    ''' <item>LVLM (Max Count) solo esta declarado para Fallout 4 en LVLI/LVLN; Skyrim no trae ese
+    '''   subrecord.</item>
+    ''' <item>LVLG (Use Global), LVSG (Epic Loot Chance), ONAM (Override Name) y LLKC (Filter Keywords)
+    '''   son de Fallout 4. En Skyrim, Use Global existe con otro nombre de propiedad; los otros tres
+    '''   NO tienen equivalente.</item>
+    ''' <item>Los bytes de MODS (generic model de una LVLN) llevan un FormID de MSWP que hay que
+    '''   remapear al emitir.</item>
+    ''' </list></summary>
+    ''' <summary>One OTFT (outfit) record to write into the same plugin as the NPC override(s).
+    ''' Authored in the Edit Outfit "Create" tab. Two flavours:
+    '''   • NEW (IsOverride=False): a brand-new outfit owned by this plugin. <see cref="FormID"/> is
+    '''     the caller's PROVISIONAL sentinel (high byte 0xFF); the writer assigns the real plugin
+    '''     self-index FormID ((masterCount &lt;&lt; 24) | objIndex, objIndex≥0x800, the Creation Kit's
+    '''     convention for new records) and remaps
+    '''     every reference to it (notably the NPC.DOFT that points at the provisional).
+    '''   • OVERRIDE (IsOverride=True): edit of an existing OTFT keeping its EditorID. <see cref="FormID"/>
+    '''     is that record's real global FormID; emitted as an override (master index remapped).
+    ''' Body = EDID + INAM (array of ARMO/LVLI FormIDs, remapped against the new MAST list).</summary>
+    Public Class OtftRecordEntry
+        ''' <summary>El record a grabar. De acá sale todo el cuerpo.</summary>
+        Public Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29 -un GRUP de
+        ''' 24 bytes con el NPC_ apuntandole igual- y compilaba perfecto, porque hasta entonces
+        ''' <see cref="Record"/> era un campo mas que arrancaba vacio y olvidarse era legal.
+        ''' <para>El campo sigue siendo escribible a proposito: el merge de un OVERRIDE reemplaza el arbol
+        ''' de una ficha YA armada (NpcOverrideSaver, fases 2c y 2d). Lo que esta prohibido es CREARLA sin
+        ''' arbol, que es el defecto que se comio el atuendo.</para></summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            Me.Record = record
+        End Sub
+
+        ''' <summary>New: provisional sentinel (0xFF…). Override: the existing OTFT's real global FormID.</summary>
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        Public ItemArmoFormIDs As New List(Of UInteger)
+        Public IsOverride As Boolean
+        ''' <summary>VCS1/VCS2 preserved from the source record on preserve-existing overrides — kept
+        ''' verbatim so a re-save doesn't bump the version counters CK uses for conflict detection.
+        ''' Defaults to zero for NEW drafts (no source).</summary>
+        Public OriginalVcs1 As UInteger
+        Public OriginalVcs2 As UShort
+    End Class
+
+    ''' <summary>One LVLI (leveled item) record to write into the same plugin — a leveled list authored in
+    ''' the Edit Outfit editor's "New LVL…" flow. ALWAYS new (owned by this plugin): <see cref="FormID"/>
+    ''' is the caller's PROVISIONAL sentinel (high byte 0xFF), assigned a real self-index FormID by the
+    ''' writer exactly like a NEW <see cref="OtftRecordEntry"/>. Because every draft (OTFT + LVLI) is pre-
+    ''' assigned its real FormID in <c>draftRemap</c> BEFORE any record is serialized, references between
+    ''' drafts resolve through the single remapper regardless of emit order — an OTFT.INAM pointing at a
+    ''' draft LVLI, and a draft LVLI's LVLO pointing at another draft LVLI, both rewrite to the real
+    ''' self-index FormIDs. Body layout: EDID + OBND + LVLD + LVLM + LVLF +
+    ''' LLCT + N×LVLO (12 bytes each).</summary>
+    Public Class LvliRecordEntry
+        ''' <summary>El record a grabar. De acá sale todo el cuerpo -EDID/OBND/LVLD/LVLM/LVLF/LLCT/entradas
+        ''' y, en un LVLI, LLKC/LVSG/ONAM; en un LVLN, el generic model-. Los demás campos de esta clase
+        ''' siguen poblados para el indexado que hace NpcOverrideSaver (que ARMO referencia una entrada,
+        ''' deduplicado de NPC ya nivelados, etc.); si se tocan tienen que escribirse tambien acá.</summary>
+        Public Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29 -un GRUP de
+        ''' 24 bytes con el NPC_ apuntandole igual- y compilaba perfecto, porque hasta entonces
+        ''' <see cref="Record"/> era un campo mas que arrancaba vacio y olvidarse era legal.
+        ''' <para>El campo sigue siendo escribible a proposito: el merge de un OVERRIDE reemplaza el arbol
+        ''' de una ficha YA armada (NpcOverrideSaver, fases 2c y 2d). Lo que esta prohibido es CREARLA sin
+        ''' arbol, que es el defecto que se comio el atuendo.</para></summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            Me.Record = record
+        End Sub
+
+        ''' <summary>NEW: provisional sentinel (0xFF…), rewritten to the real self-index FormID by the writer.
+        ''' OVERRIDE: the existing LVLI's real global FormID (master-remapped on emit), e.g. an LVLI authored in
+        ''' a prior save and re-preserved when updating the same plugin.</summary>
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        Public Entries As New List(Of LvliEntryData)
+        ''' <summary>True = override an existing LVLI (keep its real FormID + EditorID). False = brand-new
+        ''' (draft) list assigned a self-index FormID.</summary>
+        Public IsOverride As Boolean
+        ''' <summary>VCS1/VCS2 preserved from the source record on preserve-existing overrides. See
+        ''' <see cref="OtftRecordEntry.OriginalVcs1"/> for rationale.</summary>
+        Public OriginalVcs1 As UInteger
+        Public OriginalVcs2 As UShort
+        ''' <summary>True = emit as LVLN (Leveled NPC) instead of LVLI.
+        ''' El HEAD del body coincide (EDID/OBND/LVLD/LVLM/LVLF/LVLG/LLCT/N×(LVLO+COED)/LLKC), pero el
+        ''' TAIL difiere: LVLN termina con un generic model (<see cref="ModelSubrecords"/>) y NO lleva
+        ''' LVSG/ONAM; LVLI lleva LVSG+ONAM y NO model. Cada LVLO de una LVLN referencia un NPC_/LVLN
+        ''' FormID. En este writer, LVLN va antes que LVLI en el orden de emision de los GRUP.</summary>
+        Public IsNpcList As Boolean = False
+    End Class
+
+    ''' <summary>One LVLO entry inside an <see cref="LvliRecordEntry"/>. The reference is an ARMO (real),
+    ''' a vanilla LVLI (real), or another draft LVLI (provisional — remapped via draftRemap). May carry a
+    ''' trailing COED with per-entry Owner/Rank metadata.</summary>
+    Public Class LvliEntryData
+        Public Level As UShort = 1
+        Public RefFormID As UInteger
+        Public Count As UShort = 1
+        Public ChanceNone As Byte
+        ''' <summary>True when the entry carries a COED. Mirror of NPC_InventoryItem COED fields.</summary>
+        Public HasCoed As Boolean
+        Public CoedOwnerFormID As UInteger
+        ''' <summary>COED +4 union: GLOB FormID when Owner=NPC_ (CoedExtraIsFormID=True), Required Rank
+        ''' s32 when Owner=FACT, unused bytes otherwise. Same conditional-remap rule as NPC_ inventory.</summary>
+        Public CoedOwnerExtra As UInteger
+        Public CoedExtraIsFormID As Boolean
+        Public CoedItemCondition As Single
+    End Class
+
+
+    ''' <summary>One MSWP (Material Swap) record to write into the plugin. NEW-only in this task:
+    ''' <see cref="FormID"/> is the caller's PROVISIONAL sentinel (high byte 0xFF), assigned a real
+    ''' self-index FormID by the writer (mirror of NEW <see cref="OtftRecordEntry"/>). Body order:
+    ''' EDID + FNAM(Tree Folder, optional) + N×(BNAM 'Original Material' +
+    ''' SNAM 'Replacement Material' + CNAM 'Color Remapping Index' optional). MSWP carries NO embedded
+    ''' FormIDs in its body — only its own record FormID is remapped.</summary>
+    Public Class MswpRecordEntry
+        ''' <summary>El record a grabar. De acá sale TODO el cuerpo: el orden de los subrecords, qué
+        ''' campos van y de qué tamaño es cada uno los decide la declaración del formato, no una
+        ''' secuencia de llamadas escrita a mano.</summary>
+        Public Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29 -un GRUP de
+        ''' 24 bytes con el NPC_ apuntandole igual- y compilaba perfecto, porque hasta entonces
+        ''' <see cref="Record"/> era un campo mas que arrancaba vacio y olvidarse era legal.
+        ''' <para>El campo sigue siendo escribible a proposito: el merge de un OVERRIDE reemplaza el arbol
+        ''' de una ficha YA armada (NpcOverrideSaver, fases 2c y 2d). Lo que esta prohibido es CREARLA sin
+        ''' arbol, que es el defecto que se comio el atuendo.</para></summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            Me.Record = record
+        End Sub
+
+        ''' <summary>NEW: provisional sentinel (0xFF…). OVERRIDE (not implemented here): the existing
+        ''' MSWP's real global FormID.</summary>
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        Public IsOverride As Boolean = False
+        Public OriginalVcs1 As UInteger = 0UI
+        Public OriginalVcs2 As UShort = 0US
+    End Class
+
+    ''' <summary>Un record CLFM (Color) a escribir: es el vehiculo de persistencia del tinte de pelo absoluto
+    ''' de RaceMenu en SSE (el .jslot guarda un RGB empaquetado, no una ref a CLFM). Dos sabores, como
+    ''' <see cref="OtftRecordEntry"/>: NEW (IsOverride=False), donde <see cref="FormID"/> es el centinela
+    ''' provisional del caller y el writer asigna el FormID self-index real y remapea toda referencia -entre
+    ''' ellas el NPC_.HCLF-; y OVERRIDE, un CLFM autorado por un guardado previo de este mismo plugin, que se
+    ''' re-emite para que un re-save no lo tire y deje colgados los HCLF que lo apuntan.
+    ''' <para>Cuerpo: EDID + [FULL] + CNAM + FNAM. FULL es opcional y traducible, asi que viaja en DOS formas
+    ''' (<see cref="FullName"/> autorado aca para NEW, <see cref="FullNameRaw"/> verbatim para OVERRIDE). CNAM
+    ''' es un RGBA de 4 bytes [R,G,B,A]; medido sobre Skyrim.esm, los 178 CLFM llevan A=0 y los 15 de
+    ''' pelo FNAM=1
+    ''' (Playable), que son los valores que recibe un color sintetizado. El CLFM no lleva FormID en el cuerpo.</para>
+    ''' <para>⚠ï¸ SSE-ONLY por construccion (lo gatea el caller): un CLFM de pelo de FO4 lleva RemappingIndex en
+    ''' vez de RGB. El writer en si se mantiene game-agnostic.</para></summary>
+    Public Class ClfmRecordEntry
+        ''' <summary>El record a grabar. De acá sale todo el cuerpo: EDID + [FULL] + CNAM + FNAM. Los
+        ''' demás campos siguen poblados para el índice de reuso por color de
+        ''' <c>NpcOverrideSaver.MaterializeSseHairColors</c>; si se tocan tienen que escribirse tambien acá.</summary>
+        Public Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29 -un GRUP de
+        ''' 24 bytes con el NPC_ apuntandole igual- y compilaba perfecto, porque hasta entonces
+        ''' <see cref="Record"/> era un campo mas que arrancaba vacio y olvidarse era legal.
+        ''' <para>El campo sigue siendo escribible a proposito: el merge de un OVERRIDE reemplaza el arbol
+        ''' de una ficha YA armada (NpcOverrideSaver, fases 2c y 2d). Lo que esta prohibido es CREARLA sin
+        ''' arbol, que es el defecto que se comio el atuendo.</para></summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            Me.Record = record
+        End Sub
+
+        ''' <summary>NEW: provisional sentinel (0xFF…). OVERRIDE: the existing CLFM's real global FormID.</summary>
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        ''' <summary>Packed 0xRRGGBB. Emitted to CNAM as bytes R,G,B then <see cref="ColorAlpha"/>.</summary>
+        Public ColorRgb As Integer
+        Public IsOverride As Boolean = False
+        ''' <summary>VCS1/VCS2 preserved from the source record on OVERRIDE entries. See
+        ''' <see cref="OtftRecordEntry.OriginalVcs1"/>.</summary>
+        Public OriginalVcs1 As UInteger = 0UI
+        Public OriginalVcs2 As UShort = 0US
+    End Class
+
+    ''' <summary>One ARMA (Armor Addon) record to write. NEW: <see cref="FormID"/> es el centinela
+    ''' provisional del caller (0xFF…), el writer le asigna el FormID self-index real. OVERRIDE: el
+    ''' FormID real del record que se esta sobrescribiendo. Las banderas de cabecera (No Underarmor
+    ''' Scaling / Has Sculpt Data / Hi-Res 1st Person Only) salen del árbol, no de esta clase.
+    ''' </summary>
+    Public Class ArmaRecordEntry
+        ''' <summary>El record a grabar. De acá sale todo el cuerpo y la cabecera y, en un OVERRIDE,
+        ''' los campos que el usuario no tocó: el árbol viene de leer la fuente, así que
+        ''' reproducirlo alcanza sin un camino de preservación aparte.</summary>
+        Public Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29 -un GRUP de
+        ''' 24 bytes con el NPC_ apuntandole igual- y compilaba perfecto, porque hasta entonces
+        ''' <see cref="Record"/> era un campo mas que arrancaba vacio y olvidarse era legal.
+        ''' <para>El campo sigue siendo escribible a proposito: el merge de un OVERRIDE reemplaza el arbol
+        ''' de una ficha YA armada (NpcOverrideSaver, fases 2c y 2d). Lo que esta prohibido es CREARLA sin
+        ''' arbol, que es el defecto que se comio el atuendo.</para></summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            Me.Record = record
+        End Sub
+
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        Public IsOverride As Boolean = False
+        Public OriginalVcs1 As UInteger = 0UI
+        Public OriginalVcs2 As UShort = 0US
+    End Class
+
+    ''' <summary>One ARMO (Armor) record to write. NEW: <see cref="FormID"/> es el centinela
+    ''' provisional del caller (0xFF…), el writer le asigna el FormID self-index real. OVERRIDE: el
+    ''' FormID real del record que se esta sobrescribiendo.</summary>
+    Public Class ArmoRecordEntry
+        ''' <summary>El record a grabar. De acá sale todo el cuerpo y la cabecera y, en un OVERRIDE,
+        ''' los campos que el usuario no tocó: el árbol viene de leer la fuente, así que
+        ''' reproducirlo alcanza sin un camino de preservación aparte.
+        ''' <para>⛔ ReadOnly, y ACÁ SÍ (no en las otras fichas): la guarda de vista EFECTIVA del
+        ''' constructor es lo ÚNICO que separa la vista materializada del .esp, y con un campo público
+        ''' escribible se eludía con un <c>.Record = efectiva</c> después de construir. Una guarda que se
+        ''' puede rodear por la puerta de al lado no es una guarda. Medido al cerrarlo: CERO asignaciones
+        ''' externas — los seis sitios que construyen esta ficha (<c>NpcOverrideSaver:1617</c> y
+        ''' <c>:1804</c>, <c>ArmoArmaSseRoundtripProbe:161</c>, <c>LStringDestinoProbe:180</c>,
+        ''' <c>OutfitDraftSaveGate:6271</c> y <c>:6926</c>) pasan el árbol por el constructor y su
+        ''' <c>With</c> sólo toca FormID/EditorID/IsOverride/VCS.</para></summary>
+        Public ReadOnly Property Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29 -un GRUP de
+        ''' 24 bytes con el NPC_ apuntandole igual- y compilaba perfecto, porque hasta entonces
+        ''' <see cref="Record"/> era un campo mas que arrancaba vacio y olvidarse era legal.
+        ''' <para>⛔ ACÁ NO HAY MERGE DE OVERRIDE. Este párrafo decía que el campo "sigue siendo escribible
+        ''' a proposito" por las fases 2c y 2d de <c>NpcOverrideSaver</c>, y era una cita COPIADA de
+        ''' <see cref="OtftRecordEntry"/> / <see cref="LvliRecordEntry"/>, que son las dos que sí se
+        ''' reasignan (<c>NpcOverrideSaver:722</c> y <c>:851</c>). Ninguna fase reasigna el árbol de un
+        ''' ARMO: la justificación apuntaba a algo que no pasa, y era lo que sostenía el hueco.</para>
+        ''' </summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            ' ⛔ GUARDA: la vista EFECTIVA no se escribe NUNCA. Es un `CanonView` escribible e
+            ' INDISTINGUIBLE de la cruda por el tipo, asi que nada impedia pasarla — y emitir el record
+            ' del HIJO con los `MODL` del TERMINAL pliega esos FormID contra la lista de masters del
+            ' hijo. Bytes del ESP, en silencio. La marca vive en `WbContext` y es MIEMBRO de
+            ' `ParaEscritura`, asi que sobrevive a `Clonar()` y a `ParaComparar()`: el saver COPIA antes
+            ' de escribir, y una marca puesta afuera se perdia en la PRIMERA copia.
+            Dim vistaRec = TryCast(record, Canon.CanonRecordView)
+            If vistaRec IsNot Nothing AndAlso vistaRec.Context IsNot Nothing AndAlso vistaRec.Context.EsVistaEfectiva Then
+                Throw New InvalidOperationException(
+                    "ArmoRecordEntry: llego una vista EFECTIVA (la herencia de ARMO.TNAM ya aplicada). " &
+                    "Al ESP se escribe la CRUDA: lo que dice el archivo, no lo que el motor va a usar. " &
+                    "Ver Canon.CanonHerencia.")
+            End If
+            ' Al campo de respaldo de la propiedad ReadOnly: el constructor es el UNICO lugar donde el
+            ' arbol se fija, y por eso la guarda de arriba no se puede eludir despues de construir.
+            _Record = record
+        End Sub
+
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        Public IsOverride As Boolean = False
+        Public OriginalVcs1 As UInteger = 0UI
+        Public OriginalVcs2 As UShort = 0US
+    End Class
+
+
+    ''' <summary>One HDPT (Head Part) record to write. NEW: <see cref="FormID"/> es el centinela provisional del
+    ''' caller (0xFF…), el writer le asigna el FormID self-index real. OVERRIDE: el FormID real del
+    ''' record que se esta sobrescribiendo.
+    ''' <para>⛔ Es la SEGUNDA clase de record de este writer que se referencia a SI MISMA -la primera es
+    ''' LVLI, cuyo `Item` es un `Wb.Fid("Item")` SIN firma declarada: medido, LVLI->LVLI son 4.448 aristas en
+    ''' Fallout 4 y 9.891 en Skyrim-. Aca el array <c>HNAM</c> (Extra Parts) apunta a otros HDPT, y lo usan
+    ''' 2.662 de los 2.992 HDPT de Fallout 4 (89 %%, medido). No rompe nada ACA -el reparto de FormID se
+    ''' completa ANTES de serializar, asi que una auto-referencia resuelve como cualquier otra-, pero si
+    ''' obliga a que la clausura transitiva del caller recorra con conjunto de visitados, y el MOLDE resuelto
+    ''' ya existe: la clausura de LVLI con su visited set. No inventar uno nuevo.</para></summary>
+    Public Class HdptRecordEntry
+        ''' <summary>El record a grabar. De aca sale todo el cuerpo y la cabecera y, en un OVERRIDE, los
+        ''' campos que el usuario no toco: el arbol viene de leer la fuente, asi que reproducirlo alcanza
+        ''' sin un camino de preservacion aparte.</summary>
+        Public ReadOnly Property Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29.</summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            _Record = record
+        End Sub
+
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        Public IsOverride As Boolean = False
+        Public OriginalVcs1 As UInteger = 0UI
+        Public OriginalVcs2 As UShort = 0US
+    End Class
+
+    ''' <summary>One TXST (Texture Set) record to write. NEW: <see cref="FormID"/> es el centinela provisional del
+    ''' caller (0xFF…), el writer le asigna el FormID self-index real. OVERRIDE: el FormID real del
+    ''' record que se esta sobrescribiendo.
+    ''' <para>Lo referencia el <c>TNAM</c> de un HDPT (en los ojos, ESA es la diffuse) y los dos campos de skin texture de un ARMA. <c>OBND</c> esta en el 100 %% del corpus, asi que un TXST nuevo lo emite; su valor sale de la plantilla o son ceros (486 de 1.000 en FO4), que es un valor transcrito del archivo y no un default inventado.</para></summary>
+    Public Class TxstRecordEntry
+        ''' <summary>El record a grabar. De aca sale todo el cuerpo y la cabecera y, en un OVERRIDE, los
+        ''' campos que el usuario no toco: el arbol viene de leer la fuente, asi que reproducirlo alcanza
+        ''' sin un camino de preservacion aparte.</summary>
+        Public ReadOnly Property Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29.</summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            _Record = record
+        End Sub
+
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        Public IsOverride As Boolean = False
+        Public OriginalVcs1 As UInteger = 0UI
+        Public OriginalVcs2 As UShort = 0US
+    End Class
+
+    ''' <summary>One FLST (Form List) record to write. NEW: <see cref="FormID"/> es el centinela provisional del
+    ''' caller (0xFF…), el writer le asigna el FormID self-index real. OVERRIDE: el FormID real del
+    ''' record que se esta sobrescribiendo.
+    ''' <para>La referencia el <c>RNAM</c> de un HDPT (en que razas es valido) y el swap-list de skin de un ARMA. <c>LNAM</c> es un arreglo de FormID SIN firma declarada en el esquema: la lista puede contener cualquier cosa, y el filtro a RACE es de la UI y no del record.</para></summary>
+    Public Class FlstRecordEntry
+        ''' <summary>El record a grabar. De aca sale todo el cuerpo y la cabecera y, en un OVERRIDE, los
+        ''' campos que el usuario no toco: el arbol viene de leer la fuente, asi que reproducirlo alcanza
+        ''' sin un camino de preservacion aparte.</summary>
+        Public ReadOnly Property Record As Canon.CanonView
+
+        ''' <summary>El arbol es OBLIGATORIO para crear la ficha, y por eso NO hay constructor sin
+        ''' argumentos. El cuerpo del record sale de <see cref="Record"/> y de ningun otro lado, asi que
+        ''' una ficha sin arbol emite CERO bytes: el record DESAPARECE del archivo sin error, el GRUP se
+        ''' arma igual con su cabecera y el plugin queda valido. Paso con OTFT el 2026-08-29.</summary>
+        Public Sub New(record As Canon.CanonView)
+            If record Is Nothing Then
+                Throw New ArgumentNullException(NameOf(record),
+                    "El cuerpo del record sale del arbol: sin el no hay nada que grabar.")
+            End If
+            _Record = record
+        End Sub
+
+        Public FormID As UInteger
+        Public EditorID As String = ""
+        Public IsOverride As Boolean = False
+        Public OriginalVcs1 As UInteger = 0UI
+        Public OriginalVcs2 As UShort = 0US
+    End Class
+
+    ''' <summary>Result of a save operation.</summary>
+    Public Class SaveResult
+        Public OutputPath As String
+        Public MasterList As New List(Of String)
+        Public NpcCount As Integer
+        Public RemovedMasters As New List(Of String)
+        Public AddedMasters As New List(Of String)
+        ''' <summary>For each master in the final MAST list, the FormIDs that brought it in.
+        ''' Useful for auditing whether a master is legitimately required (an actual NPC reference
+        ''' resolves to that plugin) or accidentally pulled in by a parser/collection bug.
+        ''' Format: master name → list of resolved FormIDs.</summary>
+        Public MasterAudit As New Dictionary(Of String, List(Of UInteger))(StringComparer.OrdinalIgnoreCase)
+        ''' <summary>For every NEW draft emitted (OTFT outfits + LVLI leveled lists): provisional sentinel
+        ''' FormID (0xFF… as the caller handed it) → the FILE-LOCAL real FormID written into the record
+        ''' header ((selfMasterIdx &lt;&lt; 24) | objectIndex). The caller resolves each file-local value to a
+        ''' GLOBAL FormID after re-mounting the saved plugin (PluginManager.ResolveReferencedFormID) to
+        ''' "promote" the in-memory drafts to real records — remapping any overlay/draft reference that
+        ''' still points at the provisional and dropping the now-persisted drafts (no duplicate on reuse).</summary>
+        Public DraftFormIdMap As New Dictionary(Of UInteger, UInteger)
+
+        ''' <summary>Lo que el escritor encontró y el usuario tiene que ver: hoy, los textos
+        ''' localizados que no se pudieron resolver contra las tablas de idioma y salieron VACÍOS.
+        ''' <para>Existe porque un hallazgo que no llega a la pantalla es lo mismo que no tenerlo: el
+        ''' archivo saldría bien formado y con un NPC sin nombre, sin que nadie se entere.</para></summary>
+        Public Advertencias As New List(Of String)
+    End Class
+
+    ''' <summary>Los buffers que produce UN recorrido completo del walk de emision, agrupados por GRUP.
+    ''' Existe porque ese walk se corre DOS veces: una para DESCUBRIR que masters hacen falta y otra para
+    ''' escribir los bytes definitivos. Ver el Paso 1 de <see cref="SaveOverridePlugin"/>.</summary>
+    Private NotInheritable Class EmittedBuffers
+        ''' <summary>Avisos del emisor de ESTA pasada. Van acá y no en una variable de módulo porque el
+        ''' walk se corre DOS veces y sólo la segunda produce los bytes definitivos: los de la pasada
+        ''' de descubrimiento se tiran junto con sus buffers, sin dejar duplicados.</summary>
+        Public ReadOnly Advertencias As New List(Of String)
+        Public ReadOnly Records As New List(Of Byte())
+        Public ReadOnly Otft As New List(Of Byte())
+        Public ReadOnly Lvli As New List(Of Byte())
+        Public ReadOnly Lvln As New List(Of Byte())
+        Public ReadOnly Mswp As New List(Of Byte())
+        Public ReadOnly Arma As New List(Of Byte())
+        Public ReadOnly Armo As New List(Of Byte())
+        Public ReadOnly Clfm As New List(Of Byte())
+        ''' <summary>Los tres GRUP que trae la ola de head parts. Van en el orden referenced-first del
+        ''' Paso 5: TXST y FLST primero (no referencian nada de lo que escribimos y los referencia HDPT,
+        ''' y tambien ARMA/ARMO), y HDPT antes de NPC_.</summary>
+        Public ReadOnly Hdpt As New List(Of Byte())
+        Public ReadOnly Txst As New List(Of Byte())
+        Public ReadOnly Flst As New List(Of Byte())
+    End Class
+
+    ''' <summary>Save (or update) a plugin file containing the given NPC overrides.
+    ''' Performs full MAST cleanup: any masters not referenced by the final
+    ''' record set are dropped (except the game master, which is always preserved).</summary>
+    ''' <param name="outputPath">Final destination path for the plugin (.esp/.esm).</param>
+    ''' <param name="game">FO4 or SSE — picks game master and TES4/HEDR version constants.</param>
+    ''' <param name="markAsMaster">If True, set FLAG_ESM (master flag). Independent from
+    ''' <paramref name="lightMaster"/>: any combination of the two is emitted verbatim into
+    ''' the TES4 header. False = no master flag (plain ESP slot semantics).</param>
+    ''' <param name="lightMaster">If True, set FLAG_ESL (light slot). Independent from
+    ''' <paramref name="markAsMaster"/>.</param>
+    ''' <param name="overrides">List of NPC overrides to emit. Order is preserved.</param>
+    ''' <param name="existingRecords">Optional: records from a pre-existing plugin (loaded
+    ''' via PluginReader) that should be preserved alongside the new overrides. The caller
+    ''' filters out NPCs whose FormIDs are about to be replaced by entries in 'overrides'.</param>
+    ''' <param name="existingMasters">MAST list of the pre-existing plugin, if any. Used as
+    ''' the source for resolving FormIDs inside 'existingRecords'.</param>
+    ''' <param name="pluginManager">Required for FormID resolution (master high-byte → plugin name).</param>
+    Public Function SaveOverridePlugin(outputPath As String,
+                                       game As Config_App.Game_Enum,
+                                       markAsMaster As Boolean,
+                                       lightMaster As Boolean,
+                                       entries As List(Of NpcOverrideEntry),
+                                       existingRecords As List(Of PluginRecord),
+                                       existingMasters As List(Of String),
+                                       pluginManager As PluginManager,
+                                       Optional outfitEntries As List(Of OtftRecordEntry) = Nothing,
+                                       Optional leveledEntries As List(Of LvliRecordEntry) = Nothing,
+                                       Optional existingNextObjectId As UInteger = 0UI,
+                                       Optional npcCreateEntries As List(Of NpcCreateEntry) = Nothing,
+                                       Optional armoEntries As List(Of ArmoRecordEntry) = Nothing,
+                                       Optional armaEntries As List(Of ArmaRecordEntry) = Nothing,
+                                       Optional mswpEntries As List(Of MswpRecordEntry) = Nothing,
+                                       Optional clfmEntries As List(Of ClfmRecordEntry) = Nothing,
+                                       Optional hdptEntries As List(Of HdptRecordEntry) = Nothing,
+                                       Optional txstEntries As List(Of TxstRecordEntry) = Nothing,
+                                       Optional flstEntries As List(Of FlstRecordEntry) = Nothing) As SaveResult
+
+        If String.IsNullOrWhiteSpace(outputPath) Then Throw New ArgumentException("outputPath is empty.", NameOf(outputPath))
+        If entries Is Nothing Then entries = New List(Of NpcOverrideEntry)()
+        If existingRecords Is Nothing Then existingRecords = New List(Of PluginRecord)()
+        If existingMasters Is Nothing Then existingMasters = New List(Of String)()
+        If pluginManager Is Nothing Then Throw New ArgumentException("pluginManager is required for FormID resolution.", NameOf(pluginManager))
+        If outfitEntries Is Nothing Then outfitEntries = New List(Of OtftRecordEntry)()
+        If leveledEntries Is Nothing Then leveledEntries = New List(Of LvliRecordEntry)()
+        If npcCreateEntries Is Nothing Then npcCreateEntries = New List(Of NpcCreateEntry)()
+        If armoEntries Is Nothing Then armoEntries = New List(Of ArmoRecordEntry)()
+        If armaEntries Is Nothing Then armaEntries = New List(Of ArmaRecordEntry)()
+        If mswpEntries Is Nothing Then mswpEntries = New List(Of MswpRecordEntry)()
+        If clfmEntries Is Nothing Then clfmEntries = New List(Of ClfmRecordEntry)()
+        If hdptEntries Is Nothing Then hdptEntries = New List(Of HdptRecordEntry)()
+        If txstEntries Is Nothing Then txstEntries = New List(Of TxstRecordEntry)()
+        If flstEntries Is Nothing Then flstEntries = New List(Of FlstRecordEntry)()
+
+        Dim gameMaster = MasterFileNamePublic(game)
+
+        ' ====================================================================
+        ' Paso 1: el walk de EMISION, parametrizado por el remapper.
+        ' Es la UNICA ley sobre que FormID terminan en el archivo: la MAST se DERIVA de lo que estos
+        ' bucles realmente escriben, asi que no puede quedar corta por construccion. NO reintroducir
+        ' COLECTORES que caminen el modelo en paralelo a los emisores: son dos leyes mantenidas a mano,
+        ' ya divergieron en OBTS y en CSDI, y cada divergencia es una referencia al mod equivocado.
+        ' Se corre DOS veces porque el indice de master va horneado en cada FormID emitido y
+        ' selfMasterIdx = sortedMasters.Count: el valor a escribir depende del conjunto COMPLETO de masters,
+        ' que recien se conoce cuando el recorrido termino. La primera pasada solo DESCUBRE (remapper
+        ' identidad, buffers descartados); la segunda, con el remapper real, es la que produce los bytes.
+        ' ====================================================================
+        ' selfIdx = el indice de master con el que el archivo de salida nombra a sus PROPIOS records.
+        ' La pasada de DESCUBRIMIENTO lo pasa en -1 porque todavia no existe la MAST definitiva: sus
+        ' bytes se tiran, y lo unico que importa de ella es a que archivos llama el remapper.
+        Dim emitAll As Func(Of SaveNpcEspWriter.FormIdRemapper, Integer, EmittedBuffers) =
+            Function(rm As SaveNpcEspWriter.FormIdRemapper, selfIdx As Integer) As EmittedBuffers
+                Dim b As New EmittedBuffers
+                For Each entry In entries
+                    b.Records.Add(SerializeNpcRecord(entry, rm, game, selfIdx, b.Advertencias))
+                Next
+                For Each existing In existingRecords
+                    b.Records.Add(SerializeExistingRecord(existing, existingMasters, pluginManager, rm, game, selfIdx, b.Advertencias))
+                Next
+                ' NEW NPC_ records (clones with self-index FormIDs). Emitted into the same NPC_ GRUP as the
+                ' overrides — the CK and the engine consume NPC_ records uniformly regardless of
+                ' override-vs-new.
+                For Each ce In npcCreateEntries
+                    b.Records.Add(SerializeNpcCreateRecord(ce, rm, game, selfIdx, b.Advertencias))
+                Next
+
+                ' OTFT outfit records (Edit Outfit "Create" tab). Each emits as a top-level record: NEW ones
+                ' carry a self-index FormID (via draftRemap inside the remapper); OVERRIDE ones keep their real
+                ' FormID. INAM items are remapped against the new MAST list.
+                For Each oe In outfitEntries
+                    b.Otft.Add(SerializeOtftRecord(oe, rm, game, selfIdx, b.Advertencias))
+                Next
+
+                ' LVLI leveled lists (Edit Outfit "New LVL…"). Each emits as a self-index top-level record; LVLO
+                ' references are remapped (draft → self via draftRemap; real ARMO/LVLI → master remap).
+                For Each le In leveledEntries
+                    Dim buf = SerializeLvliRecord(le, rm, game, selfIdx, b.Advertencias)
+                    If le.IsNpcList Then b.Lvln.Add(buf) Else b.Lvli.Add(buf)
+                Next
+
+                ' MSWP / ARMA / ARMO records (NEW-only). Each emits a self-index top-level record; every FormID it
+                ' references is remapped (draft → self via draftRemap; real → master remap).
+                For Each mw In mswpEntries
+                    b.Mswp.Add(SerializeMswpRecord(mw, rm, game, selfIdx, b.Advertencias))
+                Next
+                For Each ae In armaEntries
+                    b.Arma.Add(SerializeArmaRecord(ae, rm, game, selfIdx, b.Advertencias))
+                Next
+                For Each ao In armoEntries
+                    b.Armo.Add(SerializeArmoRecord(ao, rm, game, selfIdx, b.Advertencias))
+                Next
+
+                ' CLFM colour records (SSE hair tint materialized from a RaceMenu preset). NEW ones take a self-index
+                ' FormID via draftRemap; OVERRIDE ones (authored by a prior save of this plugin) keep their real FormID.
+                For Each ce In clfmEntries
+                    b.Clfm.Add(SerializeClfmRecord(ce, rm, game, selfIdx, b.Advertencias))
+                Next
+
+                ' TXST / FLST / HDPT. Mismo camino que MSWP/ARMA/ARMO: el cuerpo sale del arbol y cada
+                ' FormID que referencian pasa por el remapper (draft → self via draftRemap; real →
+                ' remap de masters). Una auto-referencia HNAM entre dos HDPT nuevos resuelve igual,
+                ' porque draftRemap ya esta completo antes de esta pasada.
+                For Each te In txstEntries
+                    b.Txst.Add(SerializeTxstRecord(te, rm, game, selfIdx, b.Advertencias))
+                Next
+                For Each fe In flstEntries
+                    b.Flst.Add(SerializeFlstRecord(fe, rm, game, selfIdx, b.Advertencias))
+                Next
+                For Each he In hdptEntries
+                    b.Hdpt.Add(SerializeHdptRecord(he, rm, game, selfIdx, b.Advertencias))
+                Next
+                Return b
+            End Function
+
+        ' ====================================================================
+        ' Paso 2: armar la MAST list nueva. Por cada FormID del record se agrega el archivo que DEFINE el
+        ' master (byte alto -> MAST del plugin origen -> load order). El archivo donde se vio por ultima vez
+        ' el FormID NO es lo que hay que agregar: hay que agregar el que es dueno del record master.
+        ' GetOriginatingPluginName resuelve eso, y nuestro ResolveFormID ya mapeo los FormID locales a
+        ' archivos master por la MAST del plugin de origen.
+        ' ====================================================================
+        Dim referencedPluginNames As New HashSet(Of String)(StringComparer.OrdinalIgnoreCase)
+        ' Audit table: which FormID is bringing in which master plugin? Logged so the user can
+        ' identify "extra" masters as either legitimate references or as bugs upstream.
+        ' HashSet, no List: el remapper se invoca UNA VEZ POR REFERENCIA EMITIDA, asi que una lista
+        ' acumularia el mismo FormID decenas de veces por master. El audit contesta "que FormID trae
+        ' a este master", que es una pregunta de CONJUNTO.
+        Dim auditPerPlugin As New Dictionary(Of String, HashSet(Of UInteger))(StringComparer.OrdinalIgnoreCase)
+        ' Pasada de DESCUBRIMIENTO: se corre el MISMO walk de emision del Paso 1 con un remapper que, de paso,
+        ' anota cada FormID que le pasan. Por eso la MAST no puede quedar corta: lo que se anota es exactamente
+        ' lo que despues se escribe. Los buffers que devuelve se tiran — todavia no existe el remapper real.
+        ' Un solo nombre de salida para las DOS lambdas: es el predicado de "este FormID es mio, no de un
+        ' master", y escribirlo dos veces es justo la clase de duplicacion que este refactor vino a sacar.
+        Dim outName = Path.GetFileName(outputPath)
+        Dim discoveryRemapper = GenericPluginWriter.DiscoveryRemapper(pluginManager, outName, referencedPluginNames, auditPerPlugin)
+        Call emitAll(discoveryRemapper, -1)
+
+        ' We do NOT force-add the game master here. Auto-adding a game-master file only makes sense when
+        ' the source record itself is hardcoded as a game-master record — for normal overrides the game
+        ' master arrives via the usual FormID resolution (RNAM=Race, VTCK=Voice, etc.). In practice any NPC
+        ' override references game-master records so this is a no-op, but following that same
+        ' restraint avoids a spurious master if a NPC somehow doesn't reference Fallout4.esm.
+
+        ' Build MAST list following the standard masters-cleanup convention: preserve the original
+        ' master ordering for masters that survive the cleanup, drop unused ones, append any new ones at
+        ' the end (in load order). This minimizes the FormID-byte churn vs the "rebuild from scratch
+        ' sorted by load order" approach which would re-shuffle high bytes for every survived master
+        ' that isn't already in load order.
+        ' Pasos 2a-2c (sobrevivientes en su orden, nuevos en orden de carga, todo ordenado por orden de carga con el
+        ' master del juego primero): una sola copia, en GenericPluginWriter.BuildMasterList.
+        Dim sortedMasters = GenericPluginWriter.BuildMasterList(existingMasters, referencedPluginNames, pluginManager, gameMaster, alwaysKeepGameMaster:=False)
+
+        ' ====================================================================
+        ' Paso 3: armar el FormIdRemapper. Por cada FormID global: resolver el plugin de origen, buscar su nuevo
+        ' indice de MAST (-1 = error) y devolver (newMastIdx << 24) | (FormID & 0xFFFFFF).
+        ' Casos especiales: FormID 0 se emite como 0 (ref nula); si el plugin de origen es el propio archivo de
+        ' salida, el indice es el "self FileID": len(masters).
+        ' ====================================================================
+        Dim masterIndexLookup As New Dictionary(Of String, Integer)(StringComparer.OrdinalIgnoreCase)
+        For i = 0 To sortedMasters.Count - 1
+            masterIndexLookup(sortedMasters(i)) = i
+        Next
+        ' "Self" master index (records owned by THIS plugin) = sortedMasters.Count.
+        Dim selfMasterIdx As Integer = sortedMasters.Count
+
+        ' Cada draft NUEVO (outfits OTFT y leveled lists LVLI) recibe su FormID self-index real ANTES de
+        ' serializar: (selfMasterIdx << 24) | objIndex, con objIndex arrancando en 0x800 (convencion de
+        ' un record nuevo de FO4). El caller les habia dado un centinela PROVISIONAL con byte alto 0xFF, y
+        ' draftRemap mapea provisional -> real para que el remapper reescriba tanto el header del record como
+        ' toda referencia a el (el NPC.DOFT, el OTFT.INAM que apunta a un LVLI draft, un LVLI a otro).
+        ' Asi las referencias cruzadas resuelven por el unico remapper sin importar el orden de emision; las
+        ' claves son unicas entre ambos tipos porque salen de un solo contador de la app.
+        Dim draftRemap As New Dictionary(Of UInteger, UInteger)
+        ' Seed the draft object-ID counter from the disk HEDR if it's ahead of the default. On
+        ' update-existing, a prior save consumed object IDs 0x800..existingNextObjectId-1 (those
+        ' records are in existingRecords/Entries with self-index FormIDs). Starting at 0x800 again
+        ' would re-hand the same IDs and collide with already-preserved overrides.
+        ' Ancho del object id del ARCHIVO QUE SE ESCRIBE: 12 bits si sale con FLAG_ESL, 24 si es completo.
+        ' Va ACÁ, antes de repartir, no sólo al escribir el HEDR. El enmascarado tiene que pasar AL
+        ' REPARTIR cada object id nuevo; clampear sólo el header dejaba salir object ids > 0xFFF en un
+        ' ESL, que el motor enmascara a 12 bits (ModInfo::GetFormID) y hace colisionar con otro record —
+        ' y ademas congelaba el contador en 0xFFF, con lo que CADA guardado siguiente volvia a repartir
+        ' 0xFFF a un record distinto.
+        ' ⛔⛔ EL ANCHO SALE DE LA LEY, NO DE LA CASILLA. `lightMaster` es lo que el usuario pidió
+        ' ESCRIBIR en el header; si el plugin es light o no lo decide la ley canónica, que es
+        ' `0x200 OR (extensión .esl AND NOT IsUpdate)` (PluginManager.IsLightSlot). Las dos coinciden
+        ' siempre para un archivo que escribimos nosotros —la extensión sale de ExtensionCanonica—, pero
+        ' NO para uno que alguien renombró a mano: con "Update existing" sobre un `.esl` y la casilla
+        ' DESTILDADA, esta línea repartía object ids de 24 bits en un archivo que el motor pliega a 12
+        ' (ModInfo::GetFormID) ⇒ dos records con el mismo FormID. Es exactamente la falla que el párrafo
+        ' de arriba dice que este mask existe para evitar, entrando por la otra puerta.
+        ' El flag del header (BuildTes4Header, más abajo) sigue saliendo de `lightMaster`: eso es lo que
+        ' el usuario pidió escribir. Lo que NO puede salir de ahí es el espacio de FormID, porque el
+        ' motor no lo lee del flag sino de la ley.
+        ' Ancho por la LEY del slot, piso por archivo, semilla con recuperacion y reparto: GenericPluginWriter.ObjectIdAllocator.
+        Dim alloc As New GenericPluginWriter.ObjectIdAllocator(pluginManager, outputPath, game, lightMaster, masterIndexLookup, sortedMasters.Count, existingNextObjectId)
+
+        ' Object ids YA OCUPADOS en este archivo: los de los records PROPIOS que se preservan o se
+        ' re-emiten con su FormID real. Antes de entregar un id nuevo hay que chequear que ninguno
+        ' de estos ya lo tenga, si no dos records terminan compartiendo FormID.
+        Dim noteUsedObjectId As Action(Of UInteger) = AddressOf alloc.NoteUsed
+        For Each r In existingRecords
+            ' `r.Header.FormID` es LOCAL: existingRecords viene de un PluginReader FRESCO del archivo de
+            ' destino, que nunca pasa por MergeRecords (el único lugar que reescribe el header a global).
+            ' Pasarlo tal cual a una función que lee el byte alto como SLOT DE SESIÓN es exactamente el
+            ' defecto de este dominio. SerializeExistingRecord hace esta misma conversión, y por lo mismo.
+            noteUsedObjectId(pluginManager.ResolveReferencedFormID(r.SourcePluginName, r.Header.FormID))
+        Next
+        ' Un override de un record de otro plugin queda filtrado por el chequeo de outName; el que cuenta es
+        ' el NPC que ESTE plugin creó en un guardado anterior y ahora se vuelve a editar.
+        For Each e In entries
+            If e.Npc IsNot Nothing Then noteUsedObjectId(e.Npc.FormID)
+        Next
+        For Each oe In outfitEntries : If oe.IsOverride Then noteUsedObjectId(oe.FormID)
+        Next
+        For Each le In leveledEntries : If le.IsOverride Then noteUsedObjectId(le.FormID)
+        Next
+        For Each mw In mswpEntries : If mw.IsOverride Then noteUsedObjectId(mw.FormID)
+        Next
+        For Each ae In armaEntries : If ae.IsOverride Then noteUsedObjectId(ae.FormID)
+        Next
+        For Each ao In armoEntries : If ao.IsOverride Then noteUsedObjectId(ao.FormID)
+        Next
+        For Each ce In clfmEntries : If ce.IsOverride Then noteUsedObjectId(ce.FormID)
+        Next
+        For Each he In hdptEntries : If he.IsOverride Then noteUsedObjectId(he.FormID)
+        Next
+        For Each te In txstEntries : If te.IsOverride Then noteUsedObjectId(te.FormID)
+        Next
+        For Each fe In flstEntries : If fe.IsOverride Then noteUsedObjectId(fe.FormID)
+        Next
+
+        alloc.CheckWidthAndSeed()
+        Dim dispenseObjectId As Func(Of UInteger) = AddressOf alloc.Dispense
+        For Each oe In outfitEntries
+            If oe.IsOverride Then Continue For
+            draftRemap(oe.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        ' NPC_ creates ANTES que leveled: los NPC_ son los records primarios y sus FormIDs deben ser
+        ' estables (los bakes en disco se nombran por FormID). Una LVLN/LVLI que los referencia toma su
+        ' slot DESPUES, asi agregar/quitar una leveled list no corre los FormIDs de los NPC_. La
+        ' resolucion de refs es global (draftRemap completo antes de serializar), asi que el orden de
+        ' asignacion no afecta la correctitud — solo que numero recibe cada record.
+        For Each ce In npcCreateEntries
+            If draftRemap.ContainsKey(ce.ProvisionalFormID) Then Continue For
+            draftRemap(ce.ProvisionalFormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        For Each le In leveledEntries
+            ' OVERRIDE LVLIs keep their real FormID (master-remapped on emit) — no self-index. Only NEW
+            ' (draft) lists get a self-index. Guard against a duplicate provisional listed twice.
+            If le.IsOverride Then Continue For
+            If draftRemap.ContainsKey(le.FormID) Then Continue For
+            draftRemap(le.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        ' NEW MSWP / ARMA / ARMO drafts: pre-assign each a real self-index FormID so cross-draft refs
+        ' resolve through the single remapper irrespective of emit order (ARMA.MO2S → draft MSWP,
+        ' ARMO.MODL → draft ARMA, ARMO.MO2S → draft MSWP). OVERRIDE entries keep their real FormID. The
+        ' provisional keys are globally unique across all draft kinds (one app-side counter). Order
+        ' (MSWP → ARMA → ARMO) is cosmetic — resolution is global once draftRemap is fully built.
+        For Each mw In mswpEntries
+            If mw.IsOverride Then Continue For
+            If draftRemap.ContainsKey(mw.FormID) Then Continue For
+            draftRemap(mw.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        For Each ae In armaEntries
+            If ae.IsOverride Then Continue For
+            If draftRemap.ContainsKey(ae.FormID) Then Continue For
+            draftRemap(ae.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        For Each ao In armoEntries
+            If ao.IsOverride Then Continue For
+            If draftRemap.ContainsKey(ao.FormID) Then Continue For
+            draftRemap(ao.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        ' NEW CLFM drafts (SSE hair colour materialized from a RaceMenu preset). Same pre-assignment as every
+        ' other draft kind, so the NPC_.HCLF that points at the provisional sentinel rewrites to the real
+        ' self-index FormID through the single remapper regardless of emit order.
+        For Each ce In clfmEntries
+            If ce.IsOverride Then Continue For
+            If draftRemap.ContainsKey(ce.FormID) Then Continue For
+            draftRemap(ce.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        ' TXST / FLST / HDPT nuevos. ⛔ El reparto COMPLETO antes de serializar es lo que hace que la
+        ' auto-referencia de HDPT (HNAM → otro HDPT, 89 % del corpus) no necesite ningun orden especial:
+        ' cuando el emisor escribe el primer HNAM, el FormID real del hijo ya existe en el mapa.
+        For Each te In txstEntries
+            If te.IsOverride Then Continue For
+            If draftRemap.ContainsKey(te.FormID) Then Continue For
+            draftRemap(te.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        For Each fe In flstEntries
+            If fe.IsOverride Then Continue For
+            If draftRemap.ContainsKey(fe.FormID) Then Continue For
+            draftRemap(fe.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+        For Each he In hdptEntries
+            If he.IsOverride Then Continue For
+            If draftRemap.ContainsKey(he.FormID) Then Continue For
+            draftRemap(he.FormID) = (CUInt(selfMasterIdx) << 24) Or dispenseObjectId()
+        Next
+
+        Dim remapper = GenericPluginWriter.FinalRemapper(pluginManager, outName, masterIndexLookup, selfMasterIdx, draftRemap)
+
+        ' Diff against existing masters for the SaveResult report.
+        Dim result As New SaveResult With {
+            .OutputPath = outputPath,
+            .NpcCount = entries.Count + existingRecords.Count,
+            .MasterList = sortedMasters,
+            .DraftFormIdMap = New Dictionary(Of UInteger, UInteger)(draftRemap)
+        }
+        ' Filter the audit to only masters that actually made it into the final MAST list
+        ' (drop entries for plugins that referencedPluginNames had but Step 2 filtered out
+        ' because they're not in the load order).
+        For Each m In sortedMasters
+            Dim list As HashSet(Of UInteger) = Nothing
+            If auditPerPlugin.TryGetValue(m, list) Then
+                result.MasterAudit(m) = list.ToList()
+            Else
+                result.MasterAudit(m) = New List(Of UInteger)
+            End If
+        Next
+        For Each oldM In existingMasters
+            If Not sortedMasters.Any(Function(m) String.Equals(m, oldM, StringComparison.OrdinalIgnoreCase)) Then
+                result.RemovedMasters.Add(oldM)
+            End If
+        Next
+        For Each newM In sortedMasters
+            If Not existingMasters.Any(Function(m) String.Equals(m, newM, StringComparison.OrdinalIgnoreCase)) Then
+                result.AddedMasters.Add(newM)
+            End If
+        Next
+
+        ' ====================================================================
+        ' Paso 4: la emision de verdad. Mismo walk que la pasada de descubrimiento, ahora con el remapper
+        ' real (indices de la MAST ya cerrada + draftRemap). Se conservan los nombres locales de siempre
+        ' para que el Paso 5 y todo lo de aguas abajo no se entere de que la emision se movio.
+        ' ====================================================================
+        Dim emitted As EmittedBuffers = emitAll(remapper, selfMasterIdx)
+        result.Advertencias.AddRange(emitted.Advertencias)
+        Dim recordBuffers As List(Of Byte()) = emitted.Records
+        Dim otftBuffers As List(Of Byte()) = emitted.Otft
+        Dim lvliBuffers As List(Of Byte()) = emitted.Lvli
+        Dim lvlnBuffers As List(Of Byte()) = emitted.Lvln
+        Dim mswpBuffers As List(Of Byte()) = emitted.Mswp
+        Dim armaBuffers As List(Of Byte()) = emitted.Arma
+        Dim armoBuffers As List(Of Byte()) = emitted.Armo
+        Dim clfmBuffers As List(Of Byte()) = emitted.Clfm
+        Dim hdptBuffers As List(Of Byte()) = emitted.Hdpt
+        Dim txstBuffers As List(Of Byte()) = emitted.Txst
+        Dim flstBuffers As List(Of Byte()) = emitted.Flst
+
+        ' ====================================================================
+        ' Paso 5: envolver cada tipo de record en su GRUP de primer nivel, en orden referenced-first:
+        ' CLFM -> MSWP -> ARMA -> ARMO -> OTFT -> LVLN -> LVLI -> NPC_ (un record referenciado precede a su
+        ' referrer). La resolucion de FormID es global, asi que al motor el orden no le importa: es para que el
+        ' archivo quede legible.
+        ' ⚠ï¸ Es una desviacion DELIBERADA del orden de GRUP canonico, que en los dos
+        ' juegos pone CLFM cerca del FINAL. Este writer ya emite referenced-first para los otros 7 grupos y CLFM
+        ' sigue la MISMA convencion local en vez de partir el orden del archivo en dos reglas. Nada lo rechaza:
+        ' el orden de GRUP no significa nada para el motor ni para el CK, así que reordenarlo acá no
+        ' rompe nada.
+        ' Lo que SI tiene que estar bien es HEDR.numRecords, mas abajo.
+        ' ====================================================================
+        ' TXST y FLST van PRIMEROS: no referencian nada de lo que este writer emite, y los referencian
+        ' HDPT (TNAM/RNAM) y ARMA/ARMO (skin texture + swap list). HDPT va despues de CLFM/MSWP -a los
+        ' que referencia- y antes de NPC_, que lo referencia por PNAM.
+        Dim grupTxstBytes As Byte() = If(txstBuffers.Count > 0, GenericPluginWriter.BuildGrup("TXST", txstBuffers), Array.Empty(Of Byte)())
+        Dim grupFlstBytes As Byte() = If(flstBuffers.Count > 0, GenericPluginWriter.BuildGrup("FLST", flstBuffers), Array.Empty(Of Byte)())
+        Dim grupHdptBytes As Byte() = If(hdptBuffers.Count > 0, GenericPluginWriter.BuildGrup("HDPT", hdptBuffers), Array.Empty(Of Byte)())
+        Dim grupClfmBytes As Byte() = If(clfmBuffers.Count > 0, GenericPluginWriter.BuildGrup("CLFM", clfmBuffers), Array.Empty(Of Byte)())
+        Dim grupMswpBytes As Byte() = If(mswpBuffers.Count > 0, GenericPluginWriter.BuildGrup("MSWP", mswpBuffers), Array.Empty(Of Byte)())
+        Dim grupArmaBytes As Byte() = If(armaBuffers.Count > 0, GenericPluginWriter.BuildGrup("ARMA", armaBuffers), Array.Empty(Of Byte)())
+        Dim grupArmoBytes As Byte() = If(armoBuffers.Count > 0, GenericPluginWriter.BuildGrup("ARMO", armoBuffers), Array.Empty(Of Byte)())
+        Dim grupOtftBytes As Byte() = If(otftBuffers.Count > 0, GenericPluginWriter.BuildGrup("OTFT", otftBuffers), Array.Empty(Of Byte)())
+        ' LVLN (Leveled NPC) va ANTES que LVLI en el orden de GRUP que usa este writer.
+        Dim grupLvlnBytes As Byte() = If(lvlnBuffers.Count > 0, GenericPluginWriter.BuildGrup("LVLN", lvlnBuffers), Array.Empty(Of Byte)())
+        Dim grupLvliBytes As Byte() = If(lvliBuffers.Count > 0, GenericPluginWriter.BuildGrup("LVLI", lvliBuffers), Array.Empty(Of Byte)())
+        Dim grupNpcBytes = GenericPluginWriter.BuildGrup("NPC_", recordBuffers)
+
+        ' ====================================================================
+        ' Paso 6: armar el header TES4 y emitir el stream final.
+        ' nextObjectId: el contador de drafts se sembro con
+        ' max(0x800, HEDR del disco) y avanzo una vez por draft NUEVO, asi que su valor final es el primer slot
+        ' libre despues de este guardado, que es exactamente lo que debe llevar HEDR.nextObjectId. Un plugin
+        ' fresco sin drafts se queda en 0x800, y actualizar uno existente sin drafts nuevos preserva el contador
+        ' por la semilla.
+        ' El ancho (objectIdMask) ya se aplico AL REPARTIR, arriba, que es donde corresponde aplicarlo.
+        ' Aca solo queda ENVOLVER a 0x800 si el contador quedo justo pasado del tope.
+        ' NO clampear a objectIdMask aca: el clamp congela el contador en 0xFFF, el guardado siguiente se
+        ' siembra ahi y vuelve a repartir 0xFFF a OTRO record. Con el reparto ya acotado y el salteo de
+        ' ocupados no protege nada.
+        ' ====================================================================
+        Dim nextObjectId As UInteger = alloc.NextObjectIdForHeader()
+        ' HEDR.numRecords counts EVERY element: TES4 itself counts as 1, plus each top-level GRUP,
+        ' which counts as 1 ON TOP OF the sum of its children — i.e. the GRUP counts as one form ON TOP
+        ' OF its records. Subtracting TES4 leaves:
+        '     numRecords = (content records) + (top-level GRUPs emitted)
+        ' Verified against CK-authored plugins (KSHairdos.esp: HEDR 304 = 303 records + 1 GRUP).
+        ' Counting only the records made the CK pop "Form counts don't match / correct the file header?".
+        ' The NPC_ GRUP is always emitted (Step 7), the rest only when non-empty.
+        Dim grupCount As Integer = 1 +
+                                   If(txstBuffers.Count > 0, 1, 0) + If(flstBuffers.Count > 0, 1, 0) +
+                                   If(clfmBuffers.Count > 0, 1, 0) +
+                                   If(mswpBuffers.Count > 0, 1, 0) + If(hdptBuffers.Count > 0, 1, 0) +
+                                   If(armaBuffers.Count > 0, 1, 0) +
+                                   If(armoBuffers.Count > 0, 1, 0) + If(otftBuffers.Count > 0, 1, 0) +
+                                   If(lvlnBuffers.Count > 0, 1, 0) + If(lvliBuffers.Count > 0, 1, 0)
+        Dim totalRecords As Integer = recordBuffers.Count + otftBuffers.Count + lvliBuffers.Count + lvlnBuffers.Count +
+                                      mswpBuffers.Count + armaBuffers.Count + armoBuffers.Count + clfmBuffers.Count +
+                                      hdptBuffers.Count + txstBuffers.Count + flstBuffers.Count + grupCount
+        Dim tes4Bytes = GenericPluginWriter.BuildTes4Header(game, markAsMaster, lightMaster, sortedMasters, totalRecords, nextObjectId, NPC_MANAGER_AUTHOR_CNAM, writeEncodingSnam:=True)
+
+        ' ====================================================================
+        ' Step 7: se escribe ENCIMA del .esp que ya está, con copia previa.
+        '
+        ' ⛔ NO volver al `.tmp` + `File.Replace` que había acá: `ReplaceFileW` no está entre las
+        ' funciones que virtualiza el VFS de Mod Organizer, así que su rename interno corre contra el
+        ' disco real y el plugin termina en el `Data` del juego, FUERA del mod que lo aporta — y en
+        ' Vortex corta el hardlink, con lo que el mod se queda con la versión vieja. Un `Delete`+`Move`
+        ' tampoco sirve: el borrado saca el archivo del árbol virtual y lo que se escriba después es un
+        ' archivo nuevo, que cae en la carpeta `overwrite`.
+        ' Sobrescribir en el lugar es lo único que cae adentro del mod en los dos gestores.
+        '
+        ' Lo que se pierde y es deliberado: esto NO es atómico y no tolera un lector que no comparta
+        ' escritura (xEdit con el plugin cargado). La red es la copia que hace `GuardarConCopia`, que
+        ' restaura sola si la escritura falla. La base de la afirmación sobre MO2/Vortex y su estado de
+        ' verificación viven en UN solo lugar: la cabecera de EscrituraEnElLugar (Ba2_Bsa_Library).
+        ' ====================================================================
+        BSA_BA2_Library_DLL.EscrituraEnElLugar.GuardarConCopia(
+            outputPath,
+            Sub(fs)
+                fs.Write(tes4Bytes, 0, tes4Bytes.Length)
+                ' Orden ESTABLE de GRUP, referenced-first DONDE EL GRAFO LO PERMITE (Paso 5):
+                '   TXST → FLST → CLFM → MSWP → HDPT → ARMA → ARMO → OTFT → LVLN → LVLI → NPC_
+                ' ⛔ NO es «referenced-first» a secas, y no puede serlo: medido, FLST→HDPT son 384 aristas
+                ' en Fallout 4 y HDPT→FLST existe por el RNAM, o sea que las dos clases forman un CICLO y
+                ' ningún orden las pone a las dos primero. Lo mismo con LVLI→LVLI. Sin consecuencia: al
+                ' motor el orden de los GRUP no le importa —la resolución de FormID es global— así que esto
+                ' es el rótulo, no la ley. Lo levantó la revisión adversarial.
+                If grupTxstBytes.Length > 0 Then fs.Write(grupTxstBytes, 0, grupTxstBytes.Length)
+                If grupFlstBytes.Length > 0 Then fs.Write(grupFlstBytes, 0, grupFlstBytes.Length)
+                If grupClfmBytes.Length > 0 Then fs.Write(grupClfmBytes, 0, grupClfmBytes.Length)
+                If grupMswpBytes.Length > 0 Then fs.Write(grupMswpBytes, 0, grupMswpBytes.Length)
+                If grupHdptBytes.Length > 0 Then fs.Write(grupHdptBytes, 0, grupHdptBytes.Length)
+                If grupArmaBytes.Length > 0 Then fs.Write(grupArmaBytes, 0, grupArmaBytes.Length)
+                If grupArmoBytes.Length > 0 Then fs.Write(grupArmoBytes, 0, grupArmoBytes.Length)
+                If grupOtftBytes.Length > 0 Then fs.Write(grupOtftBytes, 0, grupOtftBytes.Length)
+                If grupLvlnBytes.Length > 0 Then fs.Write(grupLvlnBytes, 0, grupLvlnBytes.Length)
+                If grupLvliBytes.Length > 0 Then fs.Write(grupLvliBytes, 0, grupLvliBytes.Length)
+                fs.Write(grupNpcBytes, 0, grupNpcBytes.Length)
+            End Sub)
+
+        Return result
+    End Function
+
+    ' ========================================================================
+    ' Record / Group / Header serialization
+    ' ========================================================================
+
+    ''' <summary>Sobrescritura de un NPC_: el cuerpo es el arbol del record, tal cual quedo despues
+    ''' de las ediciones. Igual que los demas records migrados.</summary>
+    Private Function SerializeNpcRecord(entry As NpcOverrideEntry, remapper As SaveNpcEspWriter.FormIdRemapper,
+                                        game As Config_App.Game_Enum, selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        If entry.Npc Is Nothing OrElse entry.Npc.Record Is Nothing Then
+            Throw New InvalidOperationException(
+                "NpcOverrideEntry sin record: el cuerpo de un NPC_ ES su arbol. Sin el no hay nada que grabar.")
+        End If
+        Dim vista = TryCast(entry.Npc.Record, Canon.CanonView)
+        If vista Is Nothing Then
+            Throw New InvalidOperationException(
+                $"NPC_ {entry.Npc.FormID:X8}: el record no es un arbol canonico " &
+                $"({entry.Npc.Record.GetType().Name}). Devolver vacio aca hacia desaparecer el NPC del plugin sin error.")
+        End If
+        Return SerializarRecord(vista, entry.Npc.FormID, remapper, game,
+                                entry.OriginalHeader.VCS1, entry.OriginalHeader.VCS2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Cuerpo de un NPC_ sobrescrito, sin la cabecera. Es EXACTAMENTE lo que emite el
+    ''' guardado: publico para que los arneses midan ese camino y no una replica.</summary>
+    ''' <param name="selfIdxDestino">Igual que en <see cref="SerializarRecord"/>: el indice de master
+    ''' con el que el archivo de salida nombra a sus propios records. -1 = no se sabe.</param>
+    Public Function CuerpoDeNpcSobrescrito(npc As NPC_Data,
+                                           remapper As SaveNpcEspWriter.FormIdRemapper,
+                                           selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        If npc Is Nothing Then Return Array.Empty(Of Byte)()
+        ' `npc.Record` puede ser Nothing: la propiedad se declara sin inicializador (RecordParsers.vb:80)
+        ' y aca no hay un throw previo que lo cubra como en SerializeNpcRecord. Nombrarlo sin esta guarda
+        ' cambiaba un vacio mudo por un NullReferenceException sin mensaje.
+        Dim vista = TryCast(npc.Record, Canon.CanonView)
+        If vista Is Nothing Then
+            Dim tipoRec As String = If(npc.Record Is Nothing, "Nothing", npc.Record.GetType().Name)
+            Throw New InvalidOperationException(
+                $"NPC_ {npc.FormID:X8}: el record no es un arbol canonico ({tipoRec}).")
+        End If
+        Dim traducir As Func(Of UInteger, UInteger) = Nothing
+        If remapper IsNot Nothing Then traducir = Function(x) remapper(x)
+        ' ⛔ El parametro `avisos` estaba DECLARADO y sin cablear: un arnes que pasara su lista se
+        ' llevaba cero hallazgos y concluia que no hubo ninguno, con el nombre saliendo VACIO. Y es
+        ' justo la funcion que existe para que los arneses midan ESTE camino y no una replica.
+        Dim hallazgos As New List(Of Canon.WbFinding)
+        Dim cuerpo = Canon.CanonEscritura.Cuerpo(vista, traducir, selfIdxDestino, SALIDA_LOCALIZADA, hallazgos)
+        VolcarAvisos(hallazgos, If(vista.Context Is Nothing, 0UI, vista.Context.FormID), avisos)
+        Return cuerpo
+    End Function
+
+    ''' <summary>Serialize a NEW NPC_ record (clone with self-index FormID). Mirrors
+    ''' <see cref="SerializeNpcRecord"/> except header uses defaults (no source OriginalHeader): Flags=0
+    ''' (no COMPRESSED, no special flags), VCS1=0, Version=record-version of the target game, VCS2=0.
+    ''' FormID is the entry's provisional sentinel which the remapper rewrites to the real self-index.</summary>
+    Private Function SerializeNpcCreateRecord(entry As NpcCreateEntry, remapper As SaveNpcEspWriter.FormIdRemapper,
+                                              game As Config_App.Game_Enum, selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Dim origen = entry.NpcData?.Record
+        If origen Is Nothing Then
+            ' Sin record del que clonar: arranca con los campos que el formato marca como obligatorios.
+            ' Las banderas de cabecera quedan en cero y la version de formulario tambien, que es lo que
+            ' el envoltorio interpreta como "la del juego".
+            origen = Canon.CanonRecords.NpcNuevo(JuegoCanonico(game))
+            ' ⛔ La fábrica devuelve Nothing si el esquema no declara el record, y la guarda de abajo
+            ' no alcanza: su MENSAJE hace `origen.GetType().Name`, o sea que con un Nothing revienta
+            ' armando la excepción que vino a explicar el problema. Acá no puede usarse la ley de la
+            ' app (`Borradores`): la librería no depende de ella, así que va escrita, y declarada.
+            If origen Is Nothing Then
+                Throw New InvalidOperationException(
+                    $"NPC_ nuevo (provisional {entry.ProvisionalFormID:X8}): el formato de {game} no " &
+                    "declara NPC_, asi que no hay record del que partir.")
+            End If
+        End If
+        Dim vista = TryCast(origen, Canon.CanonView)
+        If vista Is Nothing Then
+            Throw New InvalidOperationException(
+                $"NPC_ nuevo (provisional {entry.ProvisionalFormID:X8}): el record no es un arbol canonico " &
+                $"({origen.GetType().Name}).")
+        End If
+        Return SerializarRecord(vista, entry.ProvisionalFormID, remapper, game, 0UI, CUShort(0), selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Pasa a texto los hallazgos del emisor que el usuario tiene que ver.
+    ''' <para>Existe para que las DOS puertas de emision —<see cref="SerializarRecord"/> y
+    ''' <see cref="CuerpoDeNpcSobrescrito"/>— hagan lo mismo. Con el volcado escrito adentro de una
+    ''' sola, la otra declaraba el parametro y no lo usaba: fallo MUDO.</para></summary>
+    Private Sub VolcarAvisos(hallazgos As List(Of Canon.WbFinding), formID As UInteger, avisos As List(Of String))
+        If avisos Is Nothing OrElse hallazgos Is Nothing Then Return
+        For Each f In hallazgos
+            If f.Kind = Canon.WbFindingKind.TextoLocalizadoSinResolver Then
+                avisos.Add($"{f.RecordSignature} {formID:X8} - {f.Path}: {f.Message}")
+            End If
+        Next
+    End Sub
+
+    ''' <summary>El juego de la sesion, en la forma que entiende la declaracion del formato.</summary>
+    Private Function JuegoCanonico(game As Config_App.Game_Enum) As Canon.WbGame
+        If game = Config_App.Game_Enum.Fallout4 Then Return Canon.WbGame.Fallout4
+        Return Canon.WbGame.Skyrim
+    End Function
+
+    Private Function SerializeExistingRecord(rec As PluginRecord,
+                                             existingMasters As List(Of String),
+                                             pluginManager As PluginManager,
+                                             remapper As SaveNpcEspWriter.FormIdRemapper,
+                                             game As Config_App.Game_Enum,
+                                             selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        ' Los NPC_ se re-emiten desde su arbol para que la MAST quede limpia. Los demas tipos de
+        ' record (raros en un plugin generado por la aplicacion) no tienen camino: ver el throw.
+        If rec.Header.Signature = "NPC_" Then
+            Dim parsed = RecordParsers.ParseNPC(rec, pluginManager)
+            ' RecordParsers.ParseNPC copies rec.Header.FormID verbatim into parsed.FormID.
+            ' For records coming from a fresh PluginReader (the
+            ' update-existing path) that value is LOCAL — but SerializeNpcRecord passes it to
+            ' the remapper, which expects GLOBAL (GetOriginatingPluginName indexes the high
+            ' byte against load order). Without this resolve the record's master high byte
+            ' gets rewritten against the wrong plugin in the new MAST list. Subrecord FormIDs
+            ' inside parsed are already GLOBAL (ResolveFormIDReference at parse time); only
+            ' the record-own FormID needs the explicit resolve.
+            parsed.FormID = pluginManager.ResolveReferencedFormID(rec.SourcePluginName, rec.Header.FormID)
+            Dim entry As New NpcOverrideEntry With {
+                .Npc = parsed,
+                .SourcePluginName = rec.SourcePluginName,
+                .OriginalHeader = rec.Header
+            }
+            Return SerializeNpcRecord(entry, remapper, game, selfIdxDestino, avisos)
+        End If
+
+        ' Fallback path explicitly NOT supported. NPC_Manager auto-generated plugins should
+        ' only ever contain NPC_ records. The "preserve existing" workflow filters them at
+        ' load time. If a non-NPC record reaches here, the safest action is to throw — silent
+        ' copy-through risks corrupting non-FormID 4-byte subrecords (NAM6 height float, KSIZ
+        ' counter, etc. would be misidentified as FormIDs and re-mapped, producing garbage).
+        Throw New NotSupportedException(
+            $"SaveNpcEspWriter currently only supports NPC_ records. Encountered '{rec.Header.Signature}' " &
+            "while preserving existing records. The plugin file may have been edited externally and contains " &
+            "record types this writer does not handle.")
+    End Function
+
+    ''' <summary>Serialize one OTFT (outfit) record: 24-byte header + EDID + INAM (array of remapped
+    ''' ARMO/LVLI FormIDs). The record FormID is remapped (NEW → self-index via draftRemap; OVERRIDE →
+    ''' master remap). INAM is omitted when there are no items.</summary>
+    Private Function SerializeOtftRecord(entry As OtftRecordEntry, remapper As SaveNpcEspWriter.FormIdRemapper,
+                                         game As Config_App.Game_Enum, selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Serializa un record CLFM (Color): header de 24 bytes + cuerpo EDID + [FULL] + CNAM + FNAM.
+    ''' <list type="bullet">
+    ''' <item>EDID - ZSTRING cp1252 no traducible, el mismo encoder que todos los EDID de aca.</item>
+    ''' <item>FULL - nombre opcional. OVERRIDE: <see cref="ClfmRecordEntry.FullNameRaw"/> verbatim. NEW:
+    '''   <see cref="ClfmRecordEntry.FullName"/> por <c>EncodeTranslatable</c>, NO por el encoder cp1252 del
+    '''   EDID. Los dos vacios = sin FULL. Se emite el literal y no un id de string table porque todo el writer
+    '''   apunta a plugins NO localizados y no shippea strings.</item>
+    ''' <item>CNAM - RGBA de 4 bytes [R,G,B,A] (espejo del parser). Medido sobre Skyrim.esm: alpha 0 en los
+    '''   178 CLFM.</item>
+    ''' <item>FNAM - u32. Skyrim: bool Playable, =1 en los 15 colores de pelo vanilla. FO4: campo de flags donde
+    '''   el bit 1 significa "CNAM es un RemappingIndex, no un RGB", que es justo por lo que este camino es
+    '''   SSE-only en el caller.</item>
+    ''' </list>
+    ''' El FormID del record es el self-index real del draft (NEW, via draftRemap) o el global existente
+    ''' (OVERRIDE, master-remapeado). El CLFM no lleva FormID en el cuerpo.</summary>
+    Private Function SerializeClfmRecord(entry As ClfmRecordEntry, remapper As SaveNpcEspWriter.FormIdRemapper,
+                                         game As Config_App.Game_Enum, selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Serialize one LVLI (leveled item) or LVLN (leveled NPC, <see cref="LvliRecordEntry.IsNpcList"/>)
+    ''' record. El signature (LVLI/LVLN), el orden de los subrecords y cuáles de ellos existen -LVLM/LLKC/LVSG/ONAM
+    ''' son FO4-only, el generic model es LVLN-only- salen de la declaración del formato para el (record, juego)
+    ''' de <see cref="LvliRecordEntry.Record"/>, no de esta función.</summary>
+    Private Function SerializeLvliRecord(entry As LvliRecordEntry, remapper As SaveNpcEspWriter.FormIdRemapper,
+                                         game As Config_App.Game_Enum, selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ' ------------------------------------------------------------------------
+    ' MSWP / ARMA / ARMO serializers (NEW records only). Each emits the 24-byte record header
+    ' (Signature, DataSize, Flags, remapped FormID, VCS1, Version, VCS2) — same shape as
+    ' SerializeOtftRecord / SerializeLvliRecord — followed by the body in the format's declared
+    ' field order.
+    ' ------------------------------------------------------------------------
+
+    ''' <summary>Emit a NON-translatable ZSTRING subrecord (General/cp1252 encoding + trailing NUL),
+    ''' mirror of SerializeOtftRecord's EDID emission. Used for EDID and
+    ''' all model/material paths (MOD2/3/4/5, MSWP BNAM/SNAM/FNAM).</summary>
+    Private Sub WriteZString(bw As BinaryWriter, sig As String, value As String)
+        Dim bytes = PluginEncodingSettings.EncodeGeneral(If(value, ""))
+        WriteSubrecordHeader(bw, sig, bytes.Length + 1)
+        bw.Write(bytes)
+        bw.Write(CByte(0))
+    End Sub
+
+    ''' <summary>Serialize one MSWP (Material Swap) record. Body order:
+    ''' EDID, FNAM 'Tree Folder' (optional), then per substitution BNAM 'Original Material' +
+    ''' SNAM 'Replacement Material' + CNAM 'Color Remapping Index' (float, only when present). El FNAM
+    ''' obsoleto POR SUSTITUCION se emite FIEL A LA FUENTE (decision del usuario 2026-08-21): si la
+    ''' sustitucion lo trae, se graba; si no, no se inventa — el emisor viejo lo tiraba en silencio y
+    ''' re-guardar un plugin ajeno lo modificaba. MSWP body has no FormIDs; only its own
+    ''' record FormID is remapped. Header flags = 0 for NEW records; for OVERRIDE the source header flags
+    ''' (COMPRESSED stripped) and source Version are preserved while the body is fully re-emitted from the
+    ''' entry — MSWP has no body FormIDs and a simple substitution list, so no subrecord merge is needed.</summary>
+    Private Function SerializeMswpRecord(entry As MswpRecordEntry, remapper As SaveNpcEspWriter.FormIdRemapper,
+                                         game As Config_App.Game_Enum, selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Serialize one ARMA (Armor Addon). Public para que el arnes de paridad round-trip
+    ''' (Tools\ArmoArmaSseRoundtripProbe) lo pueda ejercitar directo con un remapper identidad.
+    ''' pluginManager queda en la firma por compatibilidad con ese arnes: el cuerpo sale del arbol
+    ''' del record (entry.Record), no hace falta resolver nada acá.</summary>
+    Public Function SerializeArmaRecord(entry As ArmaRecordEntry,
+                                        remapper As SaveNpcEspWriter.FormIdRemapper,
+                                        game As Config_App.Game_Enum,
+                                        selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Serialize one ARMO (Armor). Misma nota que <see cref="SerializeArmaRecord"/> sobre
+    ''' pluginManager.</summary>
+    Public Function SerializeArmoRecord(entry As ArmoRecordEntry,
+                                        remapper As SaveNpcEspWriter.FormIdRemapper,
+                                        game As Config_App.Game_Enum,
+                                        selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Serialize one HDPT (Head Part). Misma nota que <see cref="SerializeArmaRecord"/>: el
+    ''' cuerpo sale del arbol del record, no hace falta resolver nada aca.</summary>
+    Public Function SerializeHdptRecord(entry As HdptRecordEntry,
+                                        remapper As SaveNpcEspWriter.FormIdRemapper,
+                                        game As Config_App.Game_Enum,
+                                        selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Serialize one TXST (Texture Set). Ver <see cref="SerializeHdptRecord"/>.</summary>
+    Public Function SerializeTxstRecord(entry As TxstRecordEntry,
+                                        remapper As SaveNpcEspWriter.FormIdRemapper,
+                                        game As Config_App.Game_Enum,
+                                        selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Serialize one FLST (Form List). Ver <see cref="SerializeHdptRecord"/>.</summary>
+    Public Function SerializeFlstRecord(entry As FlstRecordEntry,
+                                        remapper As SaveNpcEspWriter.FormIdRemapper,
+                                        game As Config_App.Game_Enum,
+                                        selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        Return SerializarRecord(entry.Record, entry.FormID, remapper, game,
+                                entry.OriginalVcs1, entry.OriginalVcs2, selfIdxDestino, avisos)
+    End Function
+
+    ''' <summary>Byte alto del identificador provisional de un borrador sin guardar.
+    ''' <para>⛔ Vive ACÁ, en la librería, y no en la app: estaba escrito en los dos lados —una vez
+    ''' como máscara y otra como <c>(formID &gt;&gt; 24) And &amp;HFF</c>— y había que moverlos juntos, que es
+    ''' drift garantizado sobre un valor que decide QUÉ FormID se reindexa al guardar. La dirección
+    ''' app→librería sí es legal: NPC Manager ya referencia esta librería, así que
+    ''' <c>Borradores.FormIdAltoDeBorrador</c> consume ÉSTE.</para>
+    ''' <para>⛔ <b><c>ReadOnly</c> y NO <c>Const</c>, y eso es la mitad del punto.</b> Un <c>Const</c>
+    ''' cruza ensamblados POR VALOR: el literal queda horneado en el ensamblado de la app en tiempo de
+    ''' compilación, así que la copia seguía existiendo —sólo que la hacía el compilador y no una
+    ''' persona— y reemplazar esta DLL sin recompilar la app los dejaba divergentes sin un solo error.
+    ''' Con el campo, el valor se LEE en tiempo de ejecución y la declaración de acá es la única que hay.
+    ''' <c>Borradores.FormIdAltoDeBorrador</c>, que deriva de ésta, es <c>ReadOnly</c> por lo mismo: si
+    ''' cualquiera de las dos vuelve a ser <c>Const</c>, la cadena entera se re-hornea y el drift vuelve.
+    ''' <para>⛔ <b>ACÁ SE PISÓ UNA DECISIÓN ANTERIOR, y el criterio queda escrito para que no se
+    ''' re-litigue de memoria.</b> La versión previa de esta nota declaraba el límite y lo dejaba ABIERTO a
+    ''' propósito, con este motivo: «cerrarlo del todo pediría un <c>Shared ReadOnly</c>, que cuesta un
+    ''' acceso a campo en un camino que corre por cada FormID del guardado». <b>Ese costo nunca se midió</b>
+    ''' —es un argumento, no una medición, y son tres llamadores: <see cref="IsProvisionalDraftFormID"/> y
+    ''' los dos del descubrimiento—, mientras que el defecto del otro lado <b>sí está medido como clase</b>
+    ''' en este árbol: dos listas que hay que mover juntas derivan, y ya derivaron acá (los cuatro material
+    ''' swap del ARMA que el censo cubría a medias). Un costo supuesto no le gana a un riesgo medido. Si
+    ''' alguien mide que el acceso a campo pesa, el número manda y esto se revisa — pero con el número.</para>
+    ''' <para>0xFF nunca es un índice de master real —el tope son 0xFD, y 0xFE es el prefijo ESL—, así
+    ''' que no puede chocar con un record cargado y sólo resuelve por <c>draftRemap</c>.</para></summary>
+    Public ReadOnly FormIdAltoDeBorrador As UInteger = &HFF000000UI
+
+    ''' <summary>True if a FormID is a provisional draft sentinel. Una sola ley, un solo valor.</summary>
+    Friend Function IsProvisionalDraftFormID(formID As UInteger) As Boolean
+        Return (formID And FormIdAltoDeBorrador) = FormIdAltoDeBorrador
+    End Function
+
+    ''' <summary>El plugin que genera la aplicación <b>nunca</b> declara el flag 0x80 (tablas de
+    ''' idioma externas): <see cref="BuildTes4Header"/> sólo emite ESM y ESL. De acá lo toma el emisor
+    ''' de records para saber con qué forma escribir un texto localizable — si algún día la salida
+    ''' pasara a ser localizada, las dos cosas se mueven juntas desde este único lugar.</summary>
+    Public Const SALIDA_LOCALIZADA As Boolean = False
+
+    ''' <summary>The game's master file name. Public so callers building entries (NpcOverrideSaver's SSE
+    ''' hair-colour materialization) can tell "this record lives in the game master, reusing it adds no
+    ''' dependency" from "this record would drag a new plugin into the MAST list".</summary>
+    Public Function MasterFileNamePublic(game As Config_App.Game_Enum) As String
+        Select Case game
+            Case Config_App.Game_Enum.Fallout4 : Return "Fallout4.esm"
+            Case Config_App.Game_Enum.Skyrim : Return "Skyrim.esm"
+            Case Else
+                Throw New ArgumentOutOfRangeException(NameOf(game), $"Unsupported game: {game}")
+        End Select
+    End Function
+
+
+    '==============================================================================================
+    ' UN SOLO EMISOR
+    '
+    ' El orden de los subrecords, que campos van y de que tamano es cada uno salen de la
+    ' declaracion del formato, no de una secuencia de llamadas escrita para cada tipo de record.
+    '
+    ' Eso borra la diferencia entre los tres modos -crear uno nuevo, sobrescribir en un juego,
+    ' sobrescribir en el otro-: los tres son el mismo
+    ' recorrido sobre arboles que se armaron distinto. Un record sobrescrito reproduce los campos
+    ' que traia la fuente porque su arbol viene de leerla, y uno nuevo arranca con los que el
+    ' formato marca como obligatorios.
+    '==============================================================================================
+
+    ''' <summary>Serializa un record completo -cabecera y cuerpo- desde su arbol de campos.</summary>
+    ''' <param name="vista">El record a grabar. Su contexto dice de que tipo y de que juego es.</param>
+    ''' <param name="formID">Identificador del record EN EL ESPACIO DEL ORDEN DE CARGA. Se traduce
+    ''' con el mismo mapa que las referencias del cuerpo, para que apunten todas al mismo lado.</param>
+    ''' <param name="remapper">Traduce del espacio del orden de carga al del archivo que se escribe.</param>
+    ''' <param name="selfIdxDestino">Indice de master con el que el archivo de SALIDA nombra a sus
+    ''' propios records, o sea la cantidad de entradas de su MAST. -1 = no se sabe. Lo consume el
+    ''' reindexado del cuerpo para poder re-emitir una referencia con la codificacion exacta que
+    ''' traia la fuente cuando esa codificacion y la que devuelve la traduccion significan lo mismo
+    ''' en el archivo destino; ver Canon.WbFormIdWalker.ReindexarADestino.</param>
+    Public Function SerializarRecord(vista As Canon.CanonView,
+                                     formID As UInteger,
+                                     remapper As SaveNpcEspWriter.FormIdRemapper,
+                                     game As Config_App.Game_Enum,
+                                     vcs1 As UInteger,
+                                     vcs2 As UShort,
+                                     selfIdxDestino As Integer, Optional avisos As List(Of String) = Nothing) As Byte()
+        ' ⛔ NO devolver vacio. Un cuerpo de cero bytes no es "no habia nada que grabar": es un record que
+        ' DESAPARECE del archivo dejando colgada toda referencia a el, y el GRUP se arma igual con su
+        ' cabecera, asi que el plugin queda valido y nadie se entera. Fue exactamente lo que paso con OTFT:
+        ' la entry viajaba sin arbol y el atuendo no llegaba al disco (medido 2026-08-29 sobre el .esp).
+        If vista Is Nothing OrElse vista.Node Is Nothing Then
+            Throw New InvalidOperationException(
+                "SerializarRecord sin arbol: el cuerpo de un record ES su arbol. Sin el no hay nada que grabar.")
+        End If
+        If vista.Context Is Nothing Then
+            Throw New InvalidOperationException(
+                "SerializarRecord sin contexto: de ahi salen la firma del record, sus banderas y la version de formulario.")
+        End If
+
+        Dim traducir As Func(Of UInteger, UInteger) = Nothing
+        If remapper IsNot Nothing Then traducir = Function(x) remapper(x)
+
+        Dim hallazgos As New List(Of Canon.WbFinding)
+        Dim cuerpo = Canon.CanonEscritura.Cuerpo(vista, traducir, selfIdxDestino, SALIDA_LOCALIZADA, hallazgos)
+        ' GATE. Con el arbol presente el cuerpo todavia puede salir vacio: `WbReader.CreateNew` siembra
+        ' SOLO los miembros Required (WbReader.vb:149-151, igual que xEdit) y hay records que no declaran
+        ' NINGUNO -OTFT en los dos juegos y MSWP en FO4-, asi que un `*Nuevo(game)` que nadie llena da un
+        ' arbol de cero hijos y `EmitBody` devuelve cero bytes. De ahi sale un record de 24 bytes de
+        ' cabecera y cuerpo NULO: un archivo valido al que le falta un record.
+        ' Medido sobre los dos corpus instalados -175 plugins, 40.084 records de las 8 firmas que emite
+        ' este writer, descomprimiendo los COMPRESSED-: CERO tienen cuerpo de 0 bytes. O sea que este gate
+        ' no puede rechazar nada que exista de verdad, y lo unico que puede atajar es que el arbol haya
+        ' perdido su contenido en el camino.
+        If cuerpo Is Nothing OrElse cuerpo.Length = 0 Then
+            Throw New InvalidOperationException(
+                $"{vista.Context.RecordSignature} {formID:X8} '{vista.Context.EditorId}': el cuerpo salio de " &
+                "0 bytes. Un record vacio desaparece del archivo sin error y deja colgada toda referencia a el.")
+        End If
+        VolcarAvisos(hallazgos, vista.Context.FormID, avisos)
+        Dim idDestino = If(remapper Is Nothing, formID, remapper(formID))
+        ' Las banderas salen del CONTEXTO del record y de ningun otro lado: ahi las dejo la lectura
+        ' del original y ahi las cambia el editor, asi que lo que se graba es exactamente lo que se
+        ' ve. Recibirlas por parametro obligaba a elegir entre dos fuentes y a inventar una regla
+        ' para cuando no coinciden. El bit de comprimido se saca siempre: el cuerpo va sin comprimir.
+        ' La version de formulario tambien sale del contexto: al leer el original queda ahi, y un
+        ' record nuevo la deja en cero, que es lo que WrapRecord interpreta como "la del juego".
+        Dim banderas = vista.Context.RecordFlags
+        Return GenericPluginWriter.WrapRecord(vista.Context.RecordSignature, cuerpo,
+                          banderas And Not FLAG_COMPRESSED, idDestino, vcs1, vcs2, game,
+                          vista.Context.FormVersion)
+    End Function
+
+End Module

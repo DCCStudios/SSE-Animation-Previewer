@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
+    <!-- ⛔ UN SOURCE GENERATOR LO CARGA EL COMPILADOR (VBCSCompiler, 64-bit), NO LA APP: es SIEMPRE AnyCPU.
+         Sin esto, un build que propaga `Platform=x86` como propiedad global (p. ej.
+         `msbuild Wardrobe_Manager.vbproj -p:Platform=x86`, que es como se compila el WM de 32 bits) hace
+         que el SDK derive `PlatformTarget=x86`, csc emita `/platform:x86` y este DLL quede 32BITREQUIRED.
+         Roslyn entonces NO LO PUEDE CARGAR y degrada eso a WARNING (CS8034), o sea que no emite NADA y el
+         build muere con ~10 `CS0246` (BSShaderType, BSLightingShaderType, TexClampMode...) y un `CS0759`
+         en NiflySharp — errores que no tienen nada que ver con la causa y mandan a buscar al lugar
+         equivocado. MEDIDO: CorFlags del DLL x86 era 0x3 (ILONLY|32BITREQUIRED) contra 0x1 del AnyCPU.
+         ⭐ EL SINTOMA A BUSCAR ES `CS8034`, no los CS0246. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|AnyCPU'">
+    <GenerateAssemblyInfo>True</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|AnyCPU'">
+    <GenerateAssemblyInfo>True</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Remove="nif.xml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" Version="4.14.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+  </ItemGroup>
+
+</Project>
