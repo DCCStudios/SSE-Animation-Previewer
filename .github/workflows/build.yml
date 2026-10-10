@@ -28,7 +28,7 @@ jobs:
 
       # This one project builds the vendored engine through its project references.
       - name: Build
-        run: dotnet build SSEAnimationPreviewer.csproj -c Release
+        run: dotnet build -c Release
 
       # The app is a WinExe, so the shell does not wait for it unless Start-Process is told to.
       - name: Run tests that need no game data
@@ -61,7 +61,7 @@ jobs:
         shell: pwsh
         run: |
           $package = Join-Path $env:RUNNER_TEMP 'pkg\SSE Animation Previewer'
-          ./build-portable.ps1 -Public -Output $package
+          ./scripts/build-portable.ps1 -Public -Output $package
           # Tags and branches use their name; pull requests use the short commit hash.
           $label = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') { $env:GITHUB_SHA.Substring(0, 7) } else { $env:GITHUB_REF_NAME -replace '[\\/:*?"<>|]', '-' }
           $name = "SSE-Animation-Previewer-$label-win-x64"

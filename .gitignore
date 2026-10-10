@@ -8,7 +8,7 @@ portable-runtime-trace.txt
 # Local-only data: game and mod assets, test evidence, private floor textures
 test-data/
 verification/
-resources/local/
+src/resources/local/
 
 # Editor
 .vs/

@@ -1,4 +1,4 @@
-param([string]$Package = (Join-Path $PSScriptRoot 'Portable'))
+param([string]$Package = (Join-Path (Split-Path $PSScriptRoot -Parent) 'Portable'))
 $ErrorActionPreference = 'Stop'
 $root = [IO.Path]::GetFullPath($Package).TrimEnd('\') + '\'
 $manifest = Join-Path $root 'manifest.sha256.csv'

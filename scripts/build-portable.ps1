@@ -1,35 +1,37 @@
-# -Public builds the copy that is published: generated floor textures, never the local set in resources\local.
-param([string]$Output = (Join-Path $PSScriptRoot 'Portable'), [switch]$Public)
+# -Public builds the copy that is published: generated floor textures, never the local set in src\resources\local.
+param([string]$Output = (Join-Path (Split-Path $PSScriptRoot -Parent) 'Portable'), [switch]$Public)
+# The repository root: this script lives in scripts\.
+$root = Split-Path $PSScriptRoot -Parent
 $ErrorActionPreference = 'Stop'
 # Build in a fresh workspace; never mix previous test output into the delivery.
 $destination = [IO.Path]::GetFullPath($Output)
-$projectRoot = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
+$projectRoot = [IO.Path]::GetFullPath($root).TrimEnd('\')
 if ($destination.TrimEnd('\') -eq $projectRoot -or $projectRoot.StartsWith($destination.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Output cannot be the project directory or one of its ancestors.'
 }
-$buildRoot = Join-Path $PSScriptRoot ('verification/package-builds/' + [Guid]::NewGuid().ToString('N'))
+$buildRoot = Join-Path $root ('verification/package-builds/' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 $Output = Join-Path $buildRoot 'staging'
 # Development-only build. The resulting Portable folder requires no SDK or converter.
 # A property passed on the command line overrides the project file, so it is only passed for the public build.
 $floor = if ($Public) { @('-p:FloorTextures=resources') } else { @() }
-dotnet publish (Join-Path $PSScriptRoot 'SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output @floor
+dotnet publish (Join-Path $root 'src/SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output @floor
 if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
 # The C++ runtime DLLs live in the repository, so packaging needs no Visual Studio install.
-$crt = Join-Path $PSScriptRoot 'lib/crt'
+$crt = Join-Path $root 'lib/crt'
 if (!(Test-Path -LiteralPath $crt -PathType Container)) { throw "C++ runtime folder is missing: $crt. Restore lib/crt from the repository." }
 $crtFiles = @(Get-ChildItem -LiteralPath $crt -Filter '*.dll' -File)
 if (!$crtFiles.Count) { throw "C++ runtime folder holds no DLLs: $crt. Restore lib/crt from the repository." }
 Copy-Item -LiteralPath $crtFiles.FullName -Destination $Output
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination $Output
+Copy-Item -LiteralPath (Join-Path $root 'README.md') -Destination $Output
 $sample = Join-Path $Output 'Samples/ParticleFixtures'
 New-Item -ItemType Directory -Path $sample -Force | Out-Null
-Copy-Item -Path (Join-Path $PSScriptRoot 'particle-fixtures/*') -Destination $sample -Recurse -Force
+Copy-Item -Path (Join-Path $root 'particle-fixtures/*') -Destination $sample -Recurse -Force
 foreach ($file in 'LICENSE','THIRD-PARTY-NOTICES.md') {
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination $Output -Force
+    Copy-Item -LiteralPath (Join-Path $root $file) -Destination $Output -Force
 }
-foreach ($directory in 'licenses','source-patches','docs') {
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot $directory) -Destination $Output -Recurse -Force
+foreach ($directory in 'licenses','docs') {
+    Copy-Item -LiteralPath (Join-Path $root $directory) -Destination $Output -Recurse -Force
 }
 if (!(Test-Path (Join-Path $Output 'Resources/testgrid_d.dds'))) { throw 'Missing floor textures in the package.' }
 $needed = 'coreclr.dll','hostfxr.dll','hostpolicy.dll','System.Windows.Forms.dll','DirectXTexWrapper.dll','Ijwhost.dll','vcruntime140.dll','msvcp140.dll'
