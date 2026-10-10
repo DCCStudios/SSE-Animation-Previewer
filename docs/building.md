@@ -40,6 +40,8 @@ This publishes a self-contained build to `Portable`, adds the C++ runtime, licen
 
 GitHub Actions (`.github/workflows/build.yml`) builds every push to `main`, every pull request and every `v*` tag, and can be started by hand on any branch. Pushing a tag such as `v0.2.0` also attaches the portable zip to a release.
 
+A release also goes to the Nexus Mods page. `.github/workflows/nexus.yml` uploads the zip as a new version of the main file and archives the version before it, for releases made by a tag push and for releases published by hand. It needs the `NEXUSMODS_API_KEY` secret and the `NEXUSMODS_FILE_ID` variable on the repository and does nothing without them. Prereleases are not sent.
+
 ### Floor textures
 
 `src\resources\testgrid_*.dds` are grid textures generated for this project. To use your own, put files with the same three names in `src\resources\local`. That folder is ignored by git, and a normal build picks it up automatically.

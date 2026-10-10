@@ -1,0 +1,141 @@
+[center][size=5][b]SSE Animation Previewer[/b][/size]
+[size=3]Play Skyrim SE animations on a real character, with your armor, weapon, effects and physics, without starting the game.[/size]
+
+[img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/limit.gif[/img][/center]
+
+A standalone Windows program for animators and moveset authors. It reads your Data folder and mod folders directly. Point it at a moveset, pick a clip, and you see the pose, the root motion, every annotation, the Precision hit capsules and the HDT-SMP cloth on one timeline you can scrub frame by frame.
+
+It is not a Skyrim mod and is not installed into the game. Nothing goes in your load order.
+
+[b]This is a development preview.[/b] Playback, annotations and the overlays follow the clip's own data. Character rendering and particle effects are close to the game but have not been matched against it image by image. See Known limits below.
+
+[line]
+[size=4][b]What it does[/b][/size]
+
+[size=3][b]A combo on one timeline[/b][/size]
+Queue several attacks and the previewer chains them the way a combo does. It cuts each clip at [font=Courier New]MCO_WinOpen[/font] or [font=Courier New]MCO_PowerWinOpen[/font], blends it into the next, and carries root motion and [font=Courier New]MCO_AttackSpeed[/font] forward, so you can see how attack 2 reads coming out of attack 1 and how far the whole string travels.
+
+[center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/combo.gif[/img]
+[img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/queue-ui.gif[/img][/center]
+
+[size=3][b]Effects from the clip's annotations[/b][/size]
+Payload Interpreter annotations are resolved to their spells, projectiles and effect NIFs and played on the timeline with the clip. Any effect NIF can also be opened on its own and scrubbed.
+
+[center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/crossslash.gif[/img][/center]
+
+[size=3][b]HDT-SMP physics[/b][/size]
+Cloth, hair and weapon straps are simulated from their physics XML with Bullet, the engine FSMP uses. Collision shapes, simulated bones and constraints can be drawn over the character. Edit the XML, press Reload, and watch the result on a looping clip.
+
+[center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/hdt.gif[/img][/center]
+
+[size=3][b]Annotations you can read while the clip plays[/b][/size]
+Every annotation is listed with its time. The ones in effect right now are highlighted as the clip plays: the open combo window, the current attack speed, a Precision collision for exactly the frames it exists.
+
+[center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/annotations.gif[/img][/center]
+
+[size=3][b]Precision attack collisions[/b][/size]
+The capsules Precision builds from [font=Courier New]Collision_*[/font] annotations are drawn on the weapon or bone for as long as the annotations keep them alive. The rules and sizes follow the Precision source, and your Precision MCM settings are read when their folder is mounted.
+
+[center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/main/docs/images/precision.png[/img][/center]
+
+[size=3][b]Skeleton overlay[/b][/size]
+Draw every bone, or only the ones you tick, with names and local axes. Useful for checking whether a weapon bone is animated on its own or only riding the hand.
+
+[center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/overlays.gif[/img][/center]
+
+[size=3][b]OAR and DAR library, with override check[/b][/size]
+Animations are grouped by mod, submod and priority, with each submod's conditions written out. The playing clip turns orange when a higher-priority folder holds the same file, and hovering it lists those folders. Conditions are shown, not evaluated, so orange means the clip can lose, not that it does.
+
+[center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/main/docs/images/library-overrides.png[/img][/center]
+
+[size=3][b]Also[/b][/size]
+[list]
+[*]Timeline with a large scrubber, frame stepping, snap to frame, loop and speed
+[*]Root motion from AMR annotations, with an arrow marking the actor root and a camera that travels with it
+[*]Any race from your plugins, head parts, hair colour, body weight, armor by slot, weapon in hand or sheathed
+[*][font=Courier New]weaponDraw[/font] and [font=Courier New]weaponSheathe[/font] annotations move the weapon between holster and hand
+[*][font=Courier New]SoundPlay[/font] annotation sounds, with a Warnings tab that names the plugin a missing sound needs
+[*]Saved scenes, so a character and moveset setup comes back in one click
+[*]A command line mode for scripted checks and for recording frames
+[/list]
+
+[center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/main/docs/images/overview.png[/img][/center]
+
+[line]
+[size=4][b]Requirements[/b][/size]
+[list]
+[*]Windows 10 or 11, 64-bit
+[*]A graphics card and driver with OpenGL 4.3
+[*]A Skyrim Special Edition or Anniversary Edition Data folder. No game assets are included.
+[/list]
+The download carries its own .NET runtime and C++ runtime. Nothing else needs installing. SKSE, Maya, Blender and Havok tools are not needed.
+
+[size=4][b]Install and first run[/b][/size]
+[list=1]
+[*]Download the main file and unpack it anywhere. Do not install it with a mod manager.
+[*]Run [b]SSE Animation Previewer.exe[/b]. Keep the folder together.
+[*]Press [b]Open Data…[/b] and choose your Skyrim Data folder.
+[*]Press [b]Add mod folder…[/b] for each mod you want on top. Later folders win.
+[*]Press [b]Load order…[/b] and pick your plugins.txt if the install is modded.
+[*]Choose a race, armor and weapon in the right column.
+[*]Click a clip in the animation library, or drag .hkx files or folders onto it.
+[/list]
+Base game meshes and textures are needed even when you are testing one small mod, because the body, head and skeleton come from them.
+
+[b]Mod Organizer 2.[/b] Adding individual folders from your mods directory with Add mod folder… is the route used during development. Starting the previewer through MO2 and opening the virtual Data folder should also work, but is untested.
+
+[size=4][b]Controls[/b][/size]
+[list]
+[*]Alt + left drag: orbit
+[*]Alt + middle drag: pan
+[*]Alt + right drag, or mouse wheel: zoom
+[*]F, with the viewport focused: frame the scene
+[*]Space: play or pause
+[/list]
+Untick Require Alt for camera controls to use plain drags.
+
+[line]
+[size=4][b]Known limits[/b][/size]
+[list]
+[*]Behavior graphs are not run. A clip plays as a clip, and queue transitions use your blend time, not the graph's.
+[*]OAR and DAR conditions are shown, never evaluated.
+[*]Particle systems run a simulation of the NIF's modifiers. Emitters, forces, colliders and flipbooks are covered. Some modifiers and shader effects are approximate, and the Diagnostics tab names every block it could not handle.
+[*]Gameplay scripts, hit detection and actor conditions are not executed.
+[*]Race morphs, alternate texture sets on armor and partial partition hiding are incomplete.
+[*]HDT-SMP uses the same solver and XML rules as FSMP, but it has not been compared with the game frame by frame. Tune here, then confirm in game.
+[/list]
+
+[line]
+[size=4][b]Documentation and source[/b][/size]
+The full guide, with a page for each feature, is on GitHub:
+[url=https://github.com/DCCStudios/SSE-Animation-Previewer]https://github.com/DCCStudios/SSE-Animation-Previewer[/url]
+
+[list]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/getting-started.md]Getting started[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/playback.md]Playback, root motion and sounds[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/animation-queue.md]Animation queue[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/annotations.md]Annotations[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/animation-library.md]Animation library and overrides[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/character-and-equipment.md]Character and equipment[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/precision-collisions.md]Precision attack collisions[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/hdt-smp-physics.md]HDT-SMP physics[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/effects.md]Effects[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/command-line.md]Command line[/url]
+[/list]
+
+The program is open source under GPL-3.0. Bug reports and pull requests are welcome on GitHub.
+
+[size=4][b]Credits[/b][/size]
+[list]
+[*]MANOLOV02 for FO4_Base_Library, the NiflySharp fork and the BSA/BA2 library, which supply the renderer and file readers
+[*]ousnius for NiflySharp and Material Editor
+[*]Microsoft for DirectXTex
+[*]Erwin Coumans and Andres Traks for Bullet and BulletSharp
+[*]The FSMP (hdtSMP64) authors, whose source the physics reader follows
+[*]Ersh for Precision, whose source the collision rules follow
+[*]The Community Shaders team, whose shader equations the refraction pass adapts
+[*]OpenTK and NAudio
+[/list]
+Full notices and license texts are in the download and on GitHub.
+
+The character in the animated pictures comes from other authors' mods loaded from a local installation. It is not part of this download.

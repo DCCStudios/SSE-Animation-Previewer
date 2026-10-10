@@ -122,3 +122,11 @@ jobs:
           $kind = @(if ($env:GITHUB_REF_NAME -match '-') { '--prerelease' })
           gh release create $env:GITHUB_REF_NAME $zip --title $env:GITHUB_REF_NAME --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY @kind
           if ($LASTEXITCODE -ne 0) { throw 'Publishing the release failed.' }
+
+  # Sends the new release to the Nexus Mods page. It does nothing until the repository has the key and file ID set.
+  nexus:
+    needs: release
+    uses: ./.github/workflows/nexus.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

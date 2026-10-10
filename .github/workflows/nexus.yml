@@ -1,0 +1,74 @@
+name: Nexus Mods upload
+
+# Sends a release's portable zip to the Nexus Mods page as a new version of the main file and archives the
+# version before it. It needs two things set on the repository, and does nothing until both exist:
+#   secret   NEXUSMODS_API_KEY   an API key from https://www.nexusmods.com/settings/api-keys
+#   variable NEXUSMODS_FILE_ID   the ID of the main file on the mod page. The first file has to be uploaded by
+#                                hand. Its ID is under Advanced on the Files tab, or on the Manage Files page.
+on:
+  # A release published by hand on GitHub.
+  release:
+    types: [published]
+  # A release made by the Build workflow. GitHub does not raise the release event for those, so Build calls this.
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      NEXUSMODS_API_KEY:
+        required: false
+  # A release that is already published, by its tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to upload, for example v0.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  upload:
+    if: vars.NEXUSMODS_FILE_ID != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Find the release zip
+        id: zip
+        env:
+          HAS_KEY: ${{ secrets.NEXUSMODS_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ "$HAS_KEY" != "true" ]; then echo "::error::The NEXUSMODS_API_KEY secret is not set."; exit 1; fi
+          if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease --jq .isPrerelease)" = "true" ]; then
+            echo "Release $TAG is a prerelease, so it is not sent to Nexus Mods."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          mkdir download
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*win-x64.zip' --dir download
+          count=$(find download -name '*.zip' | wc -l)
+          if [ "$count" -ne 1 ]; then echo "::error::Expected one win-x64 zip on release $TAG and found $count."; exit 1; fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "path=$(find download -name '*.zip')" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to Nexus Mods
+        if: steps.zip.outputs.skip != 'true'
+        uses: Nexus-Mods/upload-action@v1.0.0-beta.10
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          file_id: ${{ vars.NEXUSMODS_FILE_ID }}
+          filename: ${{ steps.zip.outputs.path }}
+          version: ${{ steps.zip.outputs.version }}
+          display_name: SSE Animation Previewer ${{ steps.zip.outputs.version }} (portable)
+          description: Portable build. Unpack anywhere and run SSE Animation Previewer.exe. Nothing else needs installing.
+          category: main
+          archive_existing_version: true
+          update_mod_version: true
+          mod_id: ${{ vars.NEXUSMODS_MOD_ID || '194768' }}
+          changelog: See https://github.com/${{ github.repository }}/releases/tag/${{ env.TAG }}

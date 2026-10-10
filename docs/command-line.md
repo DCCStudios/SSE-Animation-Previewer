@@ -34,6 +34,14 @@ Writes `track-bone.txt` beside the exe, a log of how a bone moves relative to an
 
 Renders most of the pictures used in these pages: a Nord with an iron battleaxe, the overlays, the queue and a vanilla effect. The clips you pass decide the poses.
 
+## Recording frames for an animated picture
+
+```
+"SSE Animation Previewer.exe" --background --frames-capture <scene file> <output folder> <seconds> [options]
+```
+
+Loads a saved scene, plays it in real time and writes `frame_0000.png` and up, with the real frame rate on the first line of `frames.txt`. Sounds are muted. Options include `fps=15`, `clip=<part of a clip path>`, `queue=<part>|<part>`, `smp`, `colliders`, `precision`, `skeleton`, `follow`, `window` (the whole window, not the viewport alone), `rotate=<dx>,<dy>`, `zoom=<steps>` and `size=<width>x<height>`. Turn the frames into a GIF with a tool such as ffmpeg.
+
 ## Built-in checks
 
 These run a feature against fixtures and write a pass/fail log beside the exe. They expect the source tree's folder layout. `--ci-test` runs everything that needs only the files in the repository. Many of the others need a local `test-data` folder of vanilla assets or a folder of mods, and report `SKIPPED` when those are missing. See [Building](building.md).
