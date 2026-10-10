@@ -14,7 +14,7 @@ New-Item -ItemType Directory -Path $buildRoot -Force | Out-Null
 $Output = Join-Path $buildRoot 'staging'
 # Development-only build. The resulting Portable folder requires no SDK or converter.
 # A property passed on the command line overrides the project file, so it is only passed for the public build.
-$floor = if ($Public) { @('-p:FloorTextures=resources') } else { @() }
+$floor = @(if ($Public) { '-p:FloorTextures=resources' })
 dotnet publish (Join-Path $root 'src/SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output @floor
 if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
 # The C++ runtime DLLs live in the repository, so packaging needs no Visual Studio install.
