@@ -45,16 +45,6 @@ foreach ($directory in 'licenses','docs') {
 if (!(Test-Path (Join-Path $Output 'Resources/testgrid_d.dds'))) { throw 'Missing floor textures in the package.' }
 # Maintainer files stay out of the package.
 Remove-Item -LiteralPath (Join-Path $Output 'docs/nexus') -Recurse -Force -ErrorAction SilentlyContinue
-# The .NET runtime ships in the package, so its license and notices do too. They come from the runtime pack the
-# publish step restored, matched to the runtime version in the package.
-$runtimeVersion = (Get-Item -LiteralPath (Join-Path $Output 'coreclr.dll')).VersionInfo.ProductVersion -replace '[+ ].*$', ''
-$packages = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE '.nuget/packages' }
-$runtimePack = Join-Path $packages "microsoft.netcore.app.runtime.win-x64/$runtimeVersion"
-foreach ($pair in @(@('LICENSE.TXT','dotnet-runtime-LICENSE.txt'), @('THIRD-PARTY-NOTICES.TXT','dotnet-runtime-THIRD-PARTY-NOTICES.txt'))) {
-    $from = Join-Path $runtimePack $pair[0]
-    if (!(Test-Path -LiteralPath $from)) { throw "The .NET runtime pack's $($pair[0]) was not found at $from." }
-    Copy-Item -LiteralPath $from -Destination (Join-Path $Output "licenses/$($pair[1])") -Force
-}
 $needed = 'coreclr.dll','hostfxr.dll','hostpolicy.dll','System.Windows.Forms.dll','DirectXTexWrapper.dll','Ijwhost.dll','vcruntime140.dll','msvcp140.dll'
 foreach ($file in $needed) { if (!(Test-Path (Join-Path $Output $file))) { throw "Missing portable dependency: $file" } }
 # Paths are relative to the package root, including nested samples and licenses.
