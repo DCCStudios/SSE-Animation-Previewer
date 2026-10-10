@@ -11,13 +11,13 @@ Their source is included in this repository under engine and native, at the upst
 - https://github.com/Microsoft/DirectXTex
 - https://github.com/MANOLOV02/DirectXTexWrapper
 
-Additional managed dependencies: OpenTK and OpenTK.GLControl, SharpZipLib, K4os.Compression.LZ4, and miniball-devel0. The portable runtime includes Microsoft's .NET Windows Desktop runtime and Visual C++ runtime redistributable libraries.
+Additional managed dependencies: OpenTK and OpenTK.GLControl (MIT), SharpZipLib (MIT), K4os.Compression.LZ4 (MIT), miniball-devel0 (Apache-2.0) and NAudio 2.2.1 (MIT, copyright 2020 Mark Heath). OpenTK brings GLFW (zlib/libpng). licenses/FO4_Base_Library-THIRD-PARTY-NOTICES.md is the engine's own notice file and lists each of these with its copyright line, along with the other components the engine itself builds on: xEdit, whose format declarations are compiled into the engine under MPL-2.0, HavokLib (GPL-3.0), and niftools' nifxml (GPL-3.0). The license texts are in licenses: MIT.txt, Apache-2.0.txt, MPL-2.0.txt, GLFW-zlib.txt, NAudio-LICENSE.txt and nifxml-LICENSE. The portable runtime includes Microsoft's .NET Windows Desktop runtime and Visual C++ runtime redistributable libraries.
 
 HDT-SMP simulation uses BulletSharp 0.12.0 (BulletSharp.x64 package, copyright (c) 2013-2019 Andres Traks) and the Bullet Physics library it bundles as libbulletc.dll, both under the zlib license. The text is in licenses/BulletSharp-LICENSE.txt. The physics XML reader and the skinned-mesh collision code (SmpPhysics.cs, SmpCollision.cs) are a C# port of logic from Faster HDT-SMP, https://github.com/DaymareOn/hdtSMP64, which is licensed under GPL-3.0 with a modding exception. The FSMP plugin itself is not included or loaded.
 
 Copies of upstream license files are in licenses. The portable runtime folder alone is not a complete source distribution; the corresponding source is this repository.
 
-The formats and behaviour of AMR, Payload Interpreter, Dynamic Animation Casting, Dtry's Key Utils, Precision and FSMP were taken from their published source. None of their code or SKSE plugin DLLs is included, required or loaded by this standalone application, except the FSMP-derived physics reader noted above.
+The formats and behaviour of AMR, Payload Interpreter, Dynamic Animation Casting, Dtry's Key Utils, Precision and FSMP were taken from their published source. None of their SKSE plugin DLLs is included, required or loaded by this standalone application. Two parts of the previewer follow published source closely: the FSMP-derived physics reader noted above, and the Precision collision rules in PrecisionCollisions.cs, which follow PrecisionHandler.cpp, AttackCollision.cpp and Settings.h from Precision by Ersh (https://github.com/ersh1/Precision, GPL-3.0).
 
 The application source is provided under GPL-3.0-or-later, subject to third-party components' own licenses. Game and mod assets are not included.
 

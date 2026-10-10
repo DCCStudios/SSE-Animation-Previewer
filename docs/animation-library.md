@@ -35,7 +35,7 @@ How the comparison works:
 
 - Two clips compete when they stand in for the same game file. `mco_attack1.hkx` in one submod competes with `mco_attack1.hkx` in another, but not with `male\mco_attack1.hkx`.
 - A `_variants_` folder counts for the file it replaces.
-- A plain file counts every enabled replacer folder that holds it, at any priority.
+- A plain file counts every enabled replacer folder that holds it and has a numeric priority. DAR folders keyed by plugin and actor have none, so they never count.
 - Disabled submods are left out. So are the clip's own submod and submods at an equal priority.
 
 Orange means the clip can lose. Since conditions are not evaluated, it does not mean the clip does lose. If the higher folder's conditions never pass for your character, your clip still plays.

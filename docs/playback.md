@@ -8,7 +8,7 @@ The timeline under the viewport is a tall bar with a large scrubber. Click anywh
 
 | Control | What it does |
 |---|---|
-| Play / pause, or Space | Starts and stops playback |
+| Play / pause, or Space | Starts and stops playback. Space does nothing while a text box or drop-down has focus. |
 | Stop | Returns to the start |
 | Arrow buttons | Step one frame back or forward |
 | **Loop** | Repeats the clip. On by default. |
@@ -36,21 +36,21 @@ Clips with no AMR annotations stay in place. The previewer does not extract root
 
 **Follow scene** keeps the camera travelling with the actor root. The view keeps its angle, distance and offset and moves by however far the root moves, so a long dodge stays in frame without the camera re-fitting or zooming.
 
-You can orbit, pan and zoom while it is on. The camera carries on following from wherever you put it. Press F to re-frame.
+You can orbit, pan and zoom while it is on. The camera carries on following from wherever you put it. Click the viewport and press F to re-frame.
 
-The drop-down under it chooses what F and the first fit aim at: the whole scene, the character, or the effects.
+The drop-down at the bottom of the CAMERA group chooses what F and the first fit aim at. Its entries are Frame whole scene, Frame character (the default) and Frame effects.
 
 ## Attack speed
 
 MCO binds the playback speed of every attack clip to the `MCO_AttackSpeed` graph variable, and each `PIE.@SGVF|MCO_AttackSpeed|value` annotation sets it. The previewer does the same. Each annotation's speed runs from its time until the next one, so a clip that goes 1.10x, 1.30x, 1.10x plays each stretch at its own rate.
 
-Annotations, root motion, sounds, Precision collisions and effects all follow that timing. The note beside the Speed box lists the changes, and the readout shows the clip time and current rate.
+Annotations, root motion, sounds, Precision collisions and effects all follow that timing. The note beside the Speed box lists the first four changes and counts the rest, and the readout shows the clip time and current rate.
 
 ## Sounds
 
 Tick **Sounds** to hear the clip's `SoundPlay.<EditorID>` annotations as playback passes them. Scrubbing and stepping stay silent.
 
-The editor ID is looked up the way the game does it: a sound descriptor with that ID, or a sound marker that points to one. A file is picked at random from the descriptor's list. Volume comes from the descriptor's static attenuation and its category chain, and pitch from its frequency shift and variance. `.wav`, `.xwm` and `.fuz` files all play.
+The previewer looks the editor ID up the way the game does: a sound descriptor with that ID, or a sound marker that points to one. A file is picked at random from the descriptor's list. Volume comes from the descriptor's static attenuation and its category chain, and pitch from its frequency shift and variance. `.wav`, `.xwm` and `.fuz` files all play.
 
 Sounds play centred. Distance attenuation, your in-game volume sliders, conditions and looping are not modelled.
 

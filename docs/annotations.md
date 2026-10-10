@@ -10,7 +10,7 @@ When a clip changes speed, each line shows the playback time first and the clip 
 
 The annotations that are in effect at the current time are highlighted in green. The highlight moves as the clip plays, and the list scrolls to keep the latest one in view. When paused it stays where you put it.
 
-![Active annotations highlighted while a Precision capsule is alive](images/precision-window.png)
+![The Annotations tab with the active lines highlighted in green](images/precision-window.png)
 
 An ordinary annotation is active from when it fires until the next annotation fires. Annotations at the same time are active together. Some last longer, because they describe a state and not a moment.
 
@@ -36,8 +36,8 @@ In a queue, annotations after a clip's hand-over never fire and are never highli
 
 **Check hit timing.** Tick **Show Precision attack collisions** and step frame by frame. The `Collision_Add` line is green for exactly the frames the capsule exists. See [Precision attack collisions](precision-collisions.md).
 
-**Find a speed change.** The `MCO_AttackSpeed` line that is green is the one in force. The note beside the Speed box lists them all.
+**Find a speed change.** The `MCO_AttackSpeed` line that is green is the one in force.
 
 ## Searching
 
-**Expand / search…** at the top of each tab opens its text in a larger window with a search box.
+**Expand / search…** at the top of the Configuration, Annotations, Diagnostics and Warnings tabs opens the text in a larger window with a search box, Find next and a line-wrap toggle.

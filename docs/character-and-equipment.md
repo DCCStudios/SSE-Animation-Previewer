@@ -8,7 +8,7 @@ The right column builds the actor the clip plays on. It reads the same records t
 
 ## Race, sex and head
 
-**CHARACTER** lists every playable race in the loaded plugins. Choosing one loads its skeleton, body, default head parts and skin tint for the selected sex.
+**CHARACTER** lists every race record in the loaded plugins, creatures included. Choosing one loads its skeleton, body, default head parts and skin tint for the selected sex.
 
 **HEAD PARTS** lists the race's hair, head, mouth, eyes and brows. Tick or untick parts to swap them.
 
@@ -22,10 +22,10 @@ The **Weight** slider (0 to 100) blends the body and every equipped armor piece 
 
 ## Equipment
 
-Pick a slot, pick an armor, press **Equip armor**. A new piece replaces whatever shared its slots. The equipped list below shows what is worn.
+Pick a slot, pick an armor, press **Equip armor**. A new piece replaces whatever shared its slots. The **WORN ITEMS** list further down the column shows what is worn, and **Remove selected** under it takes a piece off.
 
 - The slot list starts with **All slots**, which lists every armor in the loaded plugins.
-- Slots 44 to 60 show their conventional use in brackets, for example "45 (neck: cape, scarf, shawl)".
+- Unnamed slots from 44 to 60 show their conventional use in brackets, for example "45 · (neck: cape, scarf, shawl, neck-tie)".
 - A filter typed in the armor list stays when you switch slots.
 - Equipment that covers slot 31, such as a helmet or wig, replaces the hair, as in game.
 
@@ -58,4 +58,4 @@ A weapon sits at the wrong angle in one clip. Tick `WEAPON` and `NPC R Hand [RHn
 
 ## Lighting
 
-**Lighting…** opens the light rig: key, two fills and a back light, ambient colour, and the render options. Settings are saved with the session.
+**Lighting…** opens the light rig: key, two fills and a back light, ambient colour, and the render options. These settings belong to the program, not to a session or scene. They are stored in `viewer-settings.json` beside the exe.

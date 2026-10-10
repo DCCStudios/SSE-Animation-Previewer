@@ -16,9 +16,9 @@ The toolbar across the top does the loading.
 | **Add mod folder…** | Mounts one more folder on top. Its loose files beat everything below. Later folders win. |
 | **Load order…** | Selects a `plugins.txt`, so plugins and their paired BSAs load in your real order. |
 | **Add HKX…** | Opens single animation files from anywhere. |
-| **Restore session** | Remounts the folders and load order from last time. |
-| **Scenes…** | Saves and loads named scenes. |
-| **Reset** | Clears the preview back to an empty scene. |
+| **Restore session** | Brings back the last session: folders, load order, character, clip and settings. |
+| **Scenes...** | Save scene, Load scene and a list of recent scenes. |
+| **Reset** | Unloads everything, including the mounted folders, and replaces the saved session with an empty one. |
 | **Lighting…** | Opens the light rig and render settings. |
 | **Frame F** | Fits the camera to the scene. |
 
@@ -28,9 +28,9 @@ The **Loaded sources** list under the animation library shows every mounted fold
 
 ### Mod Organizer 2
 
-Add the exe as an executable in MO2 and start it from there. Then use **Open Data…** on the game's `Data` folder, which now shows MO2's virtual file system, and **Load order…** on the profile's `plugins.txt`.
+This route is untested. The program reads files in the ordinary way, so it should see MO2's virtual file system when started from MO2: add the exe as an executable, start it from there, use **Open Data…** on the game's `Data` folder and **Load order…** on the profile's `plugins.txt`.
 
-You can also skip MO2 and add individual folders from your `mods` directory with **Add mod folder…**. That is faster when you only care about one moveset.
+The route used during development skips MO2: add individual folders from your `mods` directory with **Add mod folder…**. That is also faster when you only care about one moveset.
 
 ## First clip
 
@@ -51,14 +51,16 @@ The clip plays on a loop. The tabs under the viewport show where it came from, w
 
 ## Drop-down lists
 
-Every drop-down opens with a filter box. Type a few words and the list narrows to entries that contain all of them. Arrow keys or the mouse pick an entry, Enter confirms. F4 or Alt+Down opens a list from the keyboard.
+The record drop-downs (race, armor, weapon and the like) open with a filter box. Type a few words and the list narrows to entries that contain all of them. Arrow keys or the mouse pick an entry, Enter confirms. F4 or Alt+Down opens a list from the keyboard.
 
 ## Sessions and scenes
 
-The previewer saves your session as you work: mounted folders, load order, character, equipment, the selected clip, the queue and every tick box. **Restore session** brings it back after a restart.
+The previewer saves your session as you work: mounted folders, load order, character, equipment, the selected clip, the queue and the tick boxes. After a restart, press **Restore session** before anything else. Mounting a folder or pressing Reset first saves a new session over the old one.
 
-A scene is the same information saved under a name you choose. Use **Scenes…** to save the current setup and to reopen one later. Scene files are plain JSON (`*.ssescene.json`) in the `Scenes` folder beside the exe, so you can keep one per character or per moveset. If a scene points at a folder that has moved, the previewer asks where it went and repairs the paths.
+Lighting, render options and the Require Alt setting are kept separately in `viewer-settings.json` and apply to every session.
+
+A scene is the same information saved to a file you name. **Scenes...** has **Save scene...**, **Load scene...** and **Recent**, which lists the last twelve. Scene files are plain JSON (`*.ssescene.json`) and go wherever you save them, so you can keep one per character or per moveset. If a scene points at a folder that has moved, the previewer asks where it went and repairs the paths.
 
 ## The grid floor
 
-**Grid floor at origin** draws a disc at height zero, the level the skeleton root stands on. Cells are 64 game units, and a character is about 128 tall. The floor receives the character's shadow, which makes foot contact and travel distance easy to read. It is a preview aid and takes no part in particle collision.
+**Grid floor at origin** draws a disc at height zero, the level the skeleton root stands on. With the floor textures that ship with the program, cells are 64 game units. A character is about 128 tall. The floor receives the character's shadow, which makes foot contact and travel distance easy to read. It is a preview aid and takes no part in particle collision.

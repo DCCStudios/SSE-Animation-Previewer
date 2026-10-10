@@ -2,7 +2,7 @@
 
 This is the engineering log the previewer was built against: what each subsystem reads, which engine behaviour it copies, what was verified and how, and what is still approximate. It is long and written for people changing the code. For how to use the program, start at the [README](../README.md).
 
-Some verification entries name test scenes, sample files and checks that have since been removed from the project (a Braver impact sample and its exporter, a scripted Cross Slash dialog, Cloud trail captures). Those entries are kept because the engine findings in them still hold. Paths under `verification/` and `test-data/` refer to local folders that are not in the repository.
+Some verification entries name test scenes, sample files and checks that have since been removed from the project (a Braver impact sample and its exporter, a scripted Cross Slash dialog, Cloud trail captures). Those entries are kept because the engine findings in them still hold. Paths under `verification/` and `test-data/` refer to local folders that are not in the repository. Where an entry mentions `PluginTemplate`, `DirectXTex` or `DirectXTextWrapper` folders in a workspace, that source is now under `engine` and `native`.
 
 Run **Portable\SSE Animation Previewer.exe**. Keep the entire Portable folder together. It includes the .NET desktop runtime, animation/NIF/archive libraries, DDS decoder, and native C++ runtime. No separate .NET installation, converter, Maya, Blender, SKSE installation, or development tool is required to launch it.
 

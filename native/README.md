@@ -11,8 +11,8 @@ Of DirectXTex, only the library and `Common` folders were copied.
 
 ## Rebuilding
 
-You only need this if you change the wrapper. It takes Visual Studio 2022 or later with the C++ desktop workload and C++/CLI support.
+You only need this if you change the wrapper. It takes Visual Studio with the C++ desktop workload and C++/CLI support. Both projects target the v145 toolset (Visual Studio 2026). On Visual Studio 2022, retarget both to your toolset first.
 
-1. Build `DirectXTex/DirectXTex/DirectXTex_Desktop_2026.vcxproj` for Release x64. If your Visual Studio is older, retarget the project to your toolset first.
+1. Build `DirectXTex/DirectXTex/DirectXTex_Desktop_2026.vcxproj` for Release x64.
 2. Build `DirectXTextWrapper/DirectXTexWrapper.vcxproj` for Release x64.
 3. Copy the new `DirectXTexWrapper.dll` and `Ijwhost.dll` over the ones in `lib`.

@@ -2,7 +2,7 @@
 
 [Back to the README](../README.md)
 
-Everything needed to build is in this repository. You install one thing, the .NET 8 SDK.
+Everything needed to build is in this repository. You install one thing, the .NET SDK, version 9.0.300 or later. The program targets .NET 8, but one of the engine's build-time code generators needs the newer SDK.
 
 ```
 git clone https://github.com/DCCStudios/SSE-Animation-Previewer
@@ -10,7 +10,7 @@ cd SSE-Animation-Previewer
 dotnet build -c Release
 ```
 
-The exe lands in `bin\Release\net8.0-windows\win-x64`. The first build downloads a few NuGet packages (OpenTK, BulletSharp, NAudio, SharpZipLib, LZ4), so it needs a network connection once.
+The exe lands in `bin\Release\net8.0-windows\win-x64`. The first build downloads its NuGet packages (OpenTK, BulletSharp, NAudio, SharpZipLib, LZ4, miniball, the Roslyn packages the generator uses, and the .NET runtime packs), so it needs a network connection once.
 
 Windows x64 only. Visual Studio is not required.
 
@@ -38,7 +38,7 @@ This publishes a self-contained build to `Portable`, adds the C++ runtime, licen
 
 `.\scripts\build-portable.ps1 -Public -Output <folder>` builds the copy that gets released. It always uses the floor textures in `src\resources`.
 
-Every push is built by GitHub Actions (`.github/workflows/build.yml`). Pushing a tag such as `v0.2.0` also packages the portable zip and attaches it to a release.
+GitHub Actions (`.github/workflows/build.yml`) builds every push to `main`, every pull request and every `v*` tag, and can be started by hand on any branch. Pushing a tag such as `v0.2.0` also attaches the portable zip to a release.
 
 ### Floor textures
 

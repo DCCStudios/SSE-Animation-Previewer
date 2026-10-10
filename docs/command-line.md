@@ -2,18 +2,20 @@
 
 [Back to the README](../README.md)
 
-The exe takes switches for scripted runs. They exist mainly to test the program itself, but two are useful to anyone.
+The exe takes switches for scripted runs. Most exist to test the program itself. The first few below are useful to anyone.
 
 ## Background mode
 
-`--background` opens the previewer off-screen, out of the taskbar and never as the foreground window. Rendering is unchanged. A capture taken this way is pixel-identical to one from a normal run. The environment variable `SSE_PREVIEW_BACKGROUND=1` does the same.
+`--background` opens the previewer off-screen, out of the taskbar and never as the foreground window. It renders with the same code as a normal run. The environment variable `SSE_PREVIEW_BACKGROUND=1` does the same.
+
+`--data <folder>` mounts a Data folder at start.
 
 Combine it with any of the modes below.
 
-## Reading clips without the window
+## Reading clips from a script
 
 ```
-"SSE Animation Previewer.exe" --dump-annotations <clip.hkx> [more clips]
+"SSE Animation Previewer.exe" --background --dump-annotations <clip.hkx> [more clips]
 ```
 
 Writes each clip's duration and annotations, with times and track numbers, to `annotations.txt` beside the exe.
@@ -22,7 +24,7 @@ Writes each clip's duration and annotations, with times and track numbers, to `a
 "SSE Animation Previewer.exe" --background --track-bone <bone> <reference bone> <clip.hkx> [more clips]
 ```
 
-Writes a log beside the exe of how a bone moves relative to another across each clip. The test data must be present, since it needs a skeleton. It answers questions such as "is `WEAPON` animated separately from the right hand in this export".
+Writes `track-bone.txt` beside the exe, a log of how a bone moves relative to another across each clip. It takes the skeleton from your last session, so run the previewer once and mount your data first, or point the `SSE_SESSION_FILE` environment variable at a session file. It answers questions such as "is `WEAPON` animated separately from the right hand in this export".
 
 ## Documentation screenshots
 
@@ -30,7 +32,7 @@ Writes a log beside the exe of how a bone moves relative to another across each 
 "SSE Animation Previewer.exe" --background --docs-capture <output folder> <Skyrim Data folder> <clip.hkx> [more clips]
 ```
 
-Renders the pictures used in these pages: a Nord in iron armour with an iron battleaxe, the overlays, the queue and a vanilla effect.
+Renders most of the pictures used in these pages: a Nord with an iron battleaxe, the overlays, the queue and a vanilla effect. The clips you pass decide the poses.
 
 ## Built-in checks
 
@@ -46,7 +48,7 @@ These run a feature against fixtures and write a pass/fail log beside the exe. T
 | `--precision-smoke <clips>` | Precision timeline rules and capsule drawing |
 | `--annotation-smoke <clip>` | Active annotation highlight |
 | `--skeleton-smoke <clip>` | Bone overlay |
-| `--override-smoke` | Library row colours and hover text |
+| `--override-smoke` | Library row colours and hover text. Run `--catalog-test` first, which writes its fixture. |
 | `--flipbook-smoke <mod folder> <nifs>` | Sub-texture sheet sampling |
 | `--camera-smoke`, `--floor-smoke` | Camera following and zoom, grid floor |
 

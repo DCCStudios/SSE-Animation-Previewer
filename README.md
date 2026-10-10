@@ -6,13 +6,13 @@ It reads your Data folder and mod folders directly. Point it at a moveset, pick 
 
 ![The main window: animation library, viewport, timeline and annotations](docs/images/overview.png)
 
-It is a development preview. Animation playback, character assembly, annotations and the overlays are dependable. Particle effects are close but not proven identical to the game. [Known limits](#known-limits) lists what is approximate.
+It is a development preview. Animation playback, annotations and the overlays follow the clip's data and the source of the mods they imitate. Character rendering and particle effects are close but have not been matched against the game image by image. [Known limits](#known-limits) lists what is approximate.
 
 ## Download
 
-Get the latest zip from [Releases](../../releases), unpack it anywhere and run `SSE Animation Previewer.exe`. Keep the folder together. It carries its own .NET runtime and C++ runtime, so nothing else needs installing.
+Get the latest zip from [Releases](https://github.com/DCCStudios/SSE-Animation-Previewer/releases), unpack it anywhere and run `SSE Animation Previewer.exe`. Keep the folder together. It carries its own .NET runtime and C++ runtime, so nothing else needs installing.
 
-You need Windows 10 or 11 (x64), a working OpenGL driver and a Skyrim SE or AE Data folder. The program ships no game assets.
+You need Windows 10 or 11 (x64), a graphics card and driver with OpenGL 4.3, and a Skyrim SE or AE Data folder. The program ships no game assets.
 
 ## Quick start
 
@@ -41,9 +41,9 @@ You need Windows 10 or 11 (x64), a working OpenGL driver and a Skyrim SE or AE D
 
 ### A combo on one timeline
 
-Queue three attacks and the previewer plays them as the game would chain them: each one cut at its combo window, blended into the next, travelling as far as the root motion adds up to.
+Queue three attacks and the previewer chains them the way a combo does. It cuts each one at its combo window, blends it into the next, and moves the actor as far as the root motion adds up to.
 
-![Three queued attacks with their hand-over points](docs/images/queue.png)
+![A queue of three attacks, paused in the third](docs/images/queue.png)
 
 ### Where the hit lands
 
@@ -70,7 +70,7 @@ Open any effect NIF and scrub through it.
 | Alt + left drag | Orbit |
 | Alt + middle drag | Pan |
 | Alt + right drag, or wheel | Zoom |
-| F | Frame the scene |
+| F, with the viewport focused | Frame the scene |
 | Space | Play or pause |
 | Left, Right on the timeline | Nudge by half a percent |
 
@@ -78,10 +78,10 @@ Untick **Require Alt for camera controls** to use plain drags. The camera zooms 
 
 ## Known limits
 
-- Behavior graphs are not run. A clip plays as a clip. Transitions in the queue use your blend time, not the graph's.
-- OAR and DAR conditions are shown, never evaluated. The previewer cannot tell you which submod wins for a given actor, only which ones can.
+- The previewer does not run behavior graphs. A clip plays as a clip. Transitions in the queue use your blend time, not the graph's.
+- The previewer shows OAR and DAR conditions and never evaluates them. It cannot tell you which submod wins for a given actor, only which ones can.
 - Particle systems run a deterministic simulation of the NIF's modifiers. Emitters, forces, colliders and flipbooks are covered; some modifiers and shader effects are approximate, and the Diagnostics tab names every block it could not handle.
-- Gameplay scripts, hit detection and actor conditions are not executed.
+- The previewer does not execute gameplay scripts, hit detection or actor conditions.
 - Race morphs, alternate texture sets on armor and partial partition hiding are incomplete.
 - HDT-SMP uses the same solver and XML rules as FSMP, but it has not been compared with the game frame by frame.
 
@@ -89,7 +89,7 @@ Untick **Require Alt for camera controls** to use plain drags. The camera zooms 
 
 ## Building from source
 
-The repository is self-contained. Install the .NET 8 SDK, then:
+The repository is self-contained. Install the .NET SDK, version 9.0.300 or later (the program itself targets .NET 8), then:
 
 ```
 git clone https://github.com/DCCStudios/SSE-Animation-Previewer
@@ -105,4 +105,4 @@ The application source is GPL-3.0-or-later. See [LICENSE](LICENSE).
 
 It stands on other people's work: MANOLOV02's FO4_Base_Library, NiflySharp fork and BSA/BA2 library, ousnius's Material Editor, Microsoft's DirectXTex, Bullet and BulletSharp, OpenTK and NAudio. The HDT-SMP reader and collision code follow the FSMP (hdtSMP64) source, and the refraction shaders adapt equations from Community Shaders. [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and the `licenses` folder have the details.
 
-Skyrim and its assets belong to Bethesda Softworks. The screenshots here show vanilla game assets loaded from a local installation.
+Skyrim and its assets belong to Bethesda Softworks. The screenshots show a vanilla character, armor, weapon and effect loaded from a local installation. The attack clips in them come from a third-party battleaxe moveset, whose name appears in the library panel.

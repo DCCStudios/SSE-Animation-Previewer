@@ -4,7 +4,7 @@
 
 The queue plays several clips one after another on a single timeline. Its main use is checking a combo: whether attack 2 reads well coming out of attack 1 at the combo window, and how far the whole string travels.
 
-![Three queued attacks](images/queue.png)
+![A queue of three attacks, paused in the third](images/queue.png)
 
 ## Building a queue
 
@@ -16,9 +16,9 @@ Open the **Queue** tab under the viewport. Then add clips any of these ways.
 
 Ctrl+click marks several library clips and Shift+click marks a range. Dragging one marked clip brings all of them, in library order. Dragging a folder brings every clip under it.
 
-The list shows play order, top first. Each row has the clip's start and end time, how far it moves and its attack speed. Drag a row to move it. A white outline marks the row you are dragging and a line shows where it will land. **Up**, **Down**, **Remove** and **Clear** do what they say. Double-click a row to jump to it.
+The list shows play order, top first. Drag a row to move it. A white outline marks the row you are dragging and a line shows where it will land. **Up**, **Down**, **Remove** and **Clear** do what they say. **Open in window** moves the queue into its own window.
 
-Press **Play queue** to start.
+Press **Play queue** to start. While the queue plays, each row also shows the clip's start and end time, how far it moves, its attack speed if it changes speed, and its hand-over point. Double-click a row to jump to it.
 
 ## Hand-over at the combo window
 

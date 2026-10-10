@@ -18,7 +18,7 @@ The rules come from the Precision 2.0.4 source, not from its documentation. Wher
 - `Collision_Add` needs `Node()`. Event and parameter names ignore case.
 - `Collision_Remove.Node()` removes the first collision on that node. This comparison is case sensitive.
 - `Collision_AttackEnd`, `Collision_Cancel`, `attackStop` and `staggerStart` remove every collision and close the attack. A `Collision_Add` after that is ignored until a new `Collision_AttackStart`, and the note names the annotation that closed the attack.
-- `Duration(x)` ends a collision x seconds after it starts. `Duration(0)` uses Precision's default lifetime, stretched for a power attack. A clip counts as a power attack when its file name contains "power".
+- `Duration(x)` ends a collision x seconds after it starts. `Duration(0)` uses Precision's default lifetime, stretched for a power attack. A clip counts as a power attack when its path contains "power", so a folder named PowerAttacks marks every clip inside it.
 - `hitFrame` removes the first remaining recoil capsule when that Precision setting is on. `NoRecoil` and `WeaponTip` collisions get no recoil capsule.
 
 One quirk is reproduced on purpose. `Collision_Remove.ID()` is documented as removing every collision with that ID. The code removes all of them only when another collision comes after them in Precision's list. Two `ID(1)` collisions at the end of the list lose one and keep the other. The Annotations tab says when a clip hits this.
@@ -31,7 +31,9 @@ All sizes are in game units.
 - **SHIELD** uses the minimum weapon length, because the previewer loads no left-hand model.
 - **Any other node** uses the capsule on that bone in the skeleton NIF, or Precision's built-in hand capsule when the bone has none.
 
-The multipliers are Precision's defaults. Changes you made in Precision's own settings are not read.
+Sizes use Precision's defaults unless a mounted folder holds Precision's MCM settings (`MCM\Config\Precision\settings.ini`, then `MCM\Settings\Precision.ini`), which the previewer reads in that order. The label under the tick box says which it used.
+
+The drop-down under the tick box chooses **Sized as the player** or **Sized as an NPC**. The player setting applies Precision's player radius multiplier and recoil switch.
 
 ## Typical use
 
