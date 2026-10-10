@@ -74,7 +74,9 @@ jobs:
         shell: pwsh
         run: |
           $package = Join-Path $env:RUNNER_TEMP 'pkg\SSE Animation Previewer'
-          ./scripts/build-portable.ps1 -Public -Output $package
+          # A version tag stamps its number into the build.
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME.TrimStart('v') } else { '' }
+          ./scripts/build-portable.ps1 -Public -Output $package -Version $version
           # Tags and branches use their name; pull requests use the short commit hash.
           $label = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') { $env:GITHUB_SHA.Substring(0, 7) } else { $env:GITHUB_REF_NAME -replace '[\\/:*?"<>|]', '-' }
           $name = "SSE-Animation-Previewer-$label-win-x64"
@@ -119,8 +121,9 @@ jobs:
           $existing = gh release list --repo $env:GITHUB_REPOSITORY --limit 200 --json tagName --jq '.[].tagName'
           if ($LASTEXITCODE -ne 0) { throw 'Could not list releases.' }
           if (@($existing) -contains $env:GITHUB_REF_NAME) { throw "Release $($env:GITHUB_REF_NAME) already exists and will not be overwritten." }
-          $kind = @(if ($env:GITHUB_REF_NAME -match '-') { '--prerelease' })
-          gh release create $env:GITHUB_REF_NAME $zip --title $env:GITHUB_REF_NAME --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY @kind
+          # Anything but a plain vX.Y.Z tag is a prerelease, which the Nexus job does not send on.
+          $kind = @(if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$') { '--prerelease' })
+          gh release create $env:GITHUB_REF_NAME $zip --title "SSE Animation Previewer $($env:GITHUB_REF_NAME.TrimStart('v'))" --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY @kind
           if ($LASTEXITCODE -ne 0) { throw 'Publishing the release failed.' }
 
   # Sends the new release to the Nexus Mods page. It does nothing until the repository has the key and file ID set.

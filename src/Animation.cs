@@ -89,18 +89,22 @@ public sealed class AnimationClip
     public static AnimationClip Queue(IReadOnlyList<(string Name,AnimationClip Clip)> items,double blendTime,string? window=null,bool queued=true,IReadOnlyList<int>? windowPicks=null)
     {
         var queue=new AnimationClip{Segments=[],BlendTime=Math.Max(0,blendTime),Queued=queued};
-        double start=0,carried=1;Vector3 position=Vector3.Zero;float yaw=0;
+        double start=0,carried=1,carriedBfco=1;Vector3 position=Vector3.Zero;float yaw=0;
         for(int index=0;index<items.Count;index++){
             var (name,clip)=items[index];
-            // A BFCO clip plays at BFCO_AttackSpeed, or at MCO_AttackSpeed while that is 1, and BFCO_AttackSpeed starts
-            // again at 1 in every clip. Only MCO_AttackSpeed carries into the next clip. A hold loop is not bound.
-            bool bfco=Bfco.IsClip(name,clip.Events),hold=Bfco.IsHoldLoop(name);
-            var changes=EffectiveSpeedChanges(name,clip,carried);
-            var speed=new SpeedMap(changes,hold?1:carried,clip.Duration);
+            // A BFCO clip plays at BFCO_AttackSpeed, or at MCO_AttackSpeed while that is 1. MCO_AttackSpeed carries into
+            // the next clip. BFCO_AttackSpeed starts again at 1, except in a hold loop, its outro and the charge clips,
+            // which the graph enters without that reset. Hold loops and NPC clips are not bound and play at 1x, though
+            // their annotations still set the variables for the clip after them.
+            bool bfco=Bfco.IsClip(name,clip.Events),unbound=Bfco.IsUnbound(name);
+            double startBfco=bfco&&Bfco.KeepsBfcoSpeed(name)?carriedBfco:1;
+            var changes=EffectiveSpeedChanges(name,clip,carried,startBfco);
+            var speed=new SpeedMap(changes,unbound?1:bfco?Bfco.Effective(carried,startBfco):carried,clip.Duration);
             double? opens=null;string? used=null;
             if(window!=null&&index<items.Count-1&&Bfco.Window(name,clip.Events,window) is {Annotation:{} annotation,Times:{Count:>0} times}){used=annotation;opens=times[Math.Clamp(windowPicks!=null&&index<windowPicks.Count?windowPicks[index]:0,0,times.Count-1)];}
             double handOver=Math.Clamp(opens??clip.Duration,0,clip.Duration);
-            double length=speed.ToPlay(handOver);carried=hold?carried:bfco?Bfco.McoSpeedAt(clip,carried,handOver):speed.SpeedAt(handOver);
+            double length=speed.ToPlay(handOver);
+            if(bfco){carriedBfco=Bfco.BfcoSpeedAt(clip,startBfco,handOver);carried=Bfco.McoSpeedAt(clip,carried,handOver);}else{carried=speed.SpeedAt(handOver);carriedBfco=1;}
             var segment=new ClipSegment(name,clip,start,length,speed,position,yaw,handOver,used){SpeedVariable=bfco?"BFCO_AttackSpeed / MCO_AttackSpeed":"MCO_AttackSpeed",Changes=changes};queue.Segments.Add(segment);
             foreach(var e in clip.Events)if(opens==null||e.Time<=handOver+1e-9)queue.Events.Add(new(segment.Global(e.Time),e.Text,e.Track));
             foreach(var e in clip.WeaponEvents)if(opens==null||e.Time<=handOver+1e-9)queue.WeaponEvents.Add((segment.Global(e.Time),e.Sheathed));
@@ -117,9 +121,10 @@ public sealed class AnimationClip
     // pose, root motion, annotations and effects all run on playback time.
     public static AnimationClip Timeline(string name,AnimationClip clip)=>EffectiveSpeedChanges(name,clip,1).All(c=>Math.Abs(c.Value-1)<1e-9)?clip:Queue([(name,clip)],0,null,queued:false);
     // The speed changes that apply to a clip, in clip time: MCO_AttackSpeed for an MCO clip, BFCO's rule for a BFCO
-    // clip (carriedMco is MCO_AttackSpeed when the clip starts), none for a BFCO hold loop.
-    public static List<(double Time,double Value)> EffectiveSpeedChanges(string name,AnimationClip clip,double carriedMco=1)
-        =>Bfco.IsHoldLoop(name)?[]:Bfco.IsClip(name,clip.Events)?Bfco.SpeedChanges(clip,carriedMco):clip.SpeedChanges;
+    // clip (carriedMco and startBfco are the two variables when the clip starts), none for a BFCO clip with no speed
+    // binding.
+    public static List<(double Time,double Value)> EffectiveSpeedChanges(string name,AnimationClip clip,double carriedMco=1,double startBfco=1)
+        =>!Bfco.IsClip(name,clip.Events)?clip.SpeedChanges:Bfco.IsUnbound(name)?[]:Bfco.SpeedChanges(clip,carriedMco,startBfco);
     public static List<(double Time,bool Sheathed)> ReadWeaponEvents(IEnumerable<Annotation> events)=>events.OrderBy(e=>e.Time)
         .Select(e=>(e.Time,Name:e.Text.Trim())).Where(e=>e.Name.Equals("weaponDraw",StringComparison.OrdinalIgnoreCase)||e.Name.Equals("weaponSheathe",StringComparison.OrdinalIgnoreCase))
         .Select(e=>(e.Time,e.Name.Equals("weaponSheathe",StringComparison.OrdinalIgnoreCase))).ToList();

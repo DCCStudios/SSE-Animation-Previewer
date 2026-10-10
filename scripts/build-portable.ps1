@@ -1,5 +1,5 @@
 # -Public builds the copy that is published: generated floor textures, never the local set in src\resources\local.
-param([string]$Output = (Join-Path (Split-Path $PSScriptRoot -Parent) 'Portable'), [switch]$Public)
+param([string]$Output = (Join-Path (Split-Path $PSScriptRoot -Parent) 'Portable'), [switch]$Public, [string]$Version = '')
 # The repository root: this script lives in scripts\.
 $root = Split-Path $PSScriptRoot -Parent
 $ErrorActionPreference = 'Stop'
@@ -21,8 +21,10 @@ $Output = Join-Path $buildRoot 'staging'
 # Development-only build. The resulting Portable folder requires no SDK or converter.
 # A property passed on the command line overrides the project file, so it is only passed for the public build.
 # The public build also leaves out debug symbols, which carry the build machine's folder paths.
+# -Version stamps the build, for a release whose tag differs from the version in the project file.
+if ($Version) { $versionArgs = @("-p:Version=$Version") } else { $versionArgs = @() }
 $floor = @(if ($Public) { '-p:FloorTextures=resources'; '-p:DebugType=none'; '-p:DebugSymbols=false'; '-p:GenerateDocumentationFile=false' })
-dotnet publish (Join-Path $root 'src/SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output @floor
+dotnet publish (Join-Path $root 'src/SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output @floor @versionArgs
 if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
 # The C++ runtime DLLs live in the repository, so packaging needs no Visual Studio install.
 $crt = Join-Path $root 'lib/crt'
@@ -41,6 +43,18 @@ foreach ($directory in 'licenses','docs') {
     Copy-Item -LiteralPath (Join-Path $root $directory) -Destination $Output -Recurse -Force
 }
 if (!(Test-Path (Join-Path $Output 'Resources/testgrid_d.dds'))) { throw 'Missing floor textures in the package.' }
+# Maintainer files stay out of the package.
+Remove-Item -LiteralPath (Join-Path $Output 'docs/nexus') -Recurse -Force -ErrorAction SilentlyContinue
+# The .NET runtime ships in the package, so its license and notices do too. They come from the runtime pack the
+# publish step restored, matched to the runtime version in the package.
+$runtimeVersion = (Get-Item -LiteralPath (Join-Path $Output 'coreclr.dll')).VersionInfo.ProductVersion -replace '[+ ].*$', ''
+$packages = if ($env:NUGET_PACKAGES) { $env:NUGET_PACKAGES } else { Join-Path $env:USERPROFILE '.nuget/packages' }
+$runtimePack = Join-Path $packages "microsoft.netcore.app.runtime.win-x64/$runtimeVersion"
+foreach ($pair in @(@('LICENSE.TXT','dotnet-runtime-LICENSE.txt'), @('THIRD-PARTY-NOTICES.TXT','dotnet-runtime-THIRD-PARTY-NOTICES.txt'))) {
+    $from = Join-Path $runtimePack $pair[0]
+    if (!(Test-Path -LiteralPath $from)) { throw "The .NET runtime pack's $($pair[0]) was not found at $from." }
+    Copy-Item -LiteralPath $from -Destination (Join-Path $Output "licenses/$($pair[1])") -Force
+}
 $needed = 'coreclr.dll','hostfxr.dll','hostpolicy.dll','System.Windows.Forms.dll','DirectXTexWrapper.dll','Ijwhost.dll','vcruntime140.dll','msvcp140.dll'
 foreach ($file in $needed) { if (!(Test-Path (Join-Path $Output $file))) { throw "Missing portable dependency: $file" } }
 # Paths are relative to the package root, including nested samples and licenses.

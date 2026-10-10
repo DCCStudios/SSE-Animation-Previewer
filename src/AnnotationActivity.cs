@@ -5,7 +5,9 @@ namespace SSEPreview;
 
 // One annotation line of the Annotations tab: when it fires in playback time (Fires is false for a queued clip's
 // annotations after its hand-over, which never fire) and its text.
-public sealed record AnnotationRow(double Time,string Text,bool Fires,string Line);
+// End is the playback time at which the row's clip hands over to the next queued clip: states that belong to a clip
+// (windows, the BFCO chain, recovery) end there, as the graph closes them on entering the next clip.
+public sealed record AnnotationRow(double Time,string Text,bool Fires,string Line,double End=double.PositiveInfinity);
 
 // Which annotations are "active" at a playback time.
 //
@@ -16,7 +18,7 @@ public sealed record AnnotationRow(double Time,string Text,bool Fires,string Lin
 //   MCO_AttackSpeed / BFCO_AttackSpeed                   until the next one for the same variable
 //   BFCO_NextIsAttackN / BFCO_NextIsPowerAttackN,
 //   BFCO_NextWinStart / BFCO_NextPowerWinStart            until BFCO_DIY_EndLoop (or the end of the clip)
-//   BFCO_DIY_recovery / MCO_Recovery                      to the end of the clip
+//   BFCO_DIY_recovery                                     to the end of the clip
 //   BFCO_ChargeStageStart and BFCO_ChargeStageN           until the next stage
 //   BFCO_ForbidRotation, BFCO_0Gravity, BFCO_bsprinting,
 //   AMF_ForceMoveMagstim, AMF_ForbidMoveMagstim           from their Start until their Close, End or Stop
@@ -48,7 +50,7 @@ public static class AnnotationActivity
         if(lower is "bfco_nextpowerwinstart")return "bfco-chain:power-window";
         if(lower.StartsWith("bfco_nextispowerattack"))return "bfco-chain:next-power";
         if(lower.StartsWith("bfco_nextisattack"))return "bfco-chain:next";
-        if(lower is "bfco_diy_recovery" or "mco_recovery")return "recovery";
+        if(lower is "bfco_diy_recovery")return "recovery";
         if(lower.StartsWith("bfco_chargestage"))return "bfco:charge";
         if(lower is "bfco_forbidrotationstart" or "bfco_forbidrotationclose")return "bfco:forbid-rotation";
         if(lower is "amf_forcemovemagstimstart" or "amf_forcemovemagstimclose")return "amf:force-move";
@@ -70,7 +72,13 @@ public static class AnnotationActivity
     {
         var active=new HashSet<int>();
         var fired=new List<(int Index,AnnotationRow Row,string? Channel)>();
-        for(int i=0;i<rows.Count;i++)if(rows[i].Fires&&rows[i].Time<=time+Epsilon)fired.Add((i,rows[i],Channel(rows[i].Text)));
+        for(int i=0;i<rows.Count;i++){
+            if(!rows[i].Fires||rows[i].Time>time+Epsilon)continue;
+            string? channel=Channel(rows[i].Text);
+            // A clip's own states do not outlive the clip. Variables do, and Precision has its own timeline.
+            if(channel!=null&&time>=rows[i].End-Epsilon&&!channel.StartsWith("var:")&&!channel.StartsWith("precision:")&&!IsRootMotion(channel))continue;
+            fired.Add((i,rows[i],channel));
+        }
         if(fired.Count==0)return active;
         // Ordinary annotations: the group that fired last, root motion keys aside.
         var events=fired.Where(f=>!IsRootMotion(f.Channel)).ToList();

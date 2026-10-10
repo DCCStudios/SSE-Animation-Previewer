@@ -6,6 +6,7 @@
     <AssemblyName>SSE Animation Previewer</AssemblyName><ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Build output goes to bin\ at the repository root, where the tests look for fixtures four folders up. -->
     <BaseOutputPath>..\bin\</BaseOutputPath>
+    <Version>0.2.0</Version><Product>SSE Animation Previewer</Product><IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <FloorTextures Condition="'$(FloorTextures)'=='' And Exists('resources\local\testgrid_d.dds')">resources\local</FloorTextures>
     <FloorTextures Condition="'$(FloorTextures)'==''">resources</FloorTextures>

@@ -7,7 +7,6 @@ namespace SSEPreview;
 internal static class SelfTest
 {
     // Local data the tests read. SSE_TEST_MODS overrides the mod folder root; the vanilla assets sit in test-data beside the source.
-    public static readonly string Mods=Environment.GetEnvironmentVariable("SSE_TEST_MODS") is {Length:>0} mods?mods:@"F:\Modlists\NordicSoulsPBR\mods";
     // The repository root: the nearest folder above the exe that holds the solution, looking no further than six levels,
     // or four levels up (the build output layout) when there is none.
     public static readonly string RepoRoot=FindRepoRoot();
@@ -16,6 +15,15 @@ internal static class SelfTest
         var directory=new DirectoryInfo(AppContext.BaseDirectory);
         for(int level=0;level<6&&directory!=null;level++,directory=directory.Parent)if(File.Exists(Path.Combine(directory.FullName,"SSEAnimationPreviewer.sln")))return directory.FullName;
         return Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\.."));
+    }
+    // The folder of mods the wider checks read: SSE_TEST_MODS, or the first line of test-mods.txt at the repository
+    // root (a local file git ignores). Empty when neither is set, and those checks then report that they were skipped.
+    public static readonly string Mods=FindMods();
+    static string FindMods()
+    {
+        if(Environment.GetEnvironmentVariable("SSE_TEST_MODS") is {Length:>0} mods)return mods;
+        try{string file=Path.Combine(RepoRoot,"test-mods.txt");if(File.Exists(file)&&File.ReadLines(file).Select(l=>l.Trim()).FirstOrDefault(l=>l.Length>0) is {} line)return line;}catch(IOException){}catch(UnauthorizedAccessException){}
+        return "";
     }
     public static readonly string TestData=Path.Combine(RepoRoot,"test-data");
     public static readonly string GameData=Path.GetFullPath(Path.Combine(Mods,@"..\Game Root\Data"));

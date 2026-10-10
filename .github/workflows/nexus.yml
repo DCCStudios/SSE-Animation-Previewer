@@ -1,10 +1,13 @@
 name: Nexus Mods upload
 
 # Sends a release's portable zip to the Nexus Mods page as a new version of the main file and archives the
-# version before it. It needs two things set on the repository, and does nothing until both exist:
+# version before it. It needs two things set on the repository. Without the variable the job is skipped; with the
+# variable and no key it fails and says so:
 #   secret   NEXUSMODS_API_KEY   an API key from https://www.nexusmods.com/settings/api-keys
 #   variable NEXUSMODS_FILE_ID   the ID of the main file on the mod page. The first file has to be uploaded by
 #                                hand. Its ID is under Advanced on the Files tab, or on the Manage Files page.
+#   variable NEXUSMODS_MOD_ID    optional. The mod's id from the Nexus v3 API (not the number in the page address).
+#                                When set, each upload also adds a changelog line linking the GitHub release.
 on:
   # A release published by hand on GitHub.
   release:
@@ -59,7 +62,8 @@ jobs:
 
       - name: Upload to Nexus Mods
         if: steps.zip.outputs.skip != 'true'
-        uses: Nexus-Mods/upload-action@v1.0.0-beta.10
+        # v1.0.0-beta.10, pinned to its commit because the action receives the API key.
+        uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23
         with:
           api_key: ${{ secrets.NEXUSMODS_API_KEY }}
           file_id: ${{ vars.NEXUSMODS_FILE_ID }}
@@ -70,5 +74,7 @@ jobs:
           category: main
           archive_existing_version: true
           update_mod_version: true
-          mod_id: ${{ vars.NEXUSMODS_MOD_ID || '194768' }}
-          changelog: See https://github.com/${{ github.repository }}/releases/tag/${{ env.TAG }}
+          # The changelog call needs the mod's v3 API id, which is not the number in the page address. It is sent
+          # only when the NEXUSMODS_MOD_ID variable holds that id.
+          mod_id: ${{ vars.NEXUSMODS_MOD_ID }}
+          changelog: ${{ vars.NEXUSMODS_MOD_ID != '' && format('See https://github.com/{0}/releases/tag/{1}', github.repository, env.TAG) || '' }}

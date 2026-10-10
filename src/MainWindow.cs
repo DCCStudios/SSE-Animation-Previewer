@@ -157,7 +157,7 @@ public sealed class MainWindow : Form
             // never activated, so test and tool runs do not cover or steal focus from whatever the user is doing.
             ShowInTaskbar=false;StartPosition=FormStartPosition.Manual;Location=new(-32000,-32000);
         }
-        Text="SSE Animation Previewer";Size=new(1580,1000);MinimumSize=new(1150,750);StartPosition=Background?FormStartPosition.Manual:FormStartPosition.CenterScreen;KeyPreview=true;
+        Text="SSE Animation Previewer "+Application.ProductVersion;Size=new(1580,1000);MinimumSize=new(1150,750);StartPosition=Background?FormStartPosition.Manual:FormStartPosition.CenterScreen;KeyPreview=true;
         scene=new(assets,viewport,records);viewport.FrameRequested=scene.Frame;effects=new(assets,records);BuildUi();Theme(this);viewport.MaximumPresentationFps=60;
         scene.FollowScene=followCamera.Checked;scene.FramingSubject=(Scene.FrameSubject)cameraSubject.SelectedIndex;scene.ShowFloor=gridFloor.Checked;
         UpdateCameraHint();
@@ -806,7 +806,8 @@ public sealed class MainWindow : Form
     // BFCO clip hands over at BFCO_NextWinStart or BFCO_NextPowerWinStart, any other at MCO's.
     List<double> QueueWindowTimes(ClipEntry entry,string window)=>Bfco.Window(entry.Name,QueueClipEvents(entry),window).Times;
     string QueueWindowName(ClipEntry entry,string window)=>Bfco.Window(entry.Name,QueueClipEvents(entry),window).Annotation??window;
-    int WindowPick(ClipEntry slot,string window)=>queueWindowPicks.TryGetValue(slot,out var picks)&&picks.TryGetValue(window,out int pick)?pick:0;
+    // A pick is kept under the annotation it indexes, so one made for MCO_WinOpen is not applied to BFCO_NextWinStart.
+    int WindowPick(ClipEntry slot,string window)=>queueWindowPicks.TryGetValue(slot,out var picks)&&picks.TryGetValue(QueueWindowName(slot,window),out int pick)?pick:0;
     // The little drop-down on a queued clip that has the selected window annotation at more than one time.
     Rectangle? QueueChip(int index)
     {
@@ -836,7 +837,7 @@ public sealed class MainWindow : Form
     void ChooseWindow(ClipEntry slot,string window,int choice)
     {
         if(!queueWindowPicks.TryGetValue(slot,out var picks))queueWindowPicks[slot]=picks=new(StringComparer.OrdinalIgnoreCase);
-        picks[window]=choice;RefreshQueue();QueueChanged();
+        picks[QueueWindowName(slot,window)]=choice;RefreshQueue();QueueChanged();
     }
     // Coming back to the window (after a re-export) redraws the queue, so changed window annotations show at once.
     protected override void OnActivated(EventArgs e){base.OnActivated(e);queueList.Invalidate();}
@@ -973,7 +974,7 @@ public sealed class MainWindow : Form
                 +PrecisionText()+SoundText()
                 +"\n\nRESOLVED VISUAL EFFECTS\n"+string.Join("\n",cues.Select(c=>$"{c.Time:F4} {c.Model}\n  {c.Origin}"));
             // A queued clip's annotations after its hand-over never fire, so they are listed but never highlighted.
-            Highlight.Index(combined.Segments.SelectMany(s=>s.Clip.Events.Select(e=>new AnnotationRow(s.Global(e.Time),e.Text,s.Window==null||e.Time<=s.HandOver+1e-9,$"{s.Global(e.Time),8:F4} {e.Text}"))));
+            Highlight.Index(combined.Segments.SelectMany((s,k)=>s.Clip.Events.Select(e=>new AnnotationRow(s.Global(e.Time),e.Text,s.Window==null||e.Time<=s.HandOver+1e-9,$"{s.Global(e.Time),8:F4} {e.Text}",k==combined.Segments.Count-1?double.PositiveInfinity:s.Start+s.Length))));
             status.Text=$"Queue · {entries.Length} clips · {combined.Duration:F3} s · {cues.Count} visual cue(s) · {decoded.Sum(d=>d.Clip.Translation.Count)} AMR keys";
             RefreshQueue();clock.Play();
         }catch(Exception ex){ShowError(ex);}

@@ -19,8 +19,8 @@ Windows x64 only. Visual Studio is not required.
 | Path | Contents |
 |---|---|
 | `src` | The previewer itself |
-| `engine` | The renderer and file readers it is built on, as source. See [engine/README.md](../engine/README.md). |
-| `native` | Source of the C++/CLI DDS wrapper. See [native/README.md](../native/README.md). |
+| `engine` | The renderer and file readers it is built on, as source. See [engine/README.md](https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/engine/README.md). |
+| `native` | Source of the C++/CLI DDS wrapper. See [native/README.md](https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/native/README.md). |
 | `lib` | The built DDS wrapper and the Microsoft C++ runtime files that ship with the program |
 | `particle-fixtures` | Small NIF files written for the particle tests |
 | `scripts` | Packaging scripts |
@@ -38,9 +38,9 @@ This publishes a self-contained build to `Portable`, adds the C++ runtime, licen
 
 `.\scripts\build-portable.ps1 -Public -Output <folder>` builds the copy that gets released. It always uses the floor textures in `src\resources`.
 
-GitHub Actions (`.github/workflows/build.yml`) builds every push to `main`, every pull request and every `v*` tag, and can be started by hand on any branch. Pushing a tag such as `v0.2.0` also attaches the portable zip to a release.
+GitHub Actions (`.github/workflows/build.yml`) builds every push to `main`, every pull request and every version tag of the form `v1.2.3`, and can be started by hand on any branch. Pushing a tag such as `v0.2.0` also attaches the portable zip to a release and stamps that version into the build. A tag with anything after the three numbers, such as `v0.2.0-rc1`, makes a prerelease.
 
-A release also goes to the Nexus Mods page. `.github/workflows/nexus.yml` uploads the zip as a new version of the main file and archives the version before it, for releases made by a tag push and for releases published by hand. It needs the `NEXUSMODS_API_KEY` secret and the `NEXUSMODS_FILE_ID` variable on the repository and does nothing without them. Prereleases are not sent.
+A release also goes to the Nexus Mods page. `.github/workflows/nexus.yml` uploads the zip as a new version of the main file and archives the version before it, for releases made by a tag push and for releases published by hand. It needs the `NEXUSMODS_API_KEY` secret and the `NEXUSMODS_FILE_ID` variable on the repository. Without the variable it is skipped. With the variable and no key it fails and says so. An optional `NEXUSMODS_MOD_ID` variable, holding the mod's id from the Nexus v3 API, adds a changelog line to each upload. Prereleases are not sent.
 
 ### Floor textures
 
@@ -74,7 +74,7 @@ cd bin\Release\net8.0-windows\win-x64
 The other checks need files that cannot be redistributed:
 
 - `test-data` at the repository root, a small copy of vanilla meshes, textures and `Skyrim.esm` from your own installation
-- a folder of mods, which defaults to one developer's mod list and can be pointed elsewhere with the `SSE_TEST_MODS` environment variable
+- a folder of mods, named by the `SSE_TEST_MODS` environment variable or by the first line of a `test-mods.txt` file at the repository root (git ignores that file)
 
 A check whose files are missing reports that it was skipped.
 
