@@ -44,6 +44,8 @@ The drop-down at the bottom of the CAMERA group chooses what F and the first fit
 
 MCO binds the playback speed of every attack clip to the `MCO_AttackSpeed` graph variable, and each `PIE.@SGVF|MCO_AttackSpeed|value` annotation sets it. The previewer does the same. Each annotation's speed runs from its time until the next one, so a clip that goes 1.10x, 1.30x, 1.10x plays each stretch at its own rate.
 
+BFCO clips follow BFCO's rule instead: they play at `BFCO_AttackSpeed`, or at `MCO_AttackSpeed` while that is exactly 1. See [BFCO clips](bfco.md).
+
 Annotations, root motion, sounds, Precision collisions and effects all follow that timing. The note beside the Speed box lists the first four changes and counts the rest, and the readout shows the clip time and current rate.
 
 ## Sounds

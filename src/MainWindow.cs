@@ -43,7 +43,7 @@ public sealed class MainWindow : Form
     readonly NumericUpDown queueBlend=new(){Minimum=0,Maximum=2,Value=.3m,Increment=.05m,DecimalPlaces=2,Width=62};
     readonly Label queueNote=new(){AutoSize=true,Padding=new Padding(4,8,0,0)};
     readonly CheckBox queueAtWindow=new(){Text="Next clip starts at",Checked=true,AutoSize=true,Padding=new Padding(0,6,0,0)};
-    readonly ComboBox queueWindowEvent=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=170};
+    readonly ComboBox queueWindowEvent=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=330,FormattingEnabled=true};
     TabControl? inspectorTabs;TabPage? queueTab,diagnosticsTab,warningsTab;
     bool QueuePlaying=>clip is {Segments:not null,Queued:true};
     string? QueueWindowEvent=>queueAtWindow.Checked?queueWindowEvent.SelectedItem as string:null;
@@ -105,7 +105,7 @@ public sealed class MainWindow : Form
     static (string Switch,string Needs,int Arguments,string? Log)[] SmokeModes()=>[
         ("--weaponart-profile-smoke","S",0,null),("--smp-determinism","T",1,null),("--equipment-smoke",Environment.GetEnvironmentVariable("SSE_EQUIP_SESSION")=="1"?"S":"T",0,@"equipment-smoke\equipment-smoke.txt"),
         ("--queue-smoke","T",2,@"queue-smoke\queue-smoke.txt"),("--smp-soak","S",1,null),("--dump-annotations","",0,null),("--track-bone","S",2,"track-bone.txt"),("--override-smoke","C",0,@"override-smoke\override-smoke.txt"),
-        ("--docs-capture","",3,null),("--frames-capture","",3,null),("--flipbook-smoke","T",1,@"flipbook-smoke\flipbook-smoke.txt"),("--ff7vfx-smoke","S",0,@"ff7vfx-smoke\ff7vfx-smoke.txt"),("--annotation-smoke","T",1,@"annotation-smoke\annotation-smoke.txt"),
+        ("--docs-capture","",3,null),("--bfco-smoke","T",3,@"bfco-smoke\bfco-smoke.txt"),("--frames-capture","",3,null),("--flipbook-smoke","T",1,@"flipbook-smoke\flipbook-smoke.txt"),("--ff7vfx-smoke","S",0,@"ff7vfx-smoke\ff7vfx-smoke.txt"),("--annotation-smoke","T",1,@"annotation-smoke\annotation-smoke.txt"),
         ("--skeleton-smoke","T",1,@"skeleton-smoke\skeleton-smoke.txt"),("--window-pick-smoke","T",2,@"window-pick-smoke\window-pick-smoke.txt"),("--sound-smoke","GM",0,@"sound-smoke\sound-smoke.txt"),
         ("--precision-smoke","",2,@"precision-smoke\precision-smoke.txt"),("--frame-smoke","T",1,@"frame-smoke\frame-smoke.txt"),("--hair-smoke","T",0,@"hair-smoke\hair-smoke.txt"),("--smp-smoke","T",0,@"smp-smoke\smp-smoke.txt"),
         ("--holster-smoke","T",3,"holster-tests.txt"),("--clip-profile","S",2,null),("--mod-sweep","S",1,null),("--sources-recent-smoke","",0,null),("--scene-save-smoke","",0,null),("--scene-dialog-smoke","",0,null),
@@ -149,7 +149,7 @@ public sealed class MainWindow : Form
         requireAlt.Checked=preferences.RequireAlt;viewport.RequireAlt=preferences.RequireAlt;
         emitterSourceSmoke=args.Contains("--emitter-source-smoke");
         recentScenes=new(Path.Combine(AppContext.BaseDirectory,args.Any(a=>a.EndsWith("-smoke",StringComparison.Ordinal))?"verification-recent-scenes.json":"recent-scenes.json"));
-        if(args.Contains("--smp-determinism")||args.Contains("--equipment-smoke")||args.Contains("--queue-smoke")||args.Contains("--frame-smoke")||args.Contains("--precision-smoke")||args.Contains("--window-pick-smoke")||args.Contains("--skeleton-smoke")||args.Contains("--annotation-smoke")||args.Contains("--ff7vfx-smoke")||args.Contains("--flipbook-smoke")||args.Contains("--override-smoke")||args.Contains("--docs-capture")||args.Contains("--frames-capture")||args.Contains("--track-bone")||args.Contains("--sound-smoke")||args.Contains("--smp-soak")||args.Contains("--hair-smoke")||args.Contains("--smp-smoke")||args.Contains("--holster-smoke")||args.Contains("--clip-profile")||args.Contains("--mod-sweep")||args.Contains("--weaponart-profile-smoke")||args.Contains("--sources-recent-smoke")||args.Contains("--scene-save-smoke")||args.Contains("--cloud-equipment-smoke")||args.Contains("--bladebeam-smoke")||args.Contains("--timing-smoke")||args.Contains("--emitter-source-smoke")||args.Contains("--refraction-smoke")||args.Contains("--archive-order-smoke")||args.Contains("--reference-effect-smoke")||args.Contains("--remote-cast-smoke")||args.Contains("--camera-smoke")||args.Contains("--smoke")||args.Contains("--particle-smoke")||args.Contains("--library-smoke")||args.Contains("--character-smoke")||args.Contains("--attachment-smoke")||args.Contains("--floor-smoke")||args.Contains("--tagfile-smoke")||args.Contains("--speed-smoke"))settingsPath=Path.Combine(AppContext.BaseDirectory,"verification-session.json");
+        if(args.Contains("--smp-determinism")||args.Contains("--equipment-smoke")||args.Contains("--queue-smoke")||args.Contains("--frame-smoke")||args.Contains("--precision-smoke")||args.Contains("--window-pick-smoke")||args.Contains("--skeleton-smoke")||args.Contains("--annotation-smoke")||args.Contains("--ff7vfx-smoke")||args.Contains("--flipbook-smoke")||args.Contains("--override-smoke")||args.Contains("--docs-capture")||args.Contains("--frames-capture")||args.Contains("--bfco-smoke")||args.Contains("--track-bone")||args.Contains("--sound-smoke")||args.Contains("--smp-soak")||args.Contains("--hair-smoke")||args.Contains("--smp-smoke")||args.Contains("--holster-smoke")||args.Contains("--clip-profile")||args.Contains("--mod-sweep")||args.Contains("--weaponart-profile-smoke")||args.Contains("--sources-recent-smoke")||args.Contains("--scene-save-smoke")||args.Contains("--cloud-equipment-smoke")||args.Contains("--bladebeam-smoke")||args.Contains("--timing-smoke")||args.Contains("--emitter-source-smoke")||args.Contains("--refraction-smoke")||args.Contains("--archive-order-smoke")||args.Contains("--reference-effect-smoke")||args.Contains("--remote-cast-smoke")||args.Contains("--camera-smoke")||args.Contains("--smoke")||args.Contains("--particle-smoke")||args.Contains("--library-smoke")||args.Contains("--character-smoke")||args.Contains("--attachment-smoke")||args.Contains("--floor-smoke")||args.Contains("--tagfile-smoke")||args.Contains("--speed-smoke"))settingsPath=Path.Combine(AppContext.BaseDirectory,"verification-session.json");
         // Existing regression renders measure effect pixels against the bare background; only the floor smoke wants the floor.
         if(settingsPath.EndsWith("verification-session.json")&&!args.Contains("--floor-smoke"))gridFloor.Checked=false;
         if(Background){
@@ -194,6 +194,8 @@ public sealed class MainWindow : Form
         treeMenu.Items.Add("Add to queue",null,(_,_)=>{if(menuNode!=null)AddToQueue(LibraryClips(menuNode));});
         tree.NodeMouseClick+=(_,e)=>{if(e.Button==MouseButtons.Right&&LibraryClips(e.Node).Length>0){menuNode=e.Node;var count=LibraryClips(e.Node).Length;treeMenu.Items[0].Text=count==1?"Add to queue":$"Add {count} clips to queue";treeMenu.Show(tree,e.Location);}};
         queueWindowEvent.Items.AddRange(["MCO_WinOpen","MCO_PowerWinOpen"]);queueWindowEvent.SelectedIndex=0;
+        // The stored choice keeps MCO's name; a BFCO clip in the queue hands over at BFCO's window of the same kind.
+        queueWindowEvent.Format+=(_,e)=>e.Value=(e.ListItem as string)=="MCO_PowerWinOpen"?"MCO_PowerWinOpen / BFCO_NextPowerWinStart":"MCO_WinOpen / BFCO_NextWinStart";
         queueAtWindow.CheckedChanged+=(_,_)=>{queueWindowEvent.Enabled=queueAtWindow.Checked;QueueChanged();};
         queueWindowEvent.SelectedIndexChanged+=(_,_)=>QueueChanged();
         queueBlend.ValueChanged+=(_,_)=>{if(QueuePlaying){clip.BlendTime=(double)queueBlend.Value;scene.SetTime(scene.Time);viewport.InvalidateRender();}if(!busy&&!selecting)SaveSession();};
@@ -237,7 +239,7 @@ public sealed class MainWindow : Form
         timer.Tick+=(_,_)=>TickPlayback();timer.Start();
         KeyDown+=(_,e)=>{if(e.KeyCode==Keys.Space && ActiveControl is not TextBox and not RichTextBox and not ComboBox){TogglePlay();e.Handled=true;}};
         FormClosed+=(_,_)=>{timer.Stop();timer.Dispose();sceneMenu?.Dispose();scene.Dispose();viewport.Clean();};
-        Shown+=async(_,_)=>{bool blocked;try{blocked=SmokeBlocked(args);}catch(Exception ex){ShowError(ex);Environment.ExitCode=2;blocked=true;}if(blocked){Close();return;}if(args.Contains("--weaponart-profile-smoke")){await WeaponArtProfile();return;}if(args.Contains("--smp-determinism")){await SmpDeterminism(args.Skip(Array.IndexOf(args,"--smp-determinism")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--equipment-smoke")){await EquipmentSmoke(args.Skip(Array.IndexOf(args,"--equipment-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--queue-smoke")){await QueueSmoke(args.Skip(Array.IndexOf(args,"--queue-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-soak")){await SmpSoak(args.Skip(Array.IndexOf(args,"--smp-soak")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--dump-annotations")){DumpAnnotations(args.Skip(Array.IndexOf(args,"--dump-annotations")+1).Where(x=>!x.StartsWith("--")).ToArray());Close();return;}if(args.Contains("--track-bone")){await TrackBone(args.Skip(Array.IndexOf(args,"--track-bone")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--override-smoke")){await OverrideSmoke();return;}if(args.Contains("--frames-capture")){await FramesCapture(args.Skip(Array.IndexOf(args,"--frames-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--docs-capture")){await DocsCapture(args.Skip(Array.IndexOf(args,"--docs-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--flipbook-smoke")){await FlipbookSmoke(args.Skip(Array.IndexOf(args,"--flipbook-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--ff7vfx-smoke")){await Ff7VfxSmoke();return;}if(args.Contains("--annotation-smoke")){await AnnotationSmoke(args[Array.IndexOf(args,"--annotation-smoke")+1]);return;}if(args.Contains("--skeleton-smoke")){await SkeletonSmoke(args[Array.IndexOf(args,"--skeleton-smoke")+1]);return;}if(args.Contains("--window-pick-smoke")){int j=Array.IndexOf(args,"--window-pick-smoke");await WindowPickSmoke(args[j+1],args[j+2]);return;}if(args.Contains("--sound-smoke")){await SoundSmoke();return;}if(args.Contains("--precision-smoke")){await PrecisionSmoke(args.Skip(Array.IndexOf(args,"--precision-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frame-smoke")){await FrameSmoke(args[Array.IndexOf(args,"--frame-smoke")+1]);return;}if(args.Contains("--hair-smoke")){await HairSmoke(args.Skip(Array.IndexOf(args,"--hair-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-smoke")){await SmpSmoke(args.Skip(Array.IndexOf(args,"--smp-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--holster-smoke")){await HolsterSmoke(args[Array.IndexOf(args,"--holster-smoke")+1],args[Array.IndexOf(args,"--holster-smoke")+2],args[Array.IndexOf(args,"--holster-smoke")+3]);return;}if(args.Contains("--clip-profile")){await ClipProfile(args[Array.IndexOf(args,"--clip-profile")+1],args[Array.IndexOf(args,"--clip-profile")+2]);return;}if(args.Contains("--mod-sweep")){await ModSweep(args[Array.IndexOf(args,"--mod-sweep")+1]);return;}if(args.Contains("--sources-recent-smoke")){await SourcesRecentSmoke();return;}if(args.Contains("--scene-save-smoke")){await SceneSaveSmoke();return;}if(args.Contains("--scene-dialog-smoke")){await SceneDialogSmoke();return;}if(args.Contains("--cloud-equipment-smoke")){await CloudEquipmentSmoke();return;}if(args.Contains("--bladebeam-smoke")){await BladeBeamSmoke();return;}if(args.Contains("--timing-smoke")){await TimingSmoke();return;}if(args.Contains("--emitter-source-smoke")){await EmitterSourceSmoke();return;}if(args.Contains("--refraction-smoke")){await RefractionSmoke();return;}if(args.Contains("--archive-order-smoke")){await ArchiveOrderSmoke();return;}if(args.Contains("--reference-effect-smoke")){await ReferenceEffectSmoke();return;}if(args.Contains("--remote-cast-smoke")){await RemoteCastSmoke();return;}if(args.Contains("--camera-smoke")){await CameraSmoke();return;}if(args.Contains("--attachment-smoke")){await AttachmentSmoke();return;}if(args.Contains("--floor-smoke")){await FloorSmoke();return;}if(args.Contains("--tagfile-smoke")){await TagfileSmoke(args[Array.IndexOf(args,"--tagfile-smoke")+1]);return;}if(args.Contains("--speed-smoke")){await SpeedSmoke(args[Array.IndexOf(args,"--speed-smoke")+1],args[Array.IndexOf(args,"--speed-smoke")+2]);return;}if(args.Contains("--character-smoke")){await CharacterSmoke();return;}if(args.Contains("--library-smoke")){await LibrarySmoke();return;}if(args.Contains("--particle-smoke")){await ParticleSmoke();return;}if(args.Contains("--smoke")){await Smoke();return;}int i=Array.IndexOf(args,"--data");if(i>=0 && args.Length>i+1)await Mount(args[i+1],false);};
+        Shown+=async(_,_)=>{bool blocked;try{blocked=SmokeBlocked(args);}catch(Exception ex){ShowError(ex);Environment.ExitCode=2;blocked=true;}if(blocked){Close();return;}if(args.Contains("--weaponart-profile-smoke")){await WeaponArtProfile();return;}if(args.Contains("--smp-determinism")){await SmpDeterminism(args.Skip(Array.IndexOf(args,"--smp-determinism")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--equipment-smoke")){await EquipmentSmoke(args.Skip(Array.IndexOf(args,"--equipment-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--queue-smoke")){await QueueSmoke(args.Skip(Array.IndexOf(args,"--queue-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-soak")){await SmpSoak(args.Skip(Array.IndexOf(args,"--smp-soak")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--dump-annotations")){DumpAnnotations(args.Skip(Array.IndexOf(args,"--dump-annotations")+1).Where(x=>!x.StartsWith("--")).ToArray());Close();return;}if(args.Contains("--track-bone")){await TrackBone(args.Skip(Array.IndexOf(args,"--track-bone")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--override-smoke")){await OverrideSmoke();return;}if(args.Contains("--bfco-smoke")){await BfcoSmoke(args.Skip(Array.IndexOf(args,"--bfco-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frames-capture")){await FramesCapture(args.Skip(Array.IndexOf(args,"--frames-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--docs-capture")){await DocsCapture(args.Skip(Array.IndexOf(args,"--docs-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--flipbook-smoke")){await FlipbookSmoke(args.Skip(Array.IndexOf(args,"--flipbook-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--ff7vfx-smoke")){await Ff7VfxSmoke();return;}if(args.Contains("--annotation-smoke")){await AnnotationSmoke(args[Array.IndexOf(args,"--annotation-smoke")+1]);return;}if(args.Contains("--skeleton-smoke")){await SkeletonSmoke(args[Array.IndexOf(args,"--skeleton-smoke")+1]);return;}if(args.Contains("--window-pick-smoke")){int j=Array.IndexOf(args,"--window-pick-smoke");await WindowPickSmoke(args[j+1],args[j+2]);return;}if(args.Contains("--sound-smoke")){await SoundSmoke();return;}if(args.Contains("--precision-smoke")){await PrecisionSmoke(args.Skip(Array.IndexOf(args,"--precision-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frame-smoke")){await FrameSmoke(args[Array.IndexOf(args,"--frame-smoke")+1]);return;}if(args.Contains("--hair-smoke")){await HairSmoke(args.Skip(Array.IndexOf(args,"--hair-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-smoke")){await SmpSmoke(args.Skip(Array.IndexOf(args,"--smp-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--holster-smoke")){await HolsterSmoke(args[Array.IndexOf(args,"--holster-smoke")+1],args[Array.IndexOf(args,"--holster-smoke")+2],args[Array.IndexOf(args,"--holster-smoke")+3]);return;}if(args.Contains("--clip-profile")){await ClipProfile(args[Array.IndexOf(args,"--clip-profile")+1],args[Array.IndexOf(args,"--clip-profile")+2]);return;}if(args.Contains("--mod-sweep")){await ModSweep(args[Array.IndexOf(args,"--mod-sweep")+1]);return;}if(args.Contains("--sources-recent-smoke")){await SourcesRecentSmoke();return;}if(args.Contains("--scene-save-smoke")){await SceneSaveSmoke();return;}if(args.Contains("--scene-dialog-smoke")){await SceneDialogSmoke();return;}if(args.Contains("--cloud-equipment-smoke")){await CloudEquipmentSmoke();return;}if(args.Contains("--bladebeam-smoke")){await BladeBeamSmoke();return;}if(args.Contains("--timing-smoke")){await TimingSmoke();return;}if(args.Contains("--emitter-source-smoke")){await EmitterSourceSmoke();return;}if(args.Contains("--refraction-smoke")){await RefractionSmoke();return;}if(args.Contains("--archive-order-smoke")){await ArchiveOrderSmoke();return;}if(args.Contains("--reference-effect-smoke")){await ReferenceEffectSmoke();return;}if(args.Contains("--remote-cast-smoke")){await RemoteCastSmoke();return;}if(args.Contains("--camera-smoke")){await CameraSmoke();return;}if(args.Contains("--attachment-smoke")){await AttachmentSmoke();return;}if(args.Contains("--floor-smoke")){await FloorSmoke();return;}if(args.Contains("--tagfile-smoke")){await TagfileSmoke(args[Array.IndexOf(args,"--tagfile-smoke")+1]);return;}if(args.Contains("--speed-smoke")){await SpeedSmoke(args[Array.IndexOf(args,"--speed-smoke")+1],args[Array.IndexOf(args,"--speed-smoke")+2]);return;}if(args.Contains("--character-smoke")){await CharacterSmoke();return;}if(args.Contains("--library-smoke")){await LibrarySmoke();return;}if(args.Contains("--particle-smoke")){await ParticleSmoke();return;}if(args.Contains("--smoke")){await Smoke();return;}int i=Array.IndexOf(args,"--data");if(i>=0 && args.Length>i+1)await Mount(args[i+1],false);};
     }
     void BuildUi()
     {
@@ -744,26 +746,26 @@ public sealed class MainWindow : Form
     // The Speed box is the viewer's own playback rate and starts at 1.00x. MCO_AttackSpeed annotations change the clip's
     // speed along its timeline (see SpeedMap); the note beside the box lists them. Sessions saved before this build put
     // the first annotation's value into the Speed box, so a restored speed equal to it is taken back to 1.00x.
-    void ApplyClipSpeed(AnimationClip decoded,bool reset)
+    void ApplyClipSpeed(string name,AnimationClip decoded,bool reset)
     {
-        var changes=decoded.SpeedChanges;
+        bool bfco=Bfco.IsClip(name,decoded.Events);var changes=AnimationClip.EffectiveSpeedChanges(name,decoded);
         if(reset||changes.Count>0&&Math.Abs((double)speed.Value-changes[0].Value)<1e-4&&Math.Abs(changes[0].Value-1)>1e-4)speed.Value=1;
-        speedNote.Text=SpeedNote(changes)+(decoded.BfcoSpeedChanges.Count>0?" · BFCO_AttackSpeed ignored (MCO)":"");
+        speedNote.Text=SpeedNote(changes,bfco?"BFCO speed":"MCO_AttackSpeed")+(!bfco&&decoded.BfcoSpeedChanges.Count>0?" · BFCO_AttackSpeed ignored (not a BFCO clip)":"");
     }
-    static string SpeedNote(List<(double Time,double Value)> changes)=>changes.Count==0?"":"MCO_AttackSpeed "+string.Join(", ",changes.Take(4).Select(c=>FormattableString.Invariant($"{c.Value:0.00}x at {c.Time:0.00} s")))+(changes.Count>4?$" +{changes.Count-4} more":"");
+    static string SpeedNote(List<(double Time,double Value)> changes,string variable="MCO_AttackSpeed")=>changes.Count==0?"":variable+" "+string.Join(", ",changes.Take(4).Select(c=>FormattableString.Invariant($"{c.Value:0.00}x at {c.Time:0.00} s")))+(changes.Count>4?$" +{changes.Count-4} more":"");
     async Task SelectClip(ClipEntry entry,bool resetSpeed=true)
     {
         soundPlayer.StopAll();lastSoundAbsolute=double.NaN;
         busy=true;clock.Pause();status.Text="Decoding "+entry.Name;
         try {var decoded=await Task.Run(()=>AnimationClip.Load(assets.Read(entry.Path)));selected=entry;
             // A clip that changes speed plays as a one-clip timeline in playback time; otherwise it is the clip itself.
-            var timeline=AnimationClip.Timeline(entry.Name,decoded);clip=timeline;clock.Duration=Math.Max(.001,timeline.Duration);clock.Seek(0);ApplyClipSpeed(decoded,resetSpeed);
+            var timeline=AnimationClip.Timeline(entry.Name,decoded);clip=timeline;clock.Duration=Math.Max(.001,timeline.Duration);clock.Seek(0);ApplyClipSpeed(entry.Name,decoded,resetSpeed);
             manualTriggers.Clear();referenceActions.Clear();cues=effects.Build(timeline,conditionalDac.Checked);RebuildScene();clipTitle.Text=entry.Name;RefreshQueue();
             string overridden=ClipOverrides.Describe(entry,Overriders(entry));tree.Invalidate();
             detail.Text=$"{entry.Framework} / {entry.Mod} / {entry.Group}\n\n{entry.Path}\nSource: {assets.Source(entry.Path)}\n\n"+(overridden.Length>0?overridden+"\n\n":"")+$"{entry.ConfigPath}\n{entry.Config}";
             var map=timeline.Segments?[0].Speed;
             string When(double clipTime)=>map==null?$"{clipTime,8:F4}":$"{map.ToPlay(clipTime),8:F4} (clip {clipTime:F4})";
-            events.Text=$"{decoded.Duration:F4} seconds · {decoded.Frames} source frames · {decoded.Tracks} tracks"+(map==null?"":$"\nPlays in {timeline.Duration:F4} s: MCO_AttackSpeed {map.Describe()}. Times below are playback times, clip times in brackets.")+"\n\n"+string.Join("\n",decoded.Events.Select(e=>$"{When(e.Time)} {e.Text}"))+(decoded.WeaponEvents.Count==0?"":"\n\nWEAPON ATTACHMENT\n"+$"{0d,8:F4} {(decoded.WeaponSheathedAt(0)==true?"on the holster node":"in the hand")} (state before the first annotation)\n"+string.Join("\n",decoded.WeaponEvents.Select(e=>$"{When(e.Time)} {(e.Sheathed?"weaponSheathe: moves to the holster node":"weaponDraw: moves to the hand")}")))+(decoded.BfcoSpeedChanges.Count==0?"":"\n\nBFCO_AttackSpeed annotations are listed above but not applied: MCO's behaviors read MCO_AttackSpeed only, and no BFCO behavior is modelled.")+PrecisionText()+SoundText()+"\n\nRESOLVED VISUAL EFFECTS\n"+string.Join("\n",cues.Select(c=>$"{c.Time:F4} {c.Model}\n  {c.Origin}"));
+            events.Text=$"{decoded.Duration:F4} seconds · {decoded.Frames} source frames · {decoded.Tracks} tracks"+(map==null?"":$"\nPlays in {timeline.Duration:F4} s: {timeline.Segments![0].SpeedVariable} {map.Describe()}. Times below are playback times, clip times in brackets.")+"\n\n"+string.Join("\n",decoded.Events.Select(e=>$"{When(e.Time)} {e.Text}"))+(decoded.WeaponEvents.Count==0?"":"\n\nWEAPON ATTACHMENT\n"+$"{0d,8:F4} {(decoded.WeaponSheathedAt(0)==true?"on the holster node":"in the hand")} (state before the first annotation)\n"+string.Join("\n",decoded.WeaponEvents.Select(e=>$"{When(e.Time)} {(e.Sheathed?"weaponSheathe: moves to the holster node":"weaponDraw: moves to the hand")}")))+(decoded.BfcoSpeedChanges.Count==0||Bfco.IsClip(entry.Name,decoded.Events)?"":"\n\nBFCO_AttackSpeed annotations are listed above but not applied: this is not a BFCO clip, and MCO's behaviors read MCO_AttackSpeed only.")+Bfco.Describe(entry.Name,decoded)+PrecisionText()+SoundText()+"\n\nRESOLVED VISUAL EFFECTS\n"+string.Join("\n",cues.Select(c=>$"{c.Time:F4} {c.Model}\n  {c.Origin}"));
             Highlight.Index(decoded.Events.Select(e=>new AnnotationRow(map?.ToPlay(e.Time)??e.Time,e.Text,true,$"{When(e.Time)} {e.Text}")));
             status.Text=$"{entry.Name} · {decoded.Duration:F3} s"+(map==null?"":$" (plays in {timeline.Duration:F3} s)")+$" · {cues.Count} visual cue(s) · {decoded.Translation.Count} AMR keys";clock.Play();
         }catch(Exception ex){ShowError(ex);}finally{busy=false;}
@@ -776,8 +778,8 @@ public sealed class MainWindow : Form
             if(!live)return $"{i+1} · {queue[i].Name}";
             var seg=segments![i];var travel=seg.Clip.Motion(seg.HandOver);
             string motion=seg.Clip.Translation.Count+seg.Clip.Rotation.Count==0?"no root motion":$"moves {travel.Position.Length():0} units"+(Math.Abs(travel.Yaw)>.001?$", turns {travel.Yaw*180/Math.PI:0}°":"");
-            string handOver=i==queue.Count-1?"":seg.Window!=null?$" · next at {seg.Window} {seg.HandOver:0.00} s":QueueWindowEvent!=null?$" · no {QueueWindowEvent}, plays to end":"";
-            return $"{i+1} · {queue[i].Name} · {seg.Start:0.000} to {seg.Start+seg.Length:0.000} s · {motion}"+(seg.Speed.Uniform?"":" · MCO "+string.Join("→",seg.Speed.Points.Select(p=>p.Speed.ToString("0.00",System.Globalization.CultureInfo.InvariantCulture)+"x")))+handOver;
+            string handOver=i==queue.Count-1?"":seg.Window!=null?$" · next at {seg.Window} {seg.HandOver:0.00} s":QueueWindowEvent!=null?$" · no {QueueWindowName(queue[i],QueueWindowEvent)}, plays to end":"";
+            return $"{i+1} · {queue[i].Name} · {seg.Start:0.000} to {seg.Start+seg.Length:0.000} s · {motion}"+(seg.Speed.Uniform?"":(seg.SpeedVariable.StartsWith("BFCO")?" · BFCO ":" · MCO ")+string.Join("→",seg.Speed.Points.Select(p=>p.Speed.ToString("0.00",System.Globalization.CultureInfo.InvariantCulture)+"x")))+handOver;
         }
         for(int i=0;i<queue.Count;i++)queueList.Items.Add(Line(i));
         // An owner-drawn list does not measure its items, so the horizontal scroll range is set here.
@@ -790,7 +792,7 @@ public sealed class MainWindow : Form
     sealed record QueueDrag(int From);
     // Distinct times of a window annotation in a queued clip. The HKX is read again when its file changes on disk
     // (a re-export while the previewer is open) or the mounted folders change.
-    List<double> QueueWindowTimes(ClipEntry entry,string window)
+    List<Annotation> QueueClipEvents(ClipEntry entry)
     {
         if(queueClipEventsRevision!=assets.Revision){queueClipEvents.Clear();queueClipEventsRevision=assets.Revision;}
         DateTime written=default;try{string source=assets.Source(entry.Path);if(File.Exists(source))written=File.GetLastWriteTimeUtc(source);}catch(Exception){}
@@ -798,8 +800,12 @@ public sealed class MainWindow : Form
             List<Annotation> events;try{events=AnimationClip.Load(assets.Read(entry.Path)).Events;}catch(Exception){events=[];}
             queueClipEvents[entry.Path]=cached=(written,events);
         }
-        return AnimationClip.WindowTimes(cached.Events,window);
+        return cached.Events;
     }
+    // The times of the hand-over annotation a queued clip uses for the chosen window, and that annotation's name: a
+    // BFCO clip hands over at BFCO_NextWinStart or BFCO_NextPowerWinStart, any other at MCO's.
+    List<double> QueueWindowTimes(ClipEntry entry,string window)=>Bfco.Window(entry.Name,QueueClipEvents(entry),window).Times;
+    string QueueWindowName(ClipEntry entry,string window)=>Bfco.Window(entry.Name,QueueClipEvents(entry),window).Annotation??window;
     int WindowPick(ClipEntry slot,string window)=>queueWindowPicks.TryGetValue(slot,out var picks)&&picks.TryGetValue(window,out int pick)?pick:0;
     // The little drop-down on a queued clip that has the selected window annotation at more than one time.
     Rectangle? QueueChip(int index)
@@ -821,7 +827,7 @@ public sealed class MainWindow : Form
         var menu=new ContextMenuStrip{ShowCheckMargin=true};
         for(int k=0;k<times.Count;k++){
             int choice=k;
-            var item=new ToolStripMenuItem($"{window} at {times[k]:0.000} s"+(k==0?" (first)":""),null,(_,_)=>ChooseWindow(slot,window,choice)){Checked=k==pick};
+            var item=new ToolStripMenuItem($"{QueueWindowName(slot,window)} at {times[k]:0.000} s"+(k==0?" (first)":""),null,(_,_)=>ChooseWindow(slot,window,choice)){Checked=k==pick};
             menu.Items.Add(item);
         }
         menu.Closed+=(_,_)=>BeginInvoke(menu.Dispose);
@@ -954,13 +960,13 @@ public sealed class MainWindow : Form
             var combined=AnimationClip.Queue(decoded,(double)queueBlend.Value,QueueWindowEvent,windowPicks:entries.Select(e=>QueueWindowEvent is {} w?WindowPick(e,w):0).ToList());
             selected=null;clip=combined;clock.Duration=Math.Max(.001,combined.Duration);clock.Seek(0);
             speed.Value=1;int scaled=combined.Segments!.Count(s=>!s.Speed.Uniform);
-            speedNote.Text=scaled==0?"":$"MCO_AttackSpeed changes speed inside {scaled} queued clip(s)";
+            speedNote.Text=scaled==0?"":$"Attack speed annotations change speed inside {scaled} queued clip(s)";
             manualTriggers.Clear();referenceActions.Clear();cues=effects.Build(combined,conditionalDac.Checked);RebuildScene();
             clipTitle.Text=$"Queue · {entries.Length} clips";
             var end=combined.Motion(combined.Duration);
             detail.Text=$"Animation queue · {entries.Length} clips · {combined.Duration:F3} s · blend {combined.BlendTime:0.00} s\n\n"+string.Join("\n\n",combined.Segments.Select((s,i)=>{
                 var travel=s.Clip.Motion(s.HandOver);
-                return $"{i+1}. {s.Name}\n   {entries[i].Path}\n   starts {s.Start:F4} s · plays {s.Length:F4} s"+(s.Window!=null?$" · hands over at {s.Window} ({s.HandOver:F3} s of {s.Clip.Duration:F3} s); later annotations are skipped":"")+(s.Speed.Uniform?"":$" · MCO_AttackSpeed {s.Speed.Describe()}"+(s.Speed.Points[0].Speed!=1&&!s.Clip.SpeedChanges.Any(c=>c.Time<1e-9)?" (the first value carries over from the clip before)":""))+$"\n   root motion in this clip: {travel.Position.Length():F1} units, {travel.Yaw*180/Math.PI:F1}° turn · starts at ({s.BasePosition.X:F1}, {s.BasePosition.Y:F1}, {s.BasePosition.Z:F1}) facing {s.BaseYaw*180/Math.PI:F1}°";}))
+                return $"{i+1}. {s.Name}\n   {entries[i].Path}\n   starts {s.Start:F4} s · plays {s.Length:F4} s"+(s.Window!=null?$" · hands over at {s.Window} ({s.HandOver:F3} s of {s.Clip.Duration:F3} s); later annotations are skipped":"")+(s.Speed.Uniform?"":$" · {s.SpeedVariable} {s.Speed.Describe()}"+(s.Speed.Points[0].Speed!=1&&!s.Changes.Any(c=>c.Time<1e-9)?" (the first value carries over from the clip before)":""))+$"\n   root motion in this clip: {travel.Position.Length():F1} units, {travel.Yaw*180/Math.PI:F1}° turn · starts at ({s.BasePosition.X:F1}, {s.BasePosition.Y:F1}, {s.BasePosition.Z:F1}) facing {s.BaseYaw*180/Math.PI:F1}°";}))
                 +$"\n\nEnd of queue: ({end.Position.X:F1}, {end.Position.Y:F1}, {end.Position.Z:F1}) facing {end.Yaw*180/Math.PI:F1}°";
             events.Text=$"{combined.Duration:F4} seconds · {entries.Length} queued clips · times are queue times\n\n"+string.Join("\n",combined.Segments.Select((s,i)=>$"{s.Start,8:F4} ── clip {i+1}: {s.Name}\n"+string.Join("\n",s.Clip.Events.Select(e=>$"{s.Global(e.Time),8:F4} {e.Text}"))))
                 +(combined.WeaponEvents.Count==0?"":"\n\nWEAPON ATTACHMENT\n"+string.Join("\n",combined.WeaponEvents.Select(e=>$"{e.Time,8:F4} {(e.Sheathed?"weaponSheathe: moves to the holster node":"weaponDraw: moves to the hand")}")))
@@ -2843,6 +2849,58 @@ public sealed class MainWindow : Form
             }
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
         finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"track-bone.txt"),log);}finally{Close();}}
+    }
+    // BFCO clips in the window: the speed note, the BFCO notes, the lasting annotations and a queue that hands over at
+    // BFCO's windows. Arguments: three BFCO attack clips of one moveset, in combo order.
+    async Task BfcoSmoke(string[] clips)
+    {
+        var log=new List<string>();string output=Path.Combine(AppContext.BaseDirectory,"bfco-smoke");Directory.CreateDirectory(output);
+        void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
+        try{
+            await Mount(SelfTest.TestData,false);
+            followCamera.Checked=false;scene.FollowScene=false;playSounds.Checked=false;
+            clips=clips.Select(Path.GetFullPath).ToArray();
+            DropFiles(clips);await Task.Delay(400);
+            ClipEntry Entry(string file)=>assets.Clips.First(c=>c.Path.Equals(file,StringComparison.OrdinalIgnoreCase));
+            await SelectClip(Entry(clips[0]));clock.Pause();inspectorTabs!.SelectedIndex=1;await Task.Delay(150);
+            var source=AnimationClip.Load(File.ReadAllBytes(clips[0]));string name=Path.GetFileName(clips[0]);
+            log.Add($"{name}: {source.Duration:F3} s, BFCO speed annotations {source.BfcoSpeedChanges.Count}, MCO speed annotations {source.SpeedChanges.Count}");
+            foreach(var e in source.Events.Where(e=>e.Text.Contains("BFCO",StringComparison.OrdinalIgnoreCase)||e.Text.StartsWith("MCO_",StringComparison.OrdinalIgnoreCase)))log.Add($"   {e.Time:F3} {e.Text}");
+            Check(Bfco.IsClip(name,source.Events)&&events.Text.Contains("\nBFCO\n")&&events.Text.Contains("Read as a BFCO clip"),"A BFCO clip gets the BFCO notes in the Annotations tab");
+            var nextLight=Bfco.Next(source.Events,false);var lightWindow=Bfco.Window(name,source.Events,"MCO_WinOpen");
+            Check(nextLight!=null&&events.Text.Contains($"Next light attack: BFCO_Attack{nextLight.Value.Number}.hkx"),$"The notes name the next light clip (BFCO_Attack{nextLight?.Number})");
+            Check(lightWindow.Annotation=="BFCO_NextWinStart"&&lightWindow.Times.Count>0,"The clip's light window is BFCO_NextWinStart");
+            var effective=AnimationClip.EffectiveSpeedChanges(name,source);
+            Check(!speedNote.Text.Contains("ignored")&&(effective.Count==0||speedNote.Text.StartsWith("BFCO speed")),"BFCO_AttackSpeed is applied to a BFCO clip, not reported as ignored: '"+speedNote.Text+"'");
+            if(effective.Any(c=>Math.Abs(c.Value-1)>1e-9)){
+                double expected=0,at=0,rate=1;foreach(var (time,value) in effective){expected+=(time-at)/rate;at=time;rate=value;}expected+=(source.Duration-at)/rate;
+                Check(Math.Abs(clock.Duration-expected)<1e-6,$"The clip plays in {clock.Duration:F3} s at its BFCO speed, the value summed piece by piece ({expected:F3} s)");
+            }
+            var rows=Highlight.Rows;void Go(double time){clock.Seek(time);scene.SetTime(clock.Time);UpdateTimeLabel(clock.Time);}
+            int selector=Enumerable.Range(0,rows.Count).First(i=>rows[i].Text.Trim().StartsWith("BFCO_NextIsAttack",StringComparison.OrdinalIgnoreCase));
+            int window=Enumerable.Range(0,rows.Count).First(i=>rows[i].Text.Trim().Equals("BFCO_NextWinStart",StringComparison.OrdinalIgnoreCase));
+            int close=Enumerable.Range(0,rows.Count).Where(i=>rows[i].Text.Trim().Equals("BFCO_DIY_EndLoop",StringComparison.OrdinalIgnoreCase)&&rows[i].Time>rows[window].Time).DefaultIfEmpty(-1).First();
+            Go(rows[window].Time+.01);
+            Check(Highlight.Active.Contains(selector)&&Highlight.Active.Contains(window),"The next-attack annotation and BFCO_NextWinStart are highlighted once the window has opened");
+            if(close>=0){Go(rows[close].Time+.01);Check(!Highlight.Active.Contains(selector)&&!Highlight.Active.Contains(window),"BFCO_DIY_EndLoop ends both highlights");}
+            else{Go(clock.Duration);Check(Highlight.Active.Contains(selector)&&Highlight.Active.Contains(window),"With no BFCO_DIY_EndLoop both stay highlighted to the end of the clip");}
+            using(var shot=new Bitmap(Width,Height)){DrawToBitmap(shot,new Rectangle(Point.Empty,Size));shot.Save(Path.Combine(output,"bfco-annotations.png"));}
+            foreach(string file in clips)AddToQueue(Entry(file));
+            queueAtWindow.Checked=true;queueWindowEvent.SelectedItem="MCO_WinOpen";inspectorTabs.SelectedTab=queueTab;await PlayQueue();clock.Pause();await Task.Delay(200);
+            var segments=clip!.Segments!;var singles=clips.Select(f=>AnimationClip.Load(File.ReadAllBytes(f))).ToList();
+            for(int i=0;i<segments.Count-1;i++){
+                var expected=Bfco.Window(Path.GetFileName(clips[i]),singles[i].Events,"MCO_WinOpen");
+                Check(expected.Annotation=="BFCO_NextWinStart"&&segments[i].Window=="BFCO_NextWinStart"&&Math.Abs(segments[i].HandOver-expected.Times[0])<1e-9,$"Clip {i+1} hands over to clip {i+2} at its BFCO_NextWinStart ({segments[i].HandOver:F3} s)");
+            }
+            Check(segments[^1].Window==null&&queueList.Items.Cast<string>().First().Contains("next at BFCO_NextWinStart"),"The queue list names BFCO's window: "+queueList.Items[0]);
+            Check(queueWindowEvent.GetItemText(queueWindowEvent.SelectedItem)=="MCO_WinOpen / BFCO_NextWinStart"&&QueueWindowEvent=="MCO_WinOpen","The hand-over drop-down shows both names and keeps its saved value");
+            queueWindowEvent.SelectedItem="MCO_PowerWinOpen";await Task.Delay(700);clock.Pause();
+            var powered=clip!.Segments!;var powerWindow=Bfco.Window(Path.GetFileName(clips[0]),singles[0].Events,"MCO_PowerWinOpen");
+            Check(powerWindow.Annotation==null?powered[0].Window==null:powered[0].Window==powerWindow.Annotation&&Math.Abs(powered[0].HandOver-powerWindow.Times[0])<1e-9,$"The power choice hands over at {powerWindow.Annotation??"the end of the clip"}");
+            cameraSubject.SelectedIndex=1;Go(clock.Duration*.4);scene.Frame();viewport.InvalidateRender();await Task.Delay(200);
+            using(var shot=new Bitmap(Width,Height)){DrawToBitmap(shot,new Rectangle(Point.Empty,Size));shot.Save(Path.Combine(output,"bfco-queue.png"));}
+        }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
+        finally{try{File.WriteAllLines(Path.Combine(output,"bfco-smoke.txt"),log);}finally{Close();}}
     }
     // Frames for an animated picture, played in real time so HDT-SMP physics and effects run as they do on screen.
     // Arguments: a scene file, an output folder, seconds to record, then options: fps=15, warm=1.5 (seconds played

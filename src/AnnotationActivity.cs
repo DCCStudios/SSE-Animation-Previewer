@@ -11,9 +11,15 @@ public sealed record AnnotationRow(double Time,string Text,bool Fires,string Lin
 //
 // An ordinary annotation is active from the moment it fires until the next annotation fires. Some annotations set a
 // state that lasts, so they stay active until that state changes:
-//   MCO_nextattack / MCO_nextpowerattack (and BFCO's)   until the next one of the same kind
+//   MCO_nextattack / MCO_nextpowerattack                until the next one of the same kind
 //   MCO_WinOpen / MCO_WinClose, MCO_PowerWinOpen / Close until the window is closed or opened again
 //   MCO_AttackSpeed / BFCO_AttackSpeed                   until the next one for the same variable
+//   BFCO_NextIsAttackN / BFCO_NextIsPowerAttackN,
+//   BFCO_NextWinStart / BFCO_NextPowerWinStart            until BFCO_DIY_EndLoop (or the end of the clip)
+//   BFCO_DIY_recovery / MCO_Recovery                      to the end of the clip
+//   BFCO_ChargeStageStart and BFCO_ChargeStageN           until the next stage
+//   BFCO_ForbidRotation, BFCO_0Gravity, BFCO_bsprinting,
+//   AMF_ForceMoveMagstim, AMF_ForbidMoveMagstim           from their Start until their Close, End or Stop
 //   Collision_Add                                        while Precision keeps that collision alive
 //   Collision_AttackStart                                until Collision_AttackEnd, Collision_Cancel, attackStop or staggerStart
 //   other Collision_* annotations                        until the next Collision_* annotation
@@ -36,10 +42,19 @@ public static class AnnotationActivity
         }
         if(lower is "mco_winopen" or "mco_winclose")return "window:mco";
         if(lower is "mco_powerwinopen" or "mco_powerwinclose")return "window:mco-power";
-        if(lower is "bfco_nextwinstart" or "bfco_nextwinend")return "window:bfco";
-        if(lower is "bfco_nextpowerwinstart" or "bfco_nextpowerwinend")return "window:bfco-power";
-        if(lower.StartsWith("bfco_nextispowerattack"))return "var:bfco_nextpowerattack";
-        if(lower.StartsWith("bfco_nextisattack"))return "var:bfco_nextattack";
+        // BFCO: the selectors (buffer open) and the two windows last until BFCO_DIY_EndLoop closes them all; there is
+        // no separate window-close event. The other pairs are a start and its own close.
+        if(lower is "bfco_nextwinstart")return "bfco-chain:window";
+        if(lower is "bfco_nextpowerwinstart")return "bfco-chain:power-window";
+        if(lower.StartsWith("bfco_nextispowerattack"))return "bfco-chain:next-power";
+        if(lower.StartsWith("bfco_nextisattack"))return "bfco-chain:next";
+        if(lower is "bfco_diy_recovery" or "mco_recovery")return "recovery";
+        if(lower.StartsWith("bfco_chargestage"))return "bfco:charge";
+        if(lower is "bfco_forbidrotationstart" or "bfco_forbidrotationclose")return "bfco:forbid-rotation";
+        if(lower is "amf_forcemovemagstimstart" or "amf_forcemovemagstimclose")return "amf:force-move";
+        if(lower is "amf_forbidmovemagstimstart" or "amf_forbidmovemagstimclose")return "amf:forbid-move";
+        if(lower is "bfco_0gravitystart" or "bfco_0gravityend")return "bfco:0gravity";
+        if(lower is "bfco_bsprintingstart" or "bfco_bsprintingstop")return "bfco:sprinting";
         if(lower.StartsWith("collision_")){
             string tag=lower.Split('.')[0];
             if(tag=="collision_add")return "precision:add";
@@ -68,6 +83,7 @@ public static class AnnotationActivity
             double latest=group.Max(f=>f.Row.Time);
             foreach(var f in group){
                 if(Math.Abs(f.Row.Time-latest)>Epsilon)continue;
+                if(group.Key!.StartsWith("bfco-chain:")&&events.Any(e=>e.Row.Time>latest+Epsilon&&e.Row.Text.Trim().Equals("BFCO_DIY_EndLoop",StringComparison.OrdinalIgnoreCase)))continue;
                 if(group.Key=="precision:attack"&&f.Row.Text.Trim().ToLowerInvariant() is var tag&&(tag.StartsWith("collision_attackstart")||tag.StartsWith("collision_start"))
                     &&events.Any(e=>e.Row.Time>latest+Epsilon&&EndsPrecisionAttack(e.Row.Text)))continue;
                 active.Add(f.Index);

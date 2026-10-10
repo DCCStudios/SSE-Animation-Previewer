@@ -13,7 +13,7 @@ It is not a Skyrim mod and is not installed into the game. Nothing goes in your 
 [size=4][b]What it does[/b][/size]
 
 [size=3][b]A combo on one timeline[/b][/size]
-Queue several attacks and the previewer chains them the way a combo does. It cuts each clip at [font=Courier New]MCO_WinOpen[/font] or [font=Courier New]MCO_PowerWinOpen[/font], blends it into the next, and carries root motion and [font=Courier New]MCO_AttackSpeed[/font] forward, so you can see how attack 2 reads coming out of attack 1 and how far the whole string travels.
+Queue several attacks and the previewer chains them the way a combo does. It cuts each clip at its combo window ([font=Courier New]MCO_WinOpen[/font] and [font=Courier New]MCO_PowerWinOpen[/font], or [font=Courier New]BFCO_NextWinStart[/font] and [font=Courier New]BFCO_NextPowerWinStart[/font] for BFCO clips), blends it into the next, and carries root motion and attack speed forward, so you can see how attack 2 reads coming out of attack 1 and how far the whole string travels.
 
 [center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/combo.gif[/img]
 [img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/queue-ui.gif[/img][/center]
@@ -32,6 +32,9 @@ Cloth, hair and weapon straps are simulated from their physics XML with Bullet, 
 Every annotation is listed with its time. The ones in effect right now are highlighted as the clip plays: the open combo window, the current attack speed, a Precision collision for exactly the frames it exists.
 
 [center][img]https://raw.githubusercontent.com/DCCStudios/SSE-Animation-Previewer/media/gifs/annotations.gif[/img][/center]
+
+[size=3][b]MCO and BFCO[/b][/size]
+Both attack frameworks are read as they play in game, and their clips can be mixed in one queue. For BFCO that means the next-attack annotations, its windows, its speed rule ([font=Courier New]BFCO_AttackSpeed[/font], falling back to [font=Courier New]MCO_AttackSpeed[/font]) and warnings for mistakes BFCO does not report, such as a window with no next-attack annotation or the common [font=Courier New]BFCO_DIY_Rcovery[/font] misspelling.
 
 [size=3][b]Precision attack collisions[/b][/size]
 The capsules Precision builds from [font=Courier New]Collision_*[/font] annotations are drawn on the weapon or bone for as long as the annotations keep them alive. The rules and sizes follow the Precision source, and your Precision MCM settings are read when their folder is mounted.
@@ -115,6 +118,7 @@ The full guide, with a page for each feature, is on GitHub:
 [*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/playback.md]Playback, root motion and sounds[/url]
 [*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/animation-queue.md]Animation queue[/url]
 [*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/annotations.md]Annotations[/url]
+[*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/bfco.md]BFCO clips[/url]
 [*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/animation-library.md]Animation library and overrides[/url]
 [*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/character-and-equipment.md]Character and equipment[/url]
 [*][url=https://github.com/DCCStudios/SSE-Animation-Previewer/blob/main/docs/precision-collisions.md]Precision attack collisions[/url]

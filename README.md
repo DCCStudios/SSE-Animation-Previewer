@@ -29,8 +29,9 @@ You need Windows 10 or 11 (x64), a graphics card and driver with OpenGL 4.3, and
 | | |
 |---|---|
 | **[Playback and timeline](docs/playback.md)** | Scrub, step by frame, loop, change speed. Root motion from AMR annotations moves the actor, with an arrow marking the root and a camera that travels with it. |
-| **[Animation queue](docs/animation-queue.md)** | Chain clips into a combo on one timeline. Each clip hands over at `MCO_WinOpen` or `MCO_PowerWinOpen`, blends in, and carries root motion and attack speed forward. |
-| **[Annotations](docs/annotations.md)** | Every annotation with its time. The ones active right now are highlighted as the clip plays. `MCO_AttackSpeed` changes are applied the way MCO applies them. |
+| **[Animation queue](docs/animation-queue.md)** | Chain clips into a combo on one timeline. Each clip hands over at its MCO or BFCO combo window, blends in, and carries root motion and attack speed forward. |
+| **[BFCO clips](docs/bfco.md)** | BFCO's next-attack annotations, combo windows, attack speed rule and clip names, read as BFCO plays them, with warnings for mistakes BFCO does not report. |
+| **[Annotations](docs/annotations.md)** | Every annotation with its time. The ones active right now are highlighted as the clip plays. `MCO_AttackSpeed` and `BFCO_AttackSpeed` changes are applied the way each framework applies them. |
 | **[Animation library and overrides](docs/animation-library.md)** | OAR and DAR folders shown by mod, submod and priority, with conditions written out. The playing clip turns orange when a higher-priority folder holds the same file, and hovering lists those folders. |
 | **[Character and equipment](docs/character-and-equipment.md)** | Any race from the loaded plugins, head parts, hair colour, body weight, armor by slot, weapon in hand or sheathed, and a bone overlay with names. |
 | **[Precision attack collisions](docs/precision-collisions.md)** | The capsules Precision builds from `Collision_*` annotations, sized and timed by the rules in the Precision source. |

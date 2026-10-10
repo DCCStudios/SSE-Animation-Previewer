@@ -29,6 +29,45 @@ public static class ParticleTests
         Assert(At(-.1)=="","Nothing is active before the first annotation");
     }
     // MCO_AttackSpeed: every annotation changes speed from its time on; a queue carries the speed into the next clip.
+    // BFCO clips: detection, the speed rule, the hand-over annotation, lasting annotations and the tab's notes.
+    static void BfcoTests(Action<bool,string> Assert)
+    {
+        static bool Near(double a,double b)=>Math.Abs(a-b)<1e-9;
+        static AnimationClip Clip(double duration,params (double Time,string Text)[] events){var list=events.Select(e=>new Annotation(e.Time,e.Text,0)).OrderBy(e=>e.Time).ToList();return new AnimationClip{Duration=duration,Events=list,SpeedChanges=AnimationClip.ReadSpeedChanges(list),BfcoSpeedChanges=AnimationClip.ReadSpeedChanges(list,"BFCO_AttackSpeed")};}
+        var plain=Clip(1,(0,"PIE.@SGVF|BFCO_AttackSpeed|0.5"));
+        Assert(Bfco.IsClip(@"x\BFCO_Attack1.HKX",[])&&Bfco.IsClip("bfco_powerattack2.hkx",[])&&Bfco.IsClip("attack.hkx",[new(0,"BFCO_NextIsAttack2",0)])&&!Bfco.IsClip("mco_attack1.hkx",plain.Events)&&!Bfco.IsClip(@"BFCO_folder\mco_attack1.hkx",[]),
+            "A BFCO clip is one named BFCO_* or carrying BFCO's chain annotations; a BFCO_AttackSpeed payload alone, or a BFCO folder, is not enough");
+        Assert(AnimationClip.Timeline("mco_attack1.hkx",plain).Segments==null,"BFCO_AttackSpeed in a clip that is not a BFCO clip is still ignored");
+        var both=Clip(1,(0,"PIE.@SGVF|MCO_AttackSpeed|2"),(0,"PIE.@SGVF|BFCO_AttackSpeed|0.5"));
+        Assert(Bfco.SpeedChanges(both,1) is [(0,.5)],"A BFCO clip plays at BFCO_AttackSpeed when it is not 1");
+        var fallback=Clip(1,(0,"PIE.@SGVF|MCO_AttackSpeed|2"),(.4,"PIE.@SGVF|BFCO_AttackSpeed|0.5"),(.8,"PIE.@SGVF|BFCO_AttackSpeed|1"));
+        Assert(Bfco.SpeedChanges(fallback,1) is [(0,2),(.4,.5),(.8,2)],"While BFCO_AttackSpeed is exactly 1 the clip plays at MCO_AttackSpeed, and returns to it when BFCO_AttackSpeed goes back to 1");
+        var chain=AnimationClip.Queue([("BFCO_Attack1.hkx",both),("BFCO_Attack2.hkx",Clip(1))],0);
+        Assert(Near(chain.Segments![0].Length,2)&&Near(chain.Segments[1].Speed.StartSpeed,2)&&Near(chain.Segments[1].Length,.5)&&chain.Segments[0].SpeedVariable.StartsWith("BFCO_AttackSpeed"),
+            "BFCO_AttackSpeed starts again at 1 in the next clip of a chain, which then plays at the MCO_AttackSpeed carried over (0.5x clip, then 2x)");
+        var mixed=AnimationClip.Queue([("mco_attack1.hkx",both),("mco_attack2.hkx",Clip(1))],0);
+        Assert(Near(mixed.Segments![0].Length,.5)&&Near(mixed.Segments[1].Length,.5)&&mixed.Segments[0].SpeedVariable=="MCO_AttackSpeed","The same annotations in MCO clips play at MCO_AttackSpeed throughout");
+        var loop=AnimationClip.Queue([("BFCO_Attack1.hkx",both),("BFCO_PowerAttackLoop1.hkx",Clip(1,(0,"PIE.@SGVF|MCO_AttackSpeed|3"))),("BFCO_Attack2.hkx",Clip(1))],0);
+        Assert(Near(loop.Segments![1].Length,1)&&loop.Segments[1].Speed.Uniform&&Near(loop.Segments[2].Speed.StartSpeed,2),"A BFCO hold loop plays at 1x whatever it carries, and passes the carried speed on unchanged");
+        var windows=Clip(1,(0,"BFCO_NextIsAttack3"),(0,"BFCO_NextIsPowerAttack2"),(.3,"BFCO_NextWinStart"),(.35,"BFCO_NextPowerWinStart"),(.5,"MCO_WinOpen"),(.55,"MCO_PowerWinOpen"));
+        var light=AnimationClip.Queue([("BFCO_Attack2.hkx",windows),("b",Clip(1))],0,"MCO_WinOpen");var power=AnimationClip.Queue([("BFCO_Attack2.hkx",windows),("b",Clip(1))],0,"MCO_PowerWinOpen");
+        Assert(Near(light.Segments![0].HandOver,.3)&&light.Segments[0].Window=="BFCO_NextWinStart"&&Near(power.Segments![0].HandOver,.35)&&power.Segments[0].Window=="BFCO_NextPowerWinStart","A queued BFCO clip hands over at BFCO_NextWinStart or BFCO_NextPowerWinStart, not at an MCO window it also carries");
+        var mcoOnly=Clip(1,(.5,"MCO_WinOpen"));
+        Assert(Bfco.Window("BFCO_Attack1.hkx",mcoOnly.Events,"MCO_WinOpen") is ("MCO_WinOpen",[.5])&&Bfco.Window("mco_attack1.hkx",mcoOnly.Events,"MCO_WinOpen") is ("MCO_WinOpen",[.5])&&Bfco.Window("mco_attack1.hkx",mcoOnly.Events,"MCO_PowerWinOpen").Annotation==null,
+            "A BFCO clip with only MCO windows hands over at those; a clip without the chosen window plays to its end");
+        Assert(Bfco.Next(windows.Events,false) is (3,0)&&Bfco.Next(windows.Events,true) is (2,0)&&Bfco.Next(mcoOnly.Events,false)==null,"The next clip number is read from the BFCO_NextIsAttackN and BFCO_NextIsPowerAttackN names");
+        (double,string)[] source=[(0,"BFCO_NextIsAttack2"),(0,"BFCO_NextIsPowerAttack2"),(.2,"HitFrame"),(.4,"BFCO_NextWinStart"),(.4,"BFCO_NextPowerWinStart"),(.7,"BFCO_DIY_EndLoop"),(.8,"BFCO_DIY_recovery"),(.9,"attackStop")];
+        var rows=source.Select(r=>new AnnotationRow(r.Item1,r.Item2,true,r.Item2)).ToList();
+        string At(double t)=>string.Join(",",AnnotationActivity.ActiveAt(rows,t,null).OrderBy(i=>i));
+        Assert(At(.3)=="0,1,2"&&At(.5)=="0,1,3,4","BFCO's next-attack annotations stay active while the buffer is open, and the windows from BFCO_NextWinStart and BFCO_NextPowerWinStart");
+        Assert(At(.75)=="5"&&At(.85)=="6"&&At(.95)=="6,7","BFCO_DIY_EndLoop ends the next-attack and window annotations together; BFCO_DIY_recovery lasts to the end of the clip");
+        var open=rows.Where(r=>r.Text!="BFCO_DIY_EndLoop").ToList();
+        Assert(string.Join(",",AnnotationActivity.ActiveAt(open,.95,null).OrderBy(i=>i))=="0,1,3,4,5,6","Without BFCO_DIY_EndLoop the buffer and windows stay open to the end of the clip");
+        string notes=Bfco.Describe("BFCO_Attack2.hkx",Clip(1,(0,"BFCO_NextIsAttack3"),(.3,"BFCO_NextWinStart"),(.35,"BFCO_NextPowerWinStart"),(.8,"BFCO_DIY_Rcovery")));
+        Assert(notes.Contains("Next light attack: BFCO_Attack3.hkx")&&notes.Contains("BFCO_NextWinStart, 0.300 s")&&notes.Contains("BFCO_NextPowerWinStart at 0.350 s has no BFCO_NextIsPowerAttackN")&&notes.Contains("BFCO_DIY_Rcovery at 0.800 s is not an event BFCO registers")&&notes.Contains("stay open to the end of the clip"),
+            "The Annotations tab names the next BFCO clip and warns about a window with no next-attack annotation and about the BFCO_DIY_Rcovery misspelling");
+        Assert(Bfco.Describe("mco_attack1.hkx",mcoOnly)==""&&Bfco.Describe("BFCO_Attack9.hkx",Clip(1)).Contains("cannot chain"),"A clip that is not BFCO gets no BFCO notes; a BFCO clip with no next-attack annotation is said not to chain");
+    }
     static void SpeedMapTests(Action<bool,string> Assert)
     {
         static bool Near(double a,double b)=>Math.Abs(a-b)<1e-9;
@@ -67,6 +106,7 @@ public static class ParticleTests
         ParticleFalloff.Test(Assert);
         ParticleLighting.Test(Assert);
         SpeedMapTests(Assert);
+        BfcoTests(Assert);
         Assert(ParticleNif.CellRect(new(.125f,.125f,.25f,.125f))==new System.Numerics.Vector4(.125f,.25f,.25f,.375f)&&ParticleNif.CellRect(new(0,1,0,1))==new System.Numerics.Vector4(0,0,1,1),"A sub-texture cell (u, width, v, height) maps to the corners (u, v, u+width, v+height)");
         AnnotationActivityTests(Assert);
         var equip=new AnimationClip{WeaponEvents=AnimationClip.ReadWeaponEvents([new(.3,"weaponDraw",0),new(.8,"FootScuffLeft",0)])};

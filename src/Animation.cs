@@ -36,6 +36,9 @@ public sealed class SpeedMap
 // end); Window names the annotation used, null when the clip plays to its end.
 public sealed record ClipSegment(string Name,AnimationClip Clip,double Start,double Length,SpeedMap Speed,Vector3 BasePosition,float BaseYaw,double HandOver,string? Window=null)
 {
+    // What sets this clip's speed ("MCO_AttackSpeed", or BFCO's pair for a BFCO clip) and the changes in clip time.
+    public string SpeedVariable {get;init;}="MCO_AttackSpeed";
+    public IReadOnlyList<(double Time,double Value)> Changes {get;init;}=[];
     public double Local(double queueTime){double u=Math.Clamp(queueTime-Start,0,Length);return Math.Min(Clip.Duration,Speed.ToClip(u));}
     // Clip time after the hand-over, while this clip keeps playing under the next one's blend; holds the last frame.
     public double Continued(double queueTime){double u=Math.Max(0,queueTime-Start);return Math.Min(Clip.Duration,Speed.ToClip(u));}
@@ -51,7 +54,7 @@ public sealed class AnimationClip
     public List<(double Time,float Value)> Rotation=[];
     // Every PIE.@SGVF|MCO_AttackSpeed|x annotation, in clip time (1.0 included: it changes speed back).
     public List<(double Time,double Value)> SpeedChanges=[];
-    // BFCO's own variable. Only the BFCO behavior reads it, and none is installed in the mod lists checked; MCO ignores it.
+    // BFCO's own variable. The BFCO behavior reads it for the clips it plays (see Bfco); MCO ignores it.
     public List<(double Time,double Value)> BfcoSpeedChanges=[];
     // weaponDraw moves the weapon from its holster node to the hand; weaponSheathe moves it back. Each entry is
     // the state after that annotation fires.
@@ -76,8 +79,9 @@ public sealed class AnimationClip
     }
     // Plays the clips one after another. Each clip's root motion starts from where the previous clip left the
     // actor, turned by the yaw accumulated so far, so travel and turns carry through the whole queue. With a window
-    // annotation (MCO_WinOpen, MCO_PowerWinOpen) every clip but the last hands over at that annotation, as an MCO
-    // combo does when the next attack is pressed in time; the clip's later annotations then never fire.
+    // choice (the light or the power window; a BFCO clip uses BFCO_NextWinStart or BFCO_NextPowerWinStart, see
+    // Bfco.Window) every clip but the last hands over at that annotation, as a combo does when the next attack is
+    // pressed in time; the clip's later annotations then never fire.
     // Each clip starts at the speed the previous clip had reached at its hand-over: MCO only resets MCO_AttackSpeed
     // to 1 outside the attack states, so it carries from one combo attack into the next until the clip sets its own.
     // windowPicks chooses, per clip, which occurrence of the window annotation hands over (0 = the first); a clip with
@@ -88,12 +92,16 @@ public sealed class AnimationClip
         double start=0,carried=1;Vector3 position=Vector3.Zero;float yaw=0;
         for(int index=0;index<items.Count;index++){
             var (name,clip)=items[index];
-            var speed=new SpeedMap(clip.SpeedChanges,carried,clip.Duration);
-            double? opens=null;
-            if(window!=null&&index<items.Count-1&&clip.AnnotationTimes(window) is {Count:>0} times)opens=times[Math.Clamp(windowPicks!=null&&index<windowPicks.Count?windowPicks[index]:0,0,times.Count-1)];
+            // A BFCO clip plays at BFCO_AttackSpeed, or at MCO_AttackSpeed while that is 1, and BFCO_AttackSpeed starts
+            // again at 1 in every clip. Only MCO_AttackSpeed carries into the next clip. A hold loop is not bound.
+            bool bfco=Bfco.IsClip(name,clip.Events),hold=Bfco.IsHoldLoop(name);
+            var changes=EffectiveSpeedChanges(name,clip,carried);
+            var speed=new SpeedMap(changes,hold?1:carried,clip.Duration);
+            double? opens=null;string? used=null;
+            if(window!=null&&index<items.Count-1&&Bfco.Window(name,clip.Events,window) is {Annotation:{} annotation,Times:{Count:>0} times}){used=annotation;opens=times[Math.Clamp(windowPicks!=null&&index<windowPicks.Count?windowPicks[index]:0,0,times.Count-1)];}
             double handOver=Math.Clamp(opens??clip.Duration,0,clip.Duration);
-            double length=speed.ToPlay(handOver);carried=speed.SpeedAt(handOver);
-            var segment=new ClipSegment(name,clip,start,length,speed,position,yaw,handOver,opens!=null?window:null);queue.Segments.Add(segment);
+            double length=speed.ToPlay(handOver);carried=hold?carried:bfco?Bfco.McoSpeedAt(clip,carried,handOver):speed.SpeedAt(handOver);
+            var segment=new ClipSegment(name,clip,start,length,speed,position,yaw,handOver,used){SpeedVariable=bfco?"BFCO_AttackSpeed / MCO_AttackSpeed":"MCO_AttackSpeed",Changes=changes};queue.Segments.Add(segment);
             foreach(var e in clip.Events)if(opens==null||e.Time<=handOver+1e-9)queue.Events.Add(new(segment.Global(e.Time),e.Text,e.Track));
             foreach(var e in clip.WeaponEvents)if(opens==null||e.Time<=handOver+1e-9)queue.WeaponEvents.Add((segment.Global(e.Time),e.Sheathed));
             var end=clip.Motion(handOver);
@@ -102,12 +110,16 @@ public sealed class AnimationClip
         }
         queue.Duration=start;queue.Events=queue.Events.OrderBy(e=>e.Time).ToList();queue.WeaponEvents=queue.WeaponEvents.OrderBy(e=>e.Time).ToList();
         if(items.Count>0)queue.Bytes=items[0].Clip.Bytes;
-        foreach(var segment in queue.Segments)queue.SpeedChanges.AddRange(segment.Clip.SpeedChanges.Where(c=>c.Time<=segment.HandOver+1e-9).Select(c=>(segment.Global(c.Time),c.Value)));
+        foreach(var segment in queue.Segments)queue.SpeedChanges.AddRange(segment.Changes.Where(c=>c.Time<=segment.HandOver+1e-9).Select(c=>(segment.Global(c.Time),c.Value)));
         return queue;
     }
     // A single clip on its own: the clip itself when it never changes speed, otherwise a one-clip timeline so that
     // pose, root motion, annotations and effects all run on playback time.
-    public static AnimationClip Timeline(string name,AnimationClip clip)=>clip.SpeedChanges.All(c=>Math.Abs(c.Value-1)<1e-9)?clip:Queue([(name,clip)],0,null,queued:false);
+    public static AnimationClip Timeline(string name,AnimationClip clip)=>EffectiveSpeedChanges(name,clip,1).All(c=>Math.Abs(c.Value-1)<1e-9)?clip:Queue([(name,clip)],0,null,queued:false);
+    // The speed changes that apply to a clip, in clip time: MCO_AttackSpeed for an MCO clip, BFCO's rule for a BFCO
+    // clip (carriedMco is MCO_AttackSpeed when the clip starts), none for a BFCO hold loop.
+    public static List<(double Time,double Value)> EffectiveSpeedChanges(string name,AnimationClip clip,double carriedMco=1)
+        =>Bfco.IsHoldLoop(name)?[]:Bfco.IsClip(name,clip.Events)?Bfco.SpeedChanges(clip,carriedMco):clip.SpeedChanges;
     public static List<(double Time,bool Sheathed)> ReadWeaponEvents(IEnumerable<Annotation> events)=>events.OrderBy(e=>e.Time)
         .Select(e=>(e.Time,Name:e.Text.Trim())).Where(e=>e.Name.Equals("weaponDraw",StringComparison.OrdinalIgnoreCase)||e.Name.Equals("weaponSheathe",StringComparison.OrdinalIgnoreCase))
         .Select(e=>(e.Time,e.Name.Equals("weaponSheathe",StringComparison.OrdinalIgnoreCase))).ToList();

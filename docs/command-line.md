@@ -55,6 +55,7 @@ These run a feature against fixtures and write a pass/fail log beside the exe. T
 | `--queue-smoke <clips>` | Queue, drag feedback, root motion arrow, follow camera |
 | `--precision-smoke <clips>` | Precision timeline rules and capsule drawing |
 | `--annotation-smoke <clip>` | Active annotation highlight |
+| `--bfco-smoke <three BFCO clips>` | BFCO notes, speed, highlight and queue hand-over |
 | `--skeleton-smoke <clip>` | Bone overlay |
 | `--override-smoke` | Library row colours and hover text. Run `--catalog-test` first, which writes its fixture. |
 | `--flipbook-smoke <mod folder> <nifs>` | Sub-texture sheet sampling |

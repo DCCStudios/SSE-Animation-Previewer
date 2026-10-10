@@ -22,7 +22,7 @@ Press **Play queue** to start. While the queue plays, each row also shows the cl
 
 ## Hand-over at the combo window
 
-**Next clip starts at** is on by default. Each clip hands over to the next at an MCO annotation, the way a combo continues when the player presses attack again. The drop-down chooses `MCO_WinOpen` or `MCO_PowerWinOpen`.
+**Next clip starts at** is on by default. Each clip hands over to the next at its combo window, the way a combo continues when the player presses attack again. The drop-down chooses the light window (`MCO_WinOpen`, or `BFCO_NextWinStart` for a BFCO clip) or the power window (`MCO_PowerWinOpen`, or `BFCO_NextPowerWinStart`). MCO and BFCO clips can be mixed, and each row says which annotation it used. [BFCO clips](bfco.md) has the details.
 
 - A clip without that annotation plays to its end.
 - The last clip always plays to its end.
@@ -40,7 +40,7 @@ The blend changes the pose only. Root motion and annotation times stay those of 
 
 **Root motion.** Each clip starts where the previous one left the actor, turned by every rotation so far. A string of attacks travels as far as the clips add up to, and a clip after a turn moves along the new facing.
 
-**Attack speed.** A clip starts at the speed the previous clip ended on, since MCO only resets `MCO_AttackSpeed` to 1 outside attacks. The Configuration tab says when a clip's first speed was carried over.
+**Attack speed.** A clip starts at the `MCO_AttackSpeed` the previous clip ended on, since MCO only resets it to 1 outside attacks. `BFCO_AttackSpeed` does not carry: BFCO resets it at every clip. The Configuration tab says when a clip's first speed was carried over.
 
 The queue, its blend time and whether it was playing are saved with the session.
 

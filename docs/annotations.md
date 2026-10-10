@@ -24,7 +24,7 @@ An ordinary annotation is active from when it fires until the next annotation fi
 | `Collision_AttackStart` | The attack ends (`Collision_AttackEnd`, `Collision_Cancel`, `attackStop`, `staggerStart`) |
 | Other `Collision_` annotations | The next `Collision_` annotation |
 
-BFCO's window, next-attack and speed annotations follow the same rules.
+BFCO's annotations have their own rules: the next-attack annotations and both windows last until `BFCO_DIY_EndLoop`, and a BFCO clip gets a notes section with the next clip and warnings. See [BFCO clips](bfco.md).
 
 AMR `animmotion` and `animrotation` keys sit on almost every frame, so they never end another annotation. The latest key of each is highlighted.
 
