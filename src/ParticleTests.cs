@@ -53,7 +53,7 @@ public static class ParticleTests
     internal static string VerificationProjectRoot()
     {
         for(var directory=new DirectoryInfo(AppContext.BaseDirectory);directory!=null;directory=directory.Parent)
-            if(File.Exists(Path.Combine(directory.FullName,"SSEAnimationPreviewer.csproj")))return directory.FullName;
+            if(File.Exists(Path.Combine(directory.FullName,"SSEAnimationPreviewer.sln")))return directory.FullName;
         throw new InvalidOperationException("Particle regression tests require the previewer source workspace. Normal preview playback does not require it.");
     }
     public static void Run()
