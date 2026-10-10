@@ -1,0 +1,94 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write # the release step on tag pushes needs it
+    env:
+      DOTNET_NOLOGO: true
+      DOTNET_CLI_TELEMETRY_OPTOUT: true
+      BUILD_OUTPUT: bin/Release/net8.0-windows/win-x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # This one project builds the vendored engine through its project references.
+      - name: Build
+        run: dotnet build SSEAnimationPreviewer.csproj -c Release
+
+      # The app is a WinExe, so the shell does not wait for it unless Start-Process is told to.
+      - name: Run tests that need no game data
+        shell: pwsh
+        run: |
+          $folder = Join-Path $env:GITHUB_WORKSPACE $env:BUILD_OUTPUT
+          $exe = Join-Path $folder 'SSE Animation Previewer.exe'
+          if (!(Test-Path -LiteralPath $exe)) { throw "Build output not found: $exe" }
+          $run = Start-Process -FilePath $exe -ArgumentList '--ci-test' -WorkingDirectory $folder -Wait -PassThru
+          if ($run.ExitCode -ne 0) {
+            foreach ($log in Get-ChildItem -LiteralPath $folder -Filter '*-tests.txt') {
+              Write-Host "::group::$($log.Name)"
+              Get-Content -LiteralPath $log.FullName
+              Write-Host '::endgroup::'
+            }
+            throw "--ci-test failed with exit code $($run.ExitCode)."
+          }
+          Write-Host 'PASS --ci-test'
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: ${{ env.BUILD_OUTPUT }}/*-tests.txt
+          if-no-files-found: warn
+
+      - name: Build the public portable package
+        id: package
+        shell: pwsh
+        run: |
+          $package = Join-Path $env:RUNNER_TEMP 'pkg\SSE Animation Previewer'
+          ./build-portable.ps1 -Public -Output $package
+          # Tags and branches use their name; pull requests use the short commit hash.
+          $label = if ($env:GITHUB_EVENT_NAME -eq 'pull_request') { $env:GITHUB_SHA.Substring(0, 7) } else { $env:GITHUB_REF_NAME -replace '[\\/:*?"<>|]', '-' }
+          $name = "SSE-Animation-Previewer-$label-win-x64"
+          $zip = Join-Path $env:RUNNER_TEMP "$name.zip"
+          Compress-Archive -Path $package -DestinationPath $zip -Force
+          "name=$name" >> $env:GITHUB_OUTPUT
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: ${{ steps.package.outputs.zip }}
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ZIP: ${{ steps.package.outputs.zip }}
+        run: |
+          # Create the release with generated notes, or replace the zip on a release that already exists.
+          gh release view $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $env:GITHUB_REF_NAME $env:ZIP --clobber --repo $env:GITHUB_REPOSITORY
+          } else {
+            gh release create $env:GITHUB_REF_NAME $env:ZIP --title $env:GITHUB_REF_NAME --generate-notes --verify-tag --repo $env:GITHUB_REPOSITORY
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Publishing the release failed.' }

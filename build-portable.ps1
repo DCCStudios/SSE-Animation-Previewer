@@ -15,14 +15,12 @@ $Output = Join-Path $buildRoot 'staging'
 $floor = if ($Public) { @('-p:FloorTextures=resources') } else { @() }
 dotnet publish (Join-Path $PSScriptRoot 'SSEAnimationPreviewer.csproj') -c Release -r win-x64 --self-contained true -o $Output @floor
 if ($LASTEXITCODE -ne 0) { throw 'Portable publish failed.' }
-$vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio/Installer/vswhere.exe'
-$vs = & $vswhere -latest -products '*' -property installationPath
-$crt = Get-ChildItem (Join-Path $vs 'VC/Redist/MSVC') -Directory |
-    Where-Object Name -Match '^\d+\.' | Sort-Object Name -Descending |
-    ForEach-Object { Join-Path $_.FullName 'x64/Microsoft.VC143.CRT' } |
-    Where-Object { Test-Path $_ } | Select-Object -First 1
-if (!$crt) { throw 'C++ runtime redistributables were not found in the build environment.' }
-Copy-Item -LiteralPath (Get-ChildItem $crt -Filter '*.dll').FullName -Destination $Output
+# The C++ runtime DLLs live in the repository, so packaging needs no Visual Studio install.
+$crt = Join-Path $PSScriptRoot 'lib/crt'
+if (!(Test-Path -LiteralPath $crt -PathType Container)) { throw "C++ runtime folder is missing: $crt. Restore lib/crt from the repository." }
+$crtFiles = @(Get-ChildItem -LiteralPath $crt -Filter '*.dll' -File)
+if (!$crtFiles.Count) { throw "C++ runtime folder holds no DLLs: $crt. Restore lib/crt from the repository." }
+Copy-Item -LiteralPath $crtFiles.FullName -Destination $Output
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'README.md') -Destination $Output
 $sample = Join-Path $Output 'Samples/ParticleFixtures'
 New-Item -ItemType Directory -Path $sample -Force | Out-Null
