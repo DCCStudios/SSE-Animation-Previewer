@@ -4,6 +4,8 @@ using FO4_Base_Library;
 namespace SSEPreview;
 internal static class Program
 {
+    // Every switch the program answers to. ParticleTests checks this against the source.
+    internal static readonly HashSet<string> Switches=new(StringComparer.Ordinal){"--annotation-smoke","--archive-order-smoke","--attachment-smoke","--attack-effect-inspect","--background","--bfco-smoke","--billboard-test","--bladebeam-smoke","--camera-smoke","--catalog-test","--character-smoke","--ci-test","--clip-profile","--cloud-effect-alpha-smoke","--cloud-equipment-smoke","--color-fixture","--data","--docs-capture","--dump-annotations","--effect-capture","--effect-graph-audit","--effect-sequence-test","--emitter-inspect","--emitter-source-smoke","--equipment-smoke","--fade-fixture","--ff7vfx-smoke","--flipbook-smoke","--floor-smoke","--frame-smoke","--frames-capture","--hair-smoke","--holster-smoke","--inspect","--library-smoke","--mod-sweep","--override-smoke","--particle-smoke","--particle-test","--precision-smoke","--preferences-test","--prepare-fixture","--queue-smoke","--record-inspect","--reference-effect-smoke","--refraction-smoke","--remote-cast-smoke","--scene-dialog-smoke","--scene-save-smoke","--self-test","--skeleton-smoke","--smoke","--smp-determinism","--smp-smoke","--smp-soak","--smp-test","--sound-smoke","--sources-recent-smoke","--speed-smoke","--tagfile-smoke","--texture-dump","--timing-smoke","--track-bone","--weaponart-profile-smoke","--window-pick-smoke"};
     [STAThread]
     static int Main(string[] args)
     {
@@ -12,6 +14,13 @@ internal static class Program
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
         MainWindow.Background=args.Contains("--background")||Environment.GetEnvironmentVariable("SSE_PREVIEW_BACKGROUND")=="1";
+        // A switch the program does not know is an error, not a silent normal start: a caller waiting for output
+        // files would otherwise wait on a run that did nothing.
+        if(args.Where(a=>a.StartsWith("--")).FirstOrDefault(a=>!Switches.Contains(a)) is {} unknown){
+            string message=$"Unknown switch {unknown}. See docs/command-line.md for the switches this build has.";
+            Console.Error.WriteLine(message);try{File.AppendAllText(Path.Combine(AppContext.BaseDirectory,"error.log"),DateTime.Now+" "+message+Environment.NewLine);}catch(IOException){}catch(UnauthorizedAccessException){}
+            return 2;
+        }
         try {
             if(args.Contains("--preferences-test")){ViewerPreferences.Verify();return 0;}
             if(args.Contains("--smoke")){Logger.AllowInReleaseBuilds=true;Logger.Enabled=true;Logger.Initialize(Path.Combine(AppContext.BaseDirectory,"engine.log"));}

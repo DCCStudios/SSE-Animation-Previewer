@@ -123,6 +123,12 @@ public static class ParticleTests
         ParticleLighting.Test(Assert);
         SpeedMapTests(Assert);
         BfcoTests(Assert);
+        // Every double-dash switch literal in the source is one the program accepts, so adding a mode cannot leave it rejected.
+        if(Directory.Exists(Path.Combine(SelfTest.RepoRoot,"src"))){
+            var literal=new System.Text.RegularExpressions.Regex("\"(--[a-z][a-z0-9-]*)\"");
+            var missing=Directory.GetFiles(Path.Combine(SelfTest.RepoRoot,"src"),"*.cs").SelectMany(f=>literal.Matches(File.ReadAllText(f)).Select(m=>m.Groups[1].Value)).Distinct().Where(n=>!Program.Switches.Contains(n)).ToList();
+            Assert(missing.Count==0,"Every switch named in the source is in the list the program accepts"+(missing.Count>0?": missing "+string.Join(", ",missing):""));
+        }
         Assert(ParticleNif.CellRect(new(.125f,.125f,.25f,.125f))==new System.Numerics.Vector4(.125f,.25f,.25f,.375f)&&ParticleNif.CellRect(new(0,1,0,1))==new System.Numerics.Vector4(0,0,1,1),"A sub-texture cell (u, width, v, height) maps to the corners (u, v, u+width, v+height)");
         AnnotationActivityTests(Assert);
         var equip=new AnimationClip{WeaponEvents=AnimationClip.ReadWeaponEvents([new(.3,"weaponDraw",0),new(.8,"FootScuffLeft",0)])};

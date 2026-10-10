@@ -34,6 +34,16 @@ Writes `track-bone.txt` beside the exe, a log of how a bone moves relative to an
 
 Renders most of the pictures used in these pages: a Nord with an iron battleaxe, the overlays, the queue and a vanilla effect. The clips you pass decide the poses.
 
+## Capturing an effect NIF
+
+```
+"SSE Animation Previewer.exe" --background --effect-capture <output folder> <nif> <nif> <Data folder>
+```
+
+Renders two effect NIFs (the same file twice is fine) with the textures in the Data folder, and writes `original_sample.png`, `original_wrapped.png`, `corrected_sample.png`, `corrected_wrapped.png` and `validation.txt` to the output folder. It exits with code 1 when an effect shows nothing or its clock does not loop. Other tools use it to build preview sheets.
+
+Environment variables set the shot: `SSE_EFFECT_CAPTURE_TIME` (seconds into the effect, default 0.934), `SSE_EFFECT_CAPTURE_DISTANCE` (camera distance, default 350), `SSE_EFFECT_CAPTURE_FOCUS_ORIGIN=1` (aim at the point 100 units above the origin) and `SSE_EFFECT_CAPTURE_AUTOMOUNT=1` (mount the folder above the NIF's `meshes` folder in place of the Data argument).
+
 ## Recording frames for an animated picture
 
 ```
@@ -61,4 +71,4 @@ These run a feature against fixtures and write a pass/fail log beside the exe. T
 | `--flipbook-smoke <mod folder> <nifs>` | Sub-texture sheet sampling |
 | `--camera-smoke`, `--floor-smoke` | Camera following and zoom, grid floor |
 
-A run that fails exits with code 1 and names the failed check in its log. A switch given too few arguments exits with code 2 and says how many it needs.
+A run that fails exits with code 1 and names the failed check in its log. A switch given too few arguments exits with code 2 and says how many it needs. A switch the program does not know also exits with code 2, with a line on standard error and in `error.log`, so a script never mistakes a run that did nothing for one that worked.
