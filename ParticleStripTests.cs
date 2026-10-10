@@ -73,7 +73,7 @@ internal static class ParticleStripTests
         check(spawning.TotalBorn>2&&spawning.Particles.Count(p=>p.Generation==0)==1,"Strip age/death retries its spawn-before-removal path while the parent tail is retained");
         var frozen=Retained();frozen.AgeEnabled=_=>false;frozen.Seek(.2);check(frozen.Particles.Single().Age==0&&frozen.Particles.Single().Strip!.Points[^1].Time>.19f,"Disabled age modifier preserves normal strip sampling rather than forcing lifetime expiry");
         string file=Path.Combine(SelfTest.Mods,@"Anchor MCO Animations v2 - Cloud Fenrir\meshes\magiceffects\FF7Fenrir\vortex_BodyStart.nif");
-        if(File.Exists(file)){
+        if(!File.Exists(file))SelfTest.Skip("Real Anchor strip history checks: "+SelfTest.Missing(file));else{
             var nif=new Nifcontent_Class_Manolo();nif.Load_Manolo(File.ReadAllBytes(file));
             var ps=nif.Blocks.OfType<BSStripParticleSystem>().First();var system=new ParticleNif(nif,ps,51);system.Seek(.5);
             check(system.Simulation.Particles.Any(p=>p.Strip?.Points.Count>1),"Real Anchor vortex particle modifier captures multi-point strip histories");

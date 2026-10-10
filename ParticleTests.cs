@@ -61,6 +61,8 @@ public static class ParticleTests
         string projectRoot=VerificationProjectRoot();
         var lines=new List<string>();
         void Assert(bool ok,string label){lines.Add((ok?"PASS ":"FAIL ")+label);File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"particle-tests.txt"),lines);if(!ok)throw new Exception(label);}
+        void Skip(string label){lines.Add("SKIP "+label);File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"particle-tests.txt"),lines);}
+        SelfTest.Skip=Skip;
         ParticleEmitterSamplingTests.Run(Assert);
         ParticleFalloff.Test(Assert);
         ParticleLighting.Test(Assert);
@@ -556,7 +558,7 @@ public static class ParticleTests
         Assert(nativeSpawn.Simulation.TotalBorn==7&&nativeSpawn.Simulation.Particles.Count==4&&nativeSpawn.Simulation.Particles.All(p=>p.Generation==2),$"Saved and reloaded NiPSysSpawnModifier produces both authored child generations (born {nativeSpawn.Simulation.TotalBorn}, live {nativeSpawn.Simulation.Particles.Count}, generations {string.Join(",",nativeSpawn.Simulation.Particles.Select(p=>p.Generation))})");
         nativeSpawn.Seek(.4);Assert(nativeSpawn.Simulation.Particles.Count==0,"Native spawn fixture terminates after its generation limit");
         string cross=Path.Combine(SelfTest.Mods,@"Anchor MCO Animations v2 - Cloud Fenrir\meshes\magiceffects\FF7Fenrir\CrossSlash_HitFX01.nif");
-        if(File.Exists(cross)){
+        if(!File.Exists(cross))Skip("Cross Slash emitter binding checks: "+SelfTest.Missing(cross));else{
             var n=new Nifcontent_Class_Manolo();n.Load_Manolo(File.ReadAllBytes(cross));
             var crossSystems=n.Blocks.OfType<NiParticleSystem>().Select(ps=>new ParticleNif(n,ps)).ToArray();
             var source=crossSystems.SelectMany(p=>p.BoundEmitterMeshes).First();
@@ -601,7 +603,7 @@ public static class ParticleTests
             Assert(rejected,"Emitter source selection rejects geometry outside the effect NIF");
         }
         string beam=Path.Combine(SelfTest.Mods,@"Anchor MCO Animations v2 - Cloud Fenrir\meshes\magiceffects\FF7Fenrir\Fenrir_BladeBeam.nif");
-        if(File.Exists(beam)){
+        if(!File.Exists(beam))Skip("Anchor Blade Beam multi-target checks: "+SelfTest.Missing(beam));else{
             var n=new Nifcontent_Class_Manolo();n.Load_Manolo(File.ReadAllBytes(beam));var animation=new NifAnimation(n);
             var names=n.Blocks.OfType<NiControllerSequence>().SelectMany(s=>NifAnimation.Items(s.ControlledBlocks))
                 .Where(b=>animation.Block(NifAnimation.Get(b,"Controller")) is NiMultiTargetTransformController)
@@ -613,15 +615,19 @@ public static class ParticleTests
             Assert(!before.SequenceEqual(after),"Anchor Blade Beam multi-target nodes animate between authored times");
             animation.Evaluate(.1);Assert(before.SequenceEqual(nodes.Select(n=>(n.Translation,n.Scale,n.Rotation))),"Anchor Blade Beam multi-target animation reproduces a backward seek");
         }
-        string keyConfig=Path.Combine(Directory.GetParent(projectRoot)!.FullName,@"PluginTemplate\Stances Dynamic Weapon Movesets SE\SKSE\plugins\dtryKeyUtil\config\custom\Stances.ini");
-        var keyAssets=new Assets();
-        keyAssets.External[@"SKSE\plugins\dtryKeyUtil\config\custom\Stances.ini"]=keyConfig;
-        var keyEffects=new Effects(keyAssets,new Records());keyEffects.ReadConfigs();
-        var keyPresses=keyEffects.Triggers.Where(t=>t.Instruction.StartsWith("@APPLYSPELL")).ToArray();
-        var releases=keyEffects.Triggers.Where(t=>t.Instruction.StartsWith("@UNAPPLYSPELL")).ToArray();
-        Assert(keyPresses.Length==5&&releases.Length==5,"Real Stances dtry bindings expose separate press and release triggers");
-        Assert(keyPresses.All(p=>releases.Any(r=>r.Instruction==p.Instruction.Replace("@APPLYSPELL","@UNAPPLYSPELL"))),"Every key release targets the same plugin and spell as its press");
-        Assert(keyEffects.Triggers.All(t=>t.Conditions.Contains("[KeyTrace_EventID_Keyboard]")&&t.Source.EndsWith("Stances.ini")),"Key trigger inspector retains original section, binding, and source");
+        // The Stances mod sits in PluginTemplate beside the source folder, or further up when this is a git worktree.
+        const string stances=@"PluginTemplate\Stances Dynamic Weapon Movesets SE\SKSE\plugins\dtryKeyUtil\config\custom\Stances.ini";
+        string? keyConfig=null;for(var folder=Directory.GetParent(projectRoot);folder!=null&&keyConfig==null;folder=folder.Parent)if(File.Exists(Path.Combine(folder.FullName,stances)))keyConfig=Path.Combine(folder.FullName,stances);
+        if(keyConfig==null)Skip("Real Stances dtry key binding checks: no folder above the source holds "+stances);else{
+            var keyAssets=new Assets();
+            keyAssets.External[@"SKSE\plugins\dtryKeyUtil\config\custom\Stances.ini"]=keyConfig;
+            var keyEffects=new Effects(keyAssets,new Records());keyEffects.ReadConfigs();
+            var keyPresses=keyEffects.Triggers.Where(t=>t.Instruction.StartsWith("@APPLYSPELL")).ToArray();
+            var releases=keyEffects.Triggers.Where(t=>t.Instruction.StartsWith("@UNAPPLYSPELL")).ToArray();
+            Assert(keyPresses.Length==5&&releases.Length==5,"Real Stances dtry bindings expose separate press and release triggers");
+            Assert(keyPresses.All(p=>releases.Any(r=>r.Instruction==p.Instruction.Replace("@APPLYSPELL","@UNAPPLYSPELL"))),"Every key release targets the same plugin and spell as its press");
+            Assert(keyEffects.Triggers.All(t=>t.Conditions.Contains("[KeyTrace_EventID_Keyboard]")&&t.Source.EndsWith("Stances.ini")),"Key trigger inspector retains original section, binding, and source");
+        }
         KeyTriggerTests.Run(Assert);
         LagControllerTests.Run(Assert,fixtureRoot);
         ParticleMeshTransformTests.Run(Assert,fixtureRoot);
@@ -635,7 +641,7 @@ public static class ParticleTests
         TimedExplosionTests.Run(Assert);
         string anchorRoot=Path.Combine(SelfTest.Mods,"Anchor MCO Animations v2 - Cloud Fenrir");
         string anchorPlugin=Path.Combine(anchorRoot,"Anchor spell for MCO.esp");
-        if(File.Exists(anchorPlugin)){
+        if(!File.Exists(anchorPlugin))Skip("Anchor Berserker spell effect checks: "+SelfTest.Missing(anchorPlugin));else{
             var spellAssets=new Assets();
             foreach(var file in Directory.EnumerateFiles(anchorRoot,"*.nif",SearchOption.AllDirectories))
                 spellAssets.External[Assets.Normalize(Path.GetRelativePath(anchorRoot,file))]=file;
@@ -685,7 +691,7 @@ public static class ParticleTests
             Assert(spellEffects.Preview(new("Berserker","@CAST|0x930|Anchor spell for MCO.esp","test"),0).Count==1,"No Hit Effect flag suppresses self-target hit art");
         }
         string weaponEffect=Path.Combine(SelfTest.Mods,@"Anchor MCO Animations v2 - Cloud Fenrir\meshes\magiceffects\greatsword\BerserkerWeapon.nif");
-        if(File.Exists(weaponEffect)){
+        if(!File.Exists(weaponEffect))Skip("Berserker weapon emitter checks: "+SelfTest.Missing(weaponEffect));else{
             var n=new Nifcontent_Class_Manolo();n.Load_Manolo(File.ReadAllBytes(weaponEffect));
             var p=new ParticleNif(n,n.Blocks.OfType<NiParticleSystem>().Single(s=>s.Name.ToString()=="pFlames"));
             p.Seek(.5);
@@ -700,7 +706,7 @@ public static class ParticleTests
         File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"particle-api.txt"),types.SelectMany(t=>new[]{"TYPE "+t.Name}.Concat(t.GetProperties().Select(p=>p.Name+" : "+p.PropertyType.FullName))));
         File.AppendAllLines(Path.Combine(AppContext.BaseDirectory,"particle-api.txt"),typeof(NiGeometryData).GetFields(System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Instance).Select(f=>f.Name+" : "+f.FieldType));
         List<object> systems=[];
-        foreach(var mod in SelfTest.TestMods)foreach(var path in Directory.EnumerateFiles(Path.Combine(SelfTest.Mods,mod),"*.nif",SearchOption.AllDirectories)){
+        foreach(var mod in SelfTest.TestMods)if(!SelfTest.HasMod(mod))Skip("Particle NIF audit: "+SelfTest.Missing(mod));else foreach(var path in Directory.EnumerateFiles(Path.Combine(SelfTest.Mods,mod),"*.nif",SearchOption.AllDirectories)){
             try{
                 var n=new Nifcontent_Class_Manolo();n.Load_Manolo(File.ReadAllBytes(path));
                 foreach(var ps in n.Blocks.OfType<NiParticleSystem>()){

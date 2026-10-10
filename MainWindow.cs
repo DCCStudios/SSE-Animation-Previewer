@@ -99,7 +99,41 @@ public sealed class MainWindow : Form
     ClipEntry? selected;AnimationClip? clip;string? pluginsFile;string? sceneFile;
     readonly List<GameRecord> worn=[];List<EffectCue> cues=[];readonly List<TimedTrigger> manualTriggers=[];readonly List<TimedReferenceEffect> referenceActions=[];int referenceTarget=1;readonly Dictionary<int,(System.Numerics.Vector3 Position,float Heading,bool Follow)> referenceTargets=[];readonly List<string> customModels=[];readonly List<string> effectOverlays=[];string? customSkeleton;
     readonly string settingsPath=Path.Combine(AppContext.BaseDirectory,"session.json");
-    const string Fixture=@"F:\Modlists\NordicSoulsPBR\mods\Cloud FF7 Blade Beam MCO";
+    static readonly string Fixture=Path.Combine(SelfTest.Mods,"Cloud FF7 Blade Beam MCO");
+    // Smoke and tool switches in dispatch order: the local data each needs, how many arguments must follow it, and its log beside the exe.
+    // T vanilla test-data, M the mod folders, G the mod list's game Data folder, S a saved tool session, A the archive fixtures, C the fixture --catalog-test writes.
+    static (string Switch,string Needs,int Arguments,string? Log)[] SmokeModes()=>[
+        ("--weaponart-profile-smoke","S",0,null),("--smp-determinism","T",1,null),("--equipment-smoke",Environment.GetEnvironmentVariable("SSE_EQUIP_SESSION")=="1"?"S":"T",0,@"equipment-smoke\equipment-smoke.txt"),
+        ("--queue-smoke","T",2,@"queue-smoke\queue-smoke.txt"),("--smp-soak","S",1,null),("--dump-annotations","",0,null),("--track-bone","S",2,"track-bone.txt"),("--override-smoke","C",0,@"override-smoke\override-smoke.txt"),
+        ("--docs-capture","",2,null),("--flipbook-smoke","T",1,@"flipbook-smoke\flipbook-smoke.txt"),("--ff7vfx-smoke","S",0,@"ff7vfx-smoke\ff7vfx-smoke.txt"),("--annotation-smoke","T",1,@"annotation-smoke\annotation-smoke.txt"),
+        ("--skeleton-smoke","T",1,@"skeleton-smoke\skeleton-smoke.txt"),("--window-pick-smoke","T",2,@"window-pick-smoke\window-pick-smoke.txt"),("--sound-smoke","GM",0,@"sound-smoke\sound-smoke.txt"),
+        ("--precision-smoke","",2,@"precision-smoke\precision-smoke.txt"),("--frame-smoke","T",1,@"frame-smoke\frame-smoke.txt"),("--hair-smoke","T",0,@"hair-smoke\hair-smoke.txt"),("--smp-smoke","T",0,@"smp-smoke\smp-smoke.txt"),
+        ("--holster-smoke","T",3,"holster-tests.txt"),("--clip-profile","S",2,null),("--mod-sweep","S",1,null),("--sources-recent-smoke","",0,null),("--scene-save-smoke","",0,null),("--scene-dialog-smoke","",0,null),
+        ("--cloud-equipment-smoke","GM",0,"cloud-equipment-tests.txt"),("--bladebeam-smoke","GM",0,"bladebeam-smoke.txt"),("--timing-smoke","TM",0,"timing-smoke.txt"),("--emitter-source-smoke","",0,null),("--refraction-smoke","",0,null),
+        ("--archive-order-smoke",Environment.GetEnvironmentVariable("SSE_ARCHIVE_TEST_ROOT")==null?"A":"",0,"archive-order-render.txt"),("--reference-effect-smoke","GM",0,"reference-effects.txt"),("--remote-cast-smoke","",0,null),
+        ("--camera-smoke","",0,null),("--attachment-smoke","TM",0,"attachment-tests.txt"),("--floor-smoke","",0,null),("--tagfile-smoke","",1,"tagfile-tests.txt"),("--speed-smoke","",2,"speed-tests.txt"),
+        ("--character-smoke","T",0,"character-mount-tests.txt"),("--library-smoke",Environment.GetEnvironmentVariable("SSE_LIBRARY_TEST_ROOT")==null?"M":"",0,null),("--particle-smoke","",0,null),
+        ("--smoke",Environment.GetEnvironmentVariable("SSE_PREVIEW_TEST_DATA")==null?"TM":"M",0,"smoke.txt")];
+    // True when the requested mode cannot start. Missing data is a skip (exit code 0), too few arguments an error (exit code 2).
+    // The reason goes to the mode's log, or to skipped.txt beside the exe when the mode has no fixed log.
+    static bool SmokeBlocked(string[] args)
+    {
+        var mode=SmokeModes().FirstOrDefault(m=>args.Contains(m.Switch));if(mode.Switch==null)return false;
+        int given=args.Skip(Array.IndexOf(args,mode.Switch)+1).Count(a=>!a.StartsWith("--"));
+        string verification=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\verification"));
+        var missing=mode.Needs.Select(need=>need switch{
+            'T' when !SelfTest.HasTestData=>"the vanilla test data (no Skyrim.esm in "+SelfTest.TestData+")",
+            'M' when !SelfTest.HasMods=>"the mod folders (none in "+SelfTest.Mods+", set SSE_TEST_MODS to their root)",
+            'G' when !Directory.Exists(SelfTest.GameData)=>"the game Data folder "+SelfTest.GameData,
+            'S' when !File.Exists(ToolSessionPath())=>"a saved session at "+ToolSessionPath()+" (SSE_SESSION_FILE names another)",
+            'A' when !Directory.Exists(Path.Combine(verification,"archive-fixtures"))=>"the archive fixtures in "+Path.Combine(verification,"archive-fixtures"),
+            'C' when !Directory.Exists(Path.Combine(verification,"catalog-fixture"))=>"the catalog fixture in "+Path.Combine(verification,"catalog-fixture")+" (run --catalog-test first)",
+            _=>null}).Where(reason=>reason!=null).ToArray();
+        string? message=given<mode.Arguments?$"FAILED: {mode.Switch} needs {mode.Arguments} argument{(mode.Arguments==1?"":"s")} after it and got {given}":missing.Length>0?$"SKIPPED: {mode.Switch} needs "+string.Join(" and ",missing):null;
+        if(message==null)return false;
+        string file=Path.Combine(AppContext.BaseDirectory,mode.Log??"skipped.txt");Directory.CreateDirectory(Path.GetDirectoryName(file)!);File.WriteAllText(file,message+Environment.NewLine);
+        Console.Error.WriteLine(message);Environment.ExitCode=message.StartsWith("SKIPPED")?0:2;return true;
+    }
     static RichTextBox TextPanel()=>new(){Dock=DockStyle.Fill,ReadOnly=true,BorderStyle=BorderStyle.None,WordWrap=true,Font=new Font("Consolas",10)};
     // --background or SSE_PREVIEW_BACKGROUND=1. Set by Program before the window exists.
     internal static bool Background;
@@ -203,7 +237,7 @@ public sealed class MainWindow : Form
         timer.Tick+=(_,_)=>TickPlayback();timer.Start();
         KeyDown+=(_,e)=>{if(e.KeyCode==Keys.Space && ActiveControl is not TextBox and not RichTextBox and not ComboBox){TogglePlay();e.Handled=true;}};
         FormClosed+=(_,_)=>{timer.Stop();timer.Dispose();sceneMenu?.Dispose();scene.Dispose();viewport.Clean();};
-        Shown+=async(_,_)=>{if(args.Contains("--weaponart-profile-smoke")){await WeaponArtProfile();return;}if(args.Contains("--smp-determinism")){await SmpDeterminism(args.Skip(Array.IndexOf(args,"--smp-determinism")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--equipment-smoke")){await EquipmentSmoke(args.Skip(Array.IndexOf(args,"--equipment-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--queue-smoke")){await QueueSmoke(args.Skip(Array.IndexOf(args,"--queue-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-soak")){await SmpSoak(args.Skip(Array.IndexOf(args,"--smp-soak")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--dump-annotations")){DumpAnnotations(args.Skip(Array.IndexOf(args,"--dump-annotations")+1).Where(x=>!x.StartsWith("--")).ToArray());Close();return;}if(args.Contains("--track-bone")){await TrackBone(args.Skip(Array.IndexOf(args,"--track-bone")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--override-smoke")){await OverrideSmoke();return;}if(args.Contains("--docs-capture")){await DocsCapture(args.Skip(Array.IndexOf(args,"--docs-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--flipbook-smoke")){await FlipbookSmoke(args.Skip(Array.IndexOf(args,"--flipbook-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--ff7vfx-smoke")){await Ff7VfxSmoke();return;}if(args.Contains("--annotation-smoke")){await AnnotationSmoke(args[Array.IndexOf(args,"--annotation-smoke")+1]);return;}if(args.Contains("--skeleton-smoke")){await SkeletonSmoke(args[Array.IndexOf(args,"--skeleton-smoke")+1]);return;}if(args.Contains("--window-pick-smoke")){int j=Array.IndexOf(args,"--window-pick-smoke");await WindowPickSmoke(args[j+1],args[j+2]);return;}if(args.Contains("--sound-smoke")){await SoundSmoke();return;}if(args.Contains("--precision-smoke")){await PrecisionSmoke(args.Skip(Array.IndexOf(args,"--precision-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frame-smoke")){await FrameSmoke(args[Array.IndexOf(args,"--frame-smoke")+1]);return;}if(args.Contains("--hair-smoke")){await HairSmoke(args.Skip(Array.IndexOf(args,"--hair-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-smoke")){await SmpSmoke(args.Skip(Array.IndexOf(args,"--smp-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--holster-smoke")){await HolsterSmoke(args[Array.IndexOf(args,"--holster-smoke")+1],args[Array.IndexOf(args,"--holster-smoke")+2],args[Array.IndexOf(args,"--holster-smoke")+3]);return;}if(args.Contains("--clip-profile")){await ClipProfile(args[Array.IndexOf(args,"--clip-profile")+1],args[Array.IndexOf(args,"--clip-profile")+2]);return;}if(args.Contains("--mod-sweep")){await ModSweep(args[Array.IndexOf(args,"--mod-sweep")+1]);return;}if(args.Contains("--sources-recent-smoke")){await SourcesRecentSmoke();return;}if(args.Contains("--scene-save-smoke")){await SceneSaveSmoke();return;}if(args.Contains("--scene-dialog-smoke")){await SceneDialogSmoke();return;}if(args.Contains("--cloud-equipment-smoke")){await CloudEquipmentSmoke();return;}if(args.Contains("--bladebeam-smoke")){await BladeBeamSmoke();return;}if(args.Contains("--timing-smoke")){await TimingSmoke();return;}if(args.Contains("--emitter-source-smoke")){await EmitterSourceSmoke();return;}if(args.Contains("--refraction-smoke")){await RefractionSmoke();return;}if(args.Contains("--archive-order-smoke")){await ArchiveOrderSmoke();return;}if(args.Contains("--reference-effect-smoke")){await ReferenceEffectSmoke();return;}if(args.Contains("--remote-cast-smoke")){await RemoteCastSmoke();return;}if(args.Contains("--camera-smoke")){await CameraSmoke();return;}if(args.Contains("--attachment-smoke")){await AttachmentSmoke();return;}if(args.Contains("--floor-smoke")){await FloorSmoke();return;}if(args.Contains("--tagfile-smoke")){await TagfileSmoke(args[Array.IndexOf(args,"--tagfile-smoke")+1]);return;}if(args.Contains("--speed-smoke")){await SpeedSmoke(args[Array.IndexOf(args,"--speed-smoke")+1],args[Array.IndexOf(args,"--speed-smoke")+2]);return;}if(args.Contains("--character-smoke")){await CharacterSmoke();return;}if(args.Contains("--library-smoke")){await LibrarySmoke();return;}if(args.Contains("--particle-smoke")){await ParticleSmoke();return;}if(args.Contains("--smoke")){await Smoke();return;}int i=Array.IndexOf(args,"--data");if(i>=0 && args.Length>i+1)await Mount(args[i+1],false);};
+        Shown+=async(_,_)=>{if(SmokeBlocked(args)){Close();return;}if(args.Contains("--weaponart-profile-smoke")){await WeaponArtProfile();return;}if(args.Contains("--smp-determinism")){await SmpDeterminism(args.Skip(Array.IndexOf(args,"--smp-determinism")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--equipment-smoke")){await EquipmentSmoke(args.Skip(Array.IndexOf(args,"--equipment-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--queue-smoke")){await QueueSmoke(args.Skip(Array.IndexOf(args,"--queue-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-soak")){await SmpSoak(args.Skip(Array.IndexOf(args,"--smp-soak")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--dump-annotations")){DumpAnnotations(args.Skip(Array.IndexOf(args,"--dump-annotations")+1).Where(x=>!x.StartsWith("--")).ToArray());Close();return;}if(args.Contains("--track-bone")){await TrackBone(args.Skip(Array.IndexOf(args,"--track-bone")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--override-smoke")){await OverrideSmoke();return;}if(args.Contains("--docs-capture")){await DocsCapture(args.Skip(Array.IndexOf(args,"--docs-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--flipbook-smoke")){await FlipbookSmoke(args.Skip(Array.IndexOf(args,"--flipbook-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--ff7vfx-smoke")){await Ff7VfxSmoke();return;}if(args.Contains("--annotation-smoke")){await AnnotationSmoke(args[Array.IndexOf(args,"--annotation-smoke")+1]);return;}if(args.Contains("--skeleton-smoke")){await SkeletonSmoke(args[Array.IndexOf(args,"--skeleton-smoke")+1]);return;}if(args.Contains("--window-pick-smoke")){int j=Array.IndexOf(args,"--window-pick-smoke");await WindowPickSmoke(args[j+1],args[j+2]);return;}if(args.Contains("--sound-smoke")){await SoundSmoke();return;}if(args.Contains("--precision-smoke")){await PrecisionSmoke(args.Skip(Array.IndexOf(args,"--precision-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frame-smoke")){await FrameSmoke(args[Array.IndexOf(args,"--frame-smoke")+1]);return;}if(args.Contains("--hair-smoke")){await HairSmoke(args.Skip(Array.IndexOf(args,"--hair-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-smoke")){await SmpSmoke(args.Skip(Array.IndexOf(args,"--smp-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--holster-smoke")){await HolsterSmoke(args[Array.IndexOf(args,"--holster-smoke")+1],args[Array.IndexOf(args,"--holster-smoke")+2],args[Array.IndexOf(args,"--holster-smoke")+3]);return;}if(args.Contains("--clip-profile")){await ClipProfile(args[Array.IndexOf(args,"--clip-profile")+1],args[Array.IndexOf(args,"--clip-profile")+2]);return;}if(args.Contains("--mod-sweep")){await ModSweep(args[Array.IndexOf(args,"--mod-sweep")+1]);return;}if(args.Contains("--sources-recent-smoke")){await SourcesRecentSmoke();return;}if(args.Contains("--scene-save-smoke")){await SceneSaveSmoke();return;}if(args.Contains("--scene-dialog-smoke")){await SceneDialogSmoke();return;}if(args.Contains("--cloud-equipment-smoke")){await CloudEquipmentSmoke();return;}if(args.Contains("--bladebeam-smoke")){await BladeBeamSmoke();return;}if(args.Contains("--timing-smoke")){await TimingSmoke();return;}if(args.Contains("--emitter-source-smoke")){await EmitterSourceSmoke();return;}if(args.Contains("--refraction-smoke")){await RefractionSmoke();return;}if(args.Contains("--archive-order-smoke")){await ArchiveOrderSmoke();return;}if(args.Contains("--reference-effect-smoke")){await ReferenceEffectSmoke();return;}if(args.Contains("--remote-cast-smoke")){await RemoteCastSmoke();return;}if(args.Contains("--camera-smoke")){await CameraSmoke();return;}if(args.Contains("--attachment-smoke")){await AttachmentSmoke();return;}if(args.Contains("--floor-smoke")){await FloorSmoke();return;}if(args.Contains("--tagfile-smoke")){await TagfileSmoke(args[Array.IndexOf(args,"--tagfile-smoke")+1]);return;}if(args.Contains("--speed-smoke")){await SpeedSmoke(args[Array.IndexOf(args,"--speed-smoke")+1],args[Array.IndexOf(args,"--speed-smoke")+2]);return;}if(args.Contains("--character-smoke")){await CharacterSmoke();return;}if(args.Contains("--library-smoke")){await LibrarySmoke();return;}if(args.Contains("--particle-smoke")){await ParticleSmoke();return;}if(args.Contains("--smoke")){await Smoke();return;}int i=Array.IndexOf(args,"--data");if(i>=0 && args.Length>i+1)await Mount(args[i+1],false);};
     }
     void BuildUi()
     {
@@ -1401,7 +1435,7 @@ public sealed class MainWindow : Form
             var decoded=AnimationClip.Load(bytes);
             log.Add($"decoded: {decoded.Duration:F4} s, {decoded.Frames} frames, {decoded.Tracks} tracks, {decoded.Events.Count} annotations; packfile {packfile.Length:N0} bytes from tagfile {bytes.Length:N0}");
             Check(decoded.Tracks>0&&decoded.Frames>1&&decoded.Duration>0&&(Math.Abs(decoded.Duration-(decoded.Frames-1)/30.0)<.02||Math.Abs(decoded.Duration-decoded.Frames/30.0)<.02),"Converted clip decodes with a 30 fps frame count matching its duration");
-            string testData=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data"));
+            string testData=SelfTest.TestData;
             if(!Directory.Exists(Path.Combine(testData,"meshes"))){log.Add("SKIP posed render: test-data fixture is not present");return;}
             await Mount(testData,false);DropFiles([file]);await Task.Delay(300);
             Check(clip!=null&&selected!=null&&selected.Path.Equals(Path.GetFullPath(file),StringComparison.OrdinalIgnoreCase),"Dropped tagfile is selected and decoded in the library");
@@ -1478,7 +1512,7 @@ public sealed class MainWindow : Form
             combo.CommitSelection();Check(cameraSubject.SelectedIndex==2,"Committing with no visible entry keeps the selection");
             var raceCombo=(SearchableComboBox)races;raceCombo.OpenPopup();raceCombo.SetFilter("");using(var open=raceCombo.CapturePopup())open?.Save(Path.Combine(AppContext.BaseDirectory,"floor-dropdown-open.png"));raceCombo.CommitSelection();
             using(var window=new Bitmap(Width,Height)){DrawToBitmap(window,new Rectangle(Point.Empty,Size));window.Save(Path.Combine(AppContext.BaseDirectory,"floor-window.png"));}
-            string testData=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data"));
+            string testData=SelfTest.TestData;
             if(Directory.Exists(Path.Combine(testData,"meshes"))){
                 await Mount(testData,false);await Mount(root,true);clock.Pause();
                 Check(sources.Items.OfType<SourceEntry>().Count(e=>e.Folder)==2&&((SourceEntry)sources.Items[0]).Path.Equals(testData,StringComparison.OrdinalIgnoreCase),"Sources list orders the base folder before the mod folder");
@@ -1622,7 +1656,7 @@ public sealed class MainWindow : Form
     {
         var log=new List<string>();
         try{
-            await Mount(@"F:\Modlists\NordicSoulsPBR\Game Root\Data",false);
+            await Mount(SelfTest.GameData,false);
             await Mount(Path.Combine(SelfTest.Mods,"Anchor MCO Animations v2 - Cloud Fenrir"),true);
             var impactCatalog=ImpactEffects.Catalog(records,assets);File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"impact-catalog.txt"),string.Join("\n\n",impactCatalog.Select(e=>e.Details)));
             var impactEntry=impactCatalog.Single(e=>e.Record.EditorId=="MAGFireSpellmpactROCKS01");
@@ -1745,7 +1779,7 @@ public sealed class MainWindow : Form
         var log=new List<string>();
         void Check(bool condition,string text){log.Add((condition?"PASS ":"FAIL ")+text);if(!condition)throw new InvalidDataException(text);}
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             await Mount(Fixture,true);
             string fixtures=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\particle-fixtures"));
             await assets.Mount(fixtures,true,new Progress<string>());
@@ -2000,7 +2034,7 @@ public sealed class MainWindow : Form
     async Task CharacterSmoke()
     {
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             clock.Pause();clip=null;scene.Clip=null;
             if(Environment.GetEnvironmentVariable("SSE_CHARACTER_TEST_SEX")=="female")sex.SelectedIndex=1;
             var cuirass=records.Of("ARMO").Single(r=>r.EditorId=="ArmorIronCuirass");
@@ -2037,7 +2071,7 @@ public sealed class MainWindow : Form
         var log=new List<string>();void Check(bool value,string message){log.Add((value?"PASS ":"FAIL ")+message);if(!value)throw new InvalidDataException(message);}
         try{
             pluginsFile=null;
-            await Mount(@"F:\Modlists\NordicSoulsPBR\Game Root\Data",false);
+            await Mount(SelfTest.GameData,false);
             await Mount(Path.Combine(SelfTest.Mods,"Just4u.FF7RE_Cloud_Strife-SE (1)"),true);
             await Mount(Path.Combine(SelfTest.Mods,"FF7 Cloud Animations"),true);
             Check(!records.Of("RACE").Any(r=>r.Plugin.StartsWith("Just4u.",StringComparison.OrdinalIgnoreCase)),"Cloud equipment plugin has no RACE records to populate");
@@ -2152,7 +2186,7 @@ public sealed class MainWindow : Form
     {
         var log=new List<string>();
         try{
-            await Mount(@"F:\Modlists\NordicSoulsPBR\Game Root\Data",false);await Mount(Path.Combine(SelfTest.Mods,"Anchor MCO Animations v2 - Cloud Fenrir"),true);
+            await Mount(SelfTest.GameData,false);await Mount(Path.Combine(SelfTest.Mods,"Anchor MCO Animations v2 - Cloud Fenrir"),true);
             var entry=assets.Clips.Single(c=>c.Path.EndsWith(@"9901106\mco_powerattack1.hkx",StringComparison.OrdinalIgnoreCase));await SelectClip(entry);clock.Pause();
             log.Add(entry.Path);log.AddRange(cues.Select(c=>$"{c.Time:F6}: {c.Model} | {c.Origin}"));log.AddRange(effects.Diagnostics);
             foreach(double time in new[]{.2,.65,1d,1.6}){
@@ -2240,7 +2274,7 @@ public sealed class MainWindow : Form
         var log=new List<string>();
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             var blade=records.Of("WEAP").First(w=>w.EditorId=="IronGreatsword");weapons.SelectedItem=blade;string holster=Records.WeaponHolsterNode(blade)!;
             followCamera.Checked=false;scene.FollowScene=false;
             async Task<(string Bone,OpenTK.Mathematics.Matrix4 Transform)> At(double time,string? capture=null){
@@ -2288,7 +2322,7 @@ public sealed class MainWindow : Form
             // SSE_EQUIP_SESSION=1 starts from the live session (its mods, race and armor) instead of the vanilla test data.
             bool live=Environment.GetEnvironmentVariable("SSE_EQUIP_SESSION")=="1";
             if(live)await ApplySettings(JsonSerializer.Deserialize<SessionSettings>(File.ReadAllText(ToolSessionPath()))! with {Queue=[],QueuePlaying=false,SmpPhysics=Environment.GetEnvironmentVariable("SSE_EQUIP_PHYSICS")=="1"});
-            else await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            else await Mount(SelfTest.TestData,false);
             followCamera.Checked=false;scene.FollowScene=false;
             log.Add($"start: weight box {weight.Value}, scene {scene.Weight}, {scene.WeightedShapes} blended shapes, worn {string.Join(", ",worn.Select(w=>w.EditorId))}");
             foreach(string d in scene.Diagnostics.Where(d=>d.Contains("weight",StringComparison.OrdinalIgnoreCase)))log.Add("diagnostic: "+d);
@@ -2362,7 +2396,7 @@ public sealed class MainWindow : Form
         var log=new List<string>();string output=Path.Combine(AppContext.BaseDirectory,"queue-smoke");Directory.CreateDirectory(output);
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             followCamera.Checked=false;scene.FollowScene=false;gridFloor.Checked=true;cameraSubject.SelectedIndex=1;
             Check(queueBlend.Value==.3m&&queueAtWindow.Checked&&queueWindowEvent.SelectedItem as string=="MCO_WinOpen","Blend defaults to 0.30 s and hand-over to MCO_WinOpen");
             queueAtWindow.Checked=false;
@@ -2682,7 +2716,7 @@ public sealed class MainWindow : Form
         string Mod(string name)=>Path.Combine(SelfTest.Mods,name);
         try{
             soundPlayer.Offline=true;pluginsFile=null;
-            await Mount(@"F:\Modlists\NordicSoulsPBR\Game Root\Data",false);
+            await Mount(SelfTest.GameData,false);
             await Mount(Mod("ADXP I MCO I BFCO NPC BattleAxe (2HW) Moveset - SCAR 2.0"),true);
             await Mount(Mod("FF7 Cloud Animations"),true);
             followCamera.Checked=false;scene.FollowScene=false;
@@ -2897,7 +2931,7 @@ public sealed class MainWindow : Form
         var log=new List<string>();string output=Path.Combine(AppContext.BaseDirectory,"flipbook-smoke");Directory.CreateDirectory(output);
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             await Mount(arguments[0],true);
             followCamera.Checked=false;scene.FollowScene=false;
             foreach(string nif in arguments.Skip(1)){
@@ -3026,7 +3060,7 @@ public sealed class MainWindow : Form
         var log=new List<string>();string output=Path.Combine(AppContext.BaseDirectory,"annotation-smoke");Directory.CreateDirectory(output);
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             followCamera.Checked=false;scene.FollowScene=false;
             DropFiles([clipPath]);await Task.Delay(400);clock.Pause();
             inspectorTabs!.SelectedIndex=1;await Task.Delay(150);
@@ -3071,7 +3105,7 @@ public sealed class MainWindow : Form
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         void Capture(string name){viewport.InvalidateRender();using var image=viewport.CaptureBitmap();image.Save(Path.Combine(output,name+".png"));}
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             followCamera.Checked=false;scene.FollowScene=false;showSkeleton.Checked=false;showBoneNames.Checked=false;scene.BoneFilter.Clear();
             DropFiles([clipPath]);await Task.Delay(400);clock.Pause();double at=clock.Duration*.4;clock.Seek(at);scene.SetTime(at);cameraSubject.SelectedIndex=1;scene.Frame();
             Capture("off");
@@ -3121,7 +3155,7 @@ public sealed class MainWindow : Form
         var log=new List<string>();string output=Path.Combine(AppContext.BaseDirectory,"window-pick-smoke");Directory.CreateDirectory(output);
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             followCamera.Checked=false;scene.FollowScene=false;queueAtWindow.Checked=true;queueWindowEvent.SelectedItem="MCO_WinOpen";
             // No installed clip has two distinct MCO_WinOpen times, so the fixture is a copy of an MCO clip whose
             // MCO_WinClose annotation is renamed MCO_WinOpen: a second window, later in the clip.
@@ -3164,7 +3198,7 @@ public sealed class MainWindow : Form
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         bool OnFrame(double t)=>Math.Abs(t*clock.SourceFps-Math.Round(t*clock.SourceFps))<1e-6;
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             DropFiles([clipPath]);await Task.Delay(400);
             Check(clip!=null,"Clip loaded: "+clipPath);
             clock.Pause();fps.Value=30;snapFrames.Checked=false;
@@ -3220,7 +3254,7 @@ public sealed class MainWindow : Form
         var log=new List<string>();string output=Path.Combine(AppContext.BaseDirectory,"hair-smoke");Directory.CreateDirectory(output);
         void Check(bool ok,string message){log.Add((ok?"PASS ":"FAIL ")+message);if(!ok)throw new InvalidDataException(message);}
         try{
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+            await Mount(SelfTest.TestData,false);
             foreach(string folder in folders)await Mount(folder,true);
             followCamera.Checked=false;scene.FollowScene=false;smpPhysics.Checked=false;cameraSubject.SelectedIndex=1;
             bool Modded(GameRecord r)=>!r.Plugin.Equals("Skyrim.esm",StringComparison.OrdinalIgnoreCase);
@@ -3286,7 +3320,7 @@ public sealed class MainWindow : Form
     // SSE_SMP_FEMALE adjust the choice.
     async Task EquipPhysicsScene(string[] arguments,List<string> log)
     {
-        await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);
+        await Mount(SelfTest.TestData,false);
         foreach(string folder in arguments.Skip(1))await Mount(folder,true);
         followCamera.Checked=false;scene.FollowScene=false;smpPhysics.Checked=false;
         bool female=Environment.GetEnvironmentVariable("SSE_SMP_FEMALE")=="1";if(female){selecting=true;sex.SelectedIndex=1;selecting=false;}
@@ -3643,7 +3677,7 @@ public sealed class MainWindow : Form
             log.Add($"PASS elapsed={elapsed:F6}s playback={clock.Absolute:F6}s presented={frames.Count}; minimum presentation interval={gaps.Min():F6}s; step FPS=1.");
             log.Add("PASS Distinct scene times continue between stepping frames; wall-clock speed and the 60 FPS presentation cap are independent.");
             File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"timing-frames.csv"),new[]{"wall_seconds,scene_seconds"}.Concat(frames.Select(f=>FormattableString.Invariant($"{f.Wall:F9},{f.Time:F9}"))));
-            await Mount(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);await Mount(Fixture,true);
+            await Mount(SelfTest.TestData,false);await Mount(Fixture,true);
             await SelectClip(assets.Clips.First(c=>c.Name.Equals("mco_attack1.hkx",StringComparison.OrdinalIgnoreCase)));clock.Pause();viewport.PlayingAnimation=false;scene.RootMotion=false;scene.ShowEffects=false;followCamera.Checked=false;scene.FollowScene=false;
             clock.Seek(.1);scene.SetTime(.1);scene.Frame();await Task.Delay(300);
             var beforeBones=viewport.Model.meshes.SelectMany(m=>m.MeshData.Meshgeometry.GPUBoneMatrices??[]).ToArray();
@@ -3727,7 +3761,7 @@ public sealed class MainWindow : Form
     }
     async Task Smoke()
     {
-        try {await Mount(Environment.GetEnvironmentVariable("SSE_PREVIEW_TEST_DATA")??Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,@"..\..\..\..\test-data")),false);await Mount(Fixture,true);var first=assets.Clips.First(c=>c.Name.Equals("mco_attack1.hkx",StringComparison.OrdinalIgnoreCase));await SelectClip(first);clock.Pause();clock.Seek(.72);scene.SetTime(.72);viewport.camera.FocusPosition=new OpenTK.Mathematics.Vector3(0,290,90);viewport.camera.distance=500;viewport.camera.Rotate(75,15);viewport.UpdateProjection(true);
+        try {await Mount(Environment.GetEnvironmentVariable("SSE_PREVIEW_TEST_DATA")??SelfTest.TestData,false);await Mount(Fixture,true);var first=assets.Clips.First(c=>c.Name.Equals("mco_attack1.hkx",StringComparison.OrdinalIgnoreCase));await SelectClip(first);clock.Pause();clock.Seek(.72);scene.SetTime(.72);viewport.camera.FocusPosition=new OpenTK.Mathematics.Vector3(0,290,90);viewport.camera.distance=500;viewport.camera.Rotate(75,15);viewport.UpdateProjection(true);
             var capture=new System.Windows.Forms.Timer{Interval=1800};capture.Tick+=(_,_)=>{capture.Stop();File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"scene-debug.txt"),string.Join("\n",viewport.Model.meshes.Select(m=>$"{m.MeshData.Shape.ShapeName} hidden={m.MeshData.Shape.RenderHide} alpha={m.MeshData.Material.MaterialBase.Alpha} transform={m.MeshData.Transform} diffuse={m.MeshData.Material.DiffuseTexture_ID} paths={string.Join(",",m.MeshData.Material.Textures_Path_List)}"))+" textures="+string.Join(";",viewport.Model.Textures_Dictionary.Select(t=>$"{t.Key}:{t.Value.Loaded}")));File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"loaded-modules.txt"),Process.GetCurrentProcess().Modules.Cast<ProcessModule>().Select(m=>m.FileName));using var bmp=viewport.CaptureBitmap();bmp.Save(Path.Combine(AppContext.BaseDirectory,"smoke.png"));File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"smoke.txt"),$"clips={assets.Clips.Count}\nrecords={records.All.Count}\ncues={cues.Count}\nmeshes={viewport.Model.meshes.Count}\n{diagnostics.Text}");capture.Dispose();Close();};capture.Start();
         }catch(Exception ex){ShowError(ex);Close();}
     }
