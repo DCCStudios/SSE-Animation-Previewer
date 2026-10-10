@@ -34,10 +34,11 @@ Renders the pictures used in these pages: a Nord in iron armour with an iron bat
 
 ## Built-in checks
 
-These run a feature against fixtures and write a pass/fail log beside the exe. Most expect the source tree's folder layout, and several expect a local `test-data` folder of vanilla assets, which is not in the repository. See [Building](building.md).
+These run a feature against fixtures and write a pass/fail log beside the exe. They expect the source tree's folder layout. `--ci-test` runs everything that needs only the files in the repository. Many of the others need a local `test-data` folder of vanilla assets or a folder of mods, and report `SKIPPED` when those are missing. See [Building](building.md).
 
 | Switch | Covers |
 |---|---|
+| `--ci-test` | The three suites below in one run, with a summary in `ci-test.txt`. Exit code 0 only if all pass. |
 | `--particle-test` | Particle simulation, effect resolution, speed maps and annotation activity (unit tests, no window) |
 | `--catalog-test` | OAR and DAR library reading and the override lookup |
 | `--smp-test` | HDT-SMP XML reading and solver setup |
@@ -49,4 +50,4 @@ These run a feature against fixtures and write a pass/fail log beside the exe. M
 | `--flipbook-smoke <mod folder> <nifs>` | Sub-texture sheet sampling |
 | `--camera-smoke`, `--floor-smoke` | Camera following and zoom, grid floor |
 
-A run that fails exits with code 1 and names the failed check in its log.
+A run that fails exits with code 1 and names the failed check in its log. A switch given too few arguments exits with code 2 and says how many it needs.
