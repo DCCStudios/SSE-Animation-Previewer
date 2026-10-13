@@ -136,10 +136,25 @@ public sealed class MainWindow : Form
     }
     static RichTextBox TextPanel()=>new(){Dock=DockStyle.Fill,ReadOnly=true,BorderStyle=BorderStyle.None,WordWrap=true,Font=new Font("Consolas",10)};
     // --background or SSE_PREVIEW_BACKGROUND=1. Set by Program before the window exists.
-    internal static bool Background;
+    // Background: off-screen, out of the taskbar, never activated. NoActivate: shown without taking the focus, which
+    // every background run is, and an on-screen window can be.
+    internal static bool Background,NoActivate;
     [System.Runtime.InteropServices.DllImport("user32.dll")]static extern IntPtr GetForegroundWindow();
-    protected override bool ShowWithoutActivation=>Background;
-    protected override CreateParams CreateParams{get{var p=base.CreateParams;if(Background)p.ExStyle|=0x08000000|0x00000080;return p;}} // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+    [System.Runtime.InteropServices.DllImport("user32.dll")]static extern bool SetForegroundWindow(IntPtr window);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]static extern bool IsWindow(IntPtr window);
+    // The window that had the focus when the program started. The program that launches a process can make its first
+    // window activate whatever the window asks for, so a no-activate start that ends up in front hands the focus back
+    // here. It does so for the first activations only: after that the user has chosen the window.
+    internal static IntPtr FocusBefore;int handBacks=3;readonly System.Diagnostics.Stopwatch sinceStart=System.Diagnostics.Stopwatch.StartNew();
+    internal static IntPtr ForegroundNow()=>GetForegroundWindow();
+    void HandFocusBack(){if(NoActivate&&handBacks>0&&sinceStart.ElapsedMilliseconds<4000&&FocusBefore!=IntPtr.Zero&&FocusBefore!=Handle&&IsWindow(FocusBefore)&&GetForegroundWindow()==Handle){handBacks--;SetForegroundWindow(FocusBefore);}}
+    protected override void OnShown(EventArgs e){base.OnShown(e);LogFocus("shown");HandFocusBack();}
+    // SSE_PREVIEW_FOCUS_LOG=<file> records when the window is shown and each time it is activated, so a test can tell
+    // that a start left the focus alone without watching the desktop.
+    void LogFocus(string what){if(Environment.GetEnvironmentVariable("SSE_PREVIEW_FOCUS_LOG") is {Length:>0} file)try{File.AppendAllText(file,$"{sinceStart.ElapsedMilliseconds} ms {what}; background={Background}; no-activate={NoActivate}; active form={ReferenceEquals(ActiveForm,this)}; owned={Owner!=null}{Environment.NewLine}"+(what=="activated"&&Environment.GetEnvironmentVariable("SSE_PREVIEW_FOCUS_TRACE")=="1"?string.Join(Environment.NewLine,Environment.StackTrace.Split((char)10).Where(l=>l.Contains("SSEPreview")||l.Contains("FO4_Base")||l.Contains("System.Windows.Forms.Form.")||l.Contains("NativeWindow.Callback")).Take(14).Select(l=>"        "+l.Trim()))+Environment.NewLine:""));}catch(IOException){}catch(UnauthorizedAccessException){}}
+    protected override bool ShowWithoutActivation=>NoActivate;
+    // Background mode: WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, so the window can never come to the front.
+    protected override CreateParams CreateParams{get{var p=base.CreateParams;if(Background)p.ExStyle|=0x08000000|0x00000080;return p;}}
     static ComboBox Combo()=>new SearchableComboBox{Width=310,DropDownHeight=330,IntegralHeight=false};
     public MainWindow(string[] args)
     {
@@ -157,12 +172,20 @@ public sealed class MainWindow : Form
             // never activated, so test and tool runs do not cover or steal focus from whatever the user is doing.
             ShowInTaskbar=false;StartPosition=FormStartPosition.Manual;Location=new(-32000,-32000);
         }
+        // An on-screen start that must not take the focus: the window is owned by a form that is never shown. The
+        // program that launches a process can make its first unowned window open activated whatever that window asks
+        // for (the start-up show command), and an owned window is not subject to that. It keeps its taskbar button.
+        if(NoActivate&&!Background)Owner=new Form{ShowInTaskbar=false};
         Text="SSE Animation Previewer "+Application.ProductVersion;Size=new(1580,1000);MinimumSize=new(1150,750);StartPosition=Background?FormStartPosition.Manual:FormStartPosition.CenterScreen;KeyPreview=true;
         scene=new(assets,viewport,records);viewport.FrameRequested=scene.Frame;effects=new(assets,records);BuildUi();Theme(this);viewport.MaximumPresentationFps=60;
         scene.FollowScene=followCamera.Checked;scene.FramingSubject=(Scene.FrameSubject)cameraSubject.SelectedIndex;scene.ShowFloor=gridFloor.Checked;
         UpdateCameraHint();
         requireAlt.CheckedChanged+=(_,_)=>{viewport.RequireAlt=requireAlt.Checked;preferences.RequireAlt=requireAlt.Checked;UpdateCameraHint();SavePreferences();};
         FormClosing+=(_,_)=>SavePreferences();
+        // Windows activates a window once while WinForms destroys its child windows one by one. A background run has
+        // written its results by the time it closes, so it ends the process there and leaves the windows to the system,
+        // which destroys them without activating any.
+        FormClosed+=(_,_)=>{if(Background)Environment.Exit(Environment.ExitCode);};
         gridFloor.CheckedChanged+=(_,_)=>{scene.ShowFloor=gridFloor.Checked;if(!busy&&!selecting)SaveSession();};
         showWeapon.CheckedChanged+=(_,_)=>{scene.ShowWeapon=showWeapon.Checked;if(!busy&&!selecting)SaveSession();};
         sheathed.CheckedChanged+=(_,_)=>{scene.Sheathed=sheathed.Checked;UpdateHolsterLabel();scene.SetTime(clock.Time);if(!busy&&!selecting)SaveSession();};
@@ -840,7 +863,7 @@ public sealed class MainWindow : Form
         picks[QueueWindowName(slot,window)]=choice;RefreshQueue();QueueChanged();
     }
     // Coming back to the window (after a re-export) redraws the queue, so changed window annotations show at once.
-    protected override void OnActivated(EventArgs e){base.OnActivated(e);queueList.Invalidate();}
+    protected override void OnActivated(EventArgs e){base.OnActivated(e);queueList.Invalidate();LogFocus("activated");HandFocusBack();}
     void SetQueueDragState(int dragging,int dropLine)
     {
         if(dragging==queueDragging&&dropLine==queueDropLine)return;
@@ -2035,6 +2058,9 @@ public sealed class MainWindow : Form
             Check(Math.Abs(viewport.camera.distance-allDistance)<.01,"Character framing falls back to the complete scene when no character is loaded");
             cameraSubject.SelectedIndex=2;
             Check(scene.FramingSubject==Scene.FrameSubject.Effects&&scene.ParticleCount==90,"Effect framing selects the effect subject without changing playback");
+            log.Add($"window: background={Background}; no-activate={NoActivate}; visible={Visible}; location={Location}; in taskbar={ShowInTaskbar}; foreground={GetForegroundWindow()==Handle}");
+            if(Background)Check(Visible&&!ShowInTaskbar&&Location.X<-10000&&GetForegroundWindow()!=Handle,"A run started with a tool switch is off-screen, out of the taskbar and not the foreground window");
+            else if(NoActivate)Check(Visible&&Location.X>-10000&&GetForegroundWindow()!=Handle,"With --no-activate the window is on screen and did not take the focus");
         }catch(Exception ex){ShowError(ex);Environment.ExitCode=1;}
         finally{try{File.WriteAllLines(Path.Combine(AppContext.BaseDirectory,"camera-tests.txt"),log);}finally{Close();}}
     }

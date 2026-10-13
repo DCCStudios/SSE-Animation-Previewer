@@ -5,7 +5,7 @@ namespace SSEPreview;
 internal static class Program
 {
     // Every switch the program answers to. ParticleTests checks this against the source.
-    internal static readonly HashSet<string> Switches=new(StringComparer.Ordinal){"--annotation-smoke","--archive-order-smoke","--attachment-smoke","--attack-effect-inspect","--background","--bfco-smoke","--billboard-test","--bladebeam-smoke","--camera-smoke","--catalog-test","--character-smoke","--ci-test","--clip-profile","--cloud-effect-alpha-smoke","--cloud-equipment-smoke","--color-fixture","--data","--docs-capture","--dump-annotations","--effect-capture","--effect-graph-audit","--effect-sequence-test","--emitter-inspect","--emitter-source-smoke","--equipment-smoke","--fade-fixture","--ff7vfx-smoke","--flipbook-smoke","--floor-smoke","--frame-smoke","--frames-capture","--hair-smoke","--holster-smoke","--inspect","--library-smoke","--mod-sweep","--override-smoke","--particle-smoke","--particle-test","--precision-smoke","--preferences-test","--prepare-fixture","--queue-smoke","--record-inspect","--reference-effect-smoke","--refraction-smoke","--remote-cast-smoke","--scene-dialog-smoke","--scene-save-smoke","--self-test","--skeleton-smoke","--smoke","--smp-determinism","--smp-smoke","--smp-soak","--smp-test","--sound-smoke","--sources-recent-smoke","--speed-smoke","--tagfile-smoke","--texture-dump","--timing-smoke","--track-bone","--weaponart-profile-smoke","--window-pick-smoke"};
+    internal static readonly HashSet<string> Switches=new(StringComparer.Ordinal){"--no-activate","--show","--annotation-smoke","--archive-order-smoke","--attachment-smoke","--attack-effect-inspect","--background","--bfco-smoke","--billboard-test","--bladebeam-smoke","--camera-smoke","--catalog-test","--character-smoke","--ci-test","--clip-profile","--cloud-effect-alpha-smoke","--cloud-equipment-smoke","--color-fixture","--data","--docs-capture","--dump-annotations","--effect-capture","--effect-graph-audit","--effect-sequence-test","--emitter-inspect","--emitter-source-smoke","--equipment-smoke","--fade-fixture","--ff7vfx-smoke","--flipbook-smoke","--floor-smoke","--frame-smoke","--frames-capture","--hair-smoke","--holster-smoke","--inspect","--library-smoke","--mod-sweep","--override-smoke","--particle-smoke","--particle-test","--precision-smoke","--preferences-test","--prepare-fixture","--queue-smoke","--record-inspect","--reference-effect-smoke","--refraction-smoke","--remote-cast-smoke","--scene-dialog-smoke","--scene-save-smoke","--self-test","--skeleton-smoke","--smoke","--smp-determinism","--smp-smoke","--smp-soak","--smp-test","--sound-smoke","--sources-recent-smoke","--speed-smoke","--tagfile-smoke","--texture-dump","--timing-smoke","--track-bone","--weaponart-profile-smoke","--window-pick-smoke"};
     [STAThread]
     static int Main(string[] args)
     {
@@ -13,7 +13,13 @@ internal static class Program
         Config_App.Current=new Config_App {Game=Config_App.Game_Enum.Skyrim,Setting_BackColorName="LightCyan",Setting_BackFade=50,Setting_BackFadeDirectional=false};
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();Application.SetCompatibleTextRenderingDefault(false);
-        MainWindow.Background=args.Contains("--background")||Environment.GetEnvironmentVariable("SSE_PREVIEW_BACKGROUND")=="1";
+        // A run started with a tool or test switch works off-screen without being asked, so a script never takes the
+        // keyboard from whoever is at the machine. --show keeps such a run on screen. --no-activate (or
+        // SSE_PREVIEW_NO_ACTIVATE=1) opens the window on screen as usual but leaves the focus where it was.
+        MainWindow.FocusBefore=MainWindow.ForegroundNow();
+        bool tool=args.Any(a=>a.StartsWith("--")&&a is not ("--data" or "--background" or "--no-activate" or "--show"));
+        MainWindow.Background=!args.Contains("--show")&&(tool||args.Contains("--background")||Environment.GetEnvironmentVariable("SSE_PREVIEW_BACKGROUND")=="1");
+        MainWindow.NoActivate=MainWindow.Background||args.Contains("--no-activate")||Environment.GetEnvironmentVariable("SSE_PREVIEW_NO_ACTIVATE")=="1";
         // A switch the program does not know is an error, not a silent normal start: a caller waiting for output
         // files would otherwise wait on a run that did nothing.
         if(args.Where(a=>a.StartsWith("--")).FirstOrDefault(a=>!Switches.Contains(a)) is {} unknown){

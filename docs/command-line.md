@@ -6,11 +6,15 @@ The exe takes switches for scripted runs. Most exist to test the program itself.
 
 ## Background mode
 
-`--background` opens the previewer off-screen, out of the taskbar and never as the foreground window. It renders with the same code as a normal run. The environment variable `SSE_PREVIEW_BACKGROUND=1` does the same.
+Every run started with one of the tool or test switches on this page works in the background without being asked: off-screen, out of the taskbar and never as the foreground window. A script therefore cannot take the keyboard from whoever is using the machine. It renders with the same code as a normal run.
+
+- `--background`, or the environment variable `SSE_PREVIEW_BACKGROUND=1`, asks for the same thing explicitly. Older scripts that pass it keep working.
+- `--show` keeps a tool run on screen, for watching what a check does.
+- `--no-activate`, or `SSE_PREVIEW_NO_ACTIVATE=1`, is for a normal start. The window opens on screen as usual but leaves the focus where it was, for example `"SSE Animation Previewer.exe" --no-activate --data <Data folder>`.
 
 `--data <folder>` mounts a Data folder at start.
 
-Combine it with any of the modes below.
+`scripts	est-focus.ps1` checks all of this without disturbing the desktop in use: it starts the exe on a separate hidden desktop and reads the log the previewer writes when `SSE_PREVIEW_FOCUS_LOG=<file>` is set, which records when the window is shown and every time it is activated.
 
 ## Reading clips from a script
 
