@@ -30,6 +30,12 @@ Writes each clip's duration and annotations, with times and track numbers, to `a
 
 Writes `track-bone.txt` beside the exe, a log of how a bone moves relative to another across each clip. It takes the skeleton from your last session, so run the previewer once and mount your data first, or point the `SSE_SESSION_FILE` environment variable at a session file. It answers questions such as "is `WEAPON` animated separately from the right hand in this export".
 
+```
+"SSE Animation Previewer.exe" --playback-probe <clip path suffix> [seconds]
+```
+
+Loads your last session, plays one clip for a few seconds (4 by default) the way the window does, and writes `playback-probe\playback-probe.txt` beside the exe: the race and skeleton the clip bound to, frames per second, the gaps between presented frames, scene draw time and the cost of each part of a playback tick. A capture of the last frame goes to `after.png`. If no clip path ends with the suffix, `clips.txt` lists every clip path. Use it when playback feels slow or a clip binds to the wrong skeleton.
+
 ## Documentation screenshots
 
 ```

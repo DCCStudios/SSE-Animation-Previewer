@@ -23,7 +23,9 @@ public sealed class MainWindow : Form
     readonly ListBox equipped=new WrappedListBox(){Height=120,Width=310,BorderStyle=BorderStyle.None};
     readonly Label status=new(){Dock=DockStyle.Bottom,Height=30,Padding=new Padding(12,5,0,0),Text="Mount a Data folder or a small mod folder to begin."};
     readonly Label clipTitle=new(){AutoSize=true,Text="No animation selected",Padding=new Padding(8)};
-    readonly Label timeLabel=new(){AutoSize=true,Padding=new Padding(8),Text="0.000 s"};
+    // Not AutoSize: an auto-sized label lays out its whole toolbar on every text change, 3.5 ms a frame during
+    // playback. SetTimeText widens it when the text needs more room.
+    readonly Label timeLabel=new(){AutoSize=false,Padding=new Padding(8),TextAlign=ContentAlignment.MiddleLeft};
     readonly CheckBox snapFrames=new(){Text="Snap to frame",AutoSize=true,Padding=new Padding(0,6,0,0)};
     // Animation queue: clips played one after another with their root motion carried through.
     readonly List<ClipEntry> queue=[];
@@ -61,6 +63,8 @@ public sealed class MainWindow : Form
     readonly ViewerPreferences preferences;
     readonly bool verificationMode;
     readonly CheckBox gridFloor=new(){Text="Grid floor at origin",Checked=true,AutoSize=true};
+    // Community Shaders True PBR shapes drawn with CS's PBR response. Off by default: the vanilla shader's look.
+    readonly CheckBox truePbr=new(){Text="True PBR materials (Community Shaders)",Checked=false,AutoSize=true};readonly ToolTip pbrTip=new();
     readonly CheckBox showWeapon=new(){Text="Show weapon",Checked=true,AutoSize=true};
     readonly CheckBox sheathed=new(){Text="Sheathed on holster node",AutoSize=true};
     readonly CheckBox smpPhysics=new(){Text="Simulate HDT-SMP physics",AutoSize=true};
@@ -91,7 +95,8 @@ public sealed class MainWindow : Form
     readonly ListBox sources=new WrappedListBox(){Dock=DockStyle.Bottom,Height=118,BorderStyle=BorderStyle.None,IntegralHeight=false};
     ContextMenuStrip? sceneMenu;ToolStripMenuItem? recentMenu;readonly RecentScenes recentScenes;
     readonly ToolTip sourceTip=new();string sourceTipText="";
-    readonly System.Windows.Forms.Timer timer=new(){Interval=8};
+    // Drives playback at 60 FPS. See FramePacer for why a WinForms timer could not.
+    readonly FramePacer timer;
     readonly Stopwatch frameClock=Stopwatch.StartNew();
     double lastSample=-100;bool busy,selecting,scrubbing,previewingEffect,resumeAfterScrub;
     readonly Scene scene;readonly Effects effects;
@@ -108,7 +113,7 @@ public sealed class MainWindow : Form
         ("--docs-capture","",3,null),("--bfco-smoke","T",3,@"bfco-smoke\bfco-smoke.txt"),("--frames-capture","",3,null),("--flipbook-smoke","T",1,@"flipbook-smoke\flipbook-smoke.txt"),("--ff7vfx-smoke","S",0,@"ff7vfx-smoke\ff7vfx-smoke.txt"),("--annotation-smoke","T",1,@"annotation-smoke\annotation-smoke.txt"),
         ("--skeleton-smoke","T",1,@"skeleton-smoke\skeleton-smoke.txt"),("--window-pick-smoke","T",2,@"window-pick-smoke\window-pick-smoke.txt"),("--sound-smoke","GM",0,@"sound-smoke\sound-smoke.txt"),
         ("--precision-smoke","",2,@"precision-smoke\precision-smoke.txt"),("--frame-smoke","T",1,@"frame-smoke\frame-smoke.txt"),("--hair-smoke","T",0,@"hair-smoke\hair-smoke.txt"),("--smp-smoke","T",0,@"smp-smoke\smp-smoke.txt"),
-        ("--holster-smoke","T",3,"holster-tests.txt"),("--clip-profile","S",2,null),("--mod-sweep","S",1,null),("--sources-recent-smoke","",0,null),("--scene-save-smoke","",0,null),("--scene-dialog-smoke","",0,null),
+        ("--holster-smoke","T",3,"holster-tests.txt"),("--clip-profile","S",2,null),("--playback-probe","S",1,null),("--mod-sweep","S",1,null),("--sources-recent-smoke","",0,null),("--scene-save-smoke","",0,null),("--scene-dialog-smoke","",0,null),
         ("--cloud-equipment-smoke","GM",0,"cloud-equipment-tests.txt"),("--bladebeam-smoke","GM",0,"bladebeam-smoke.txt"),("--timing-smoke","TM",0,"timing-smoke.txt"),("--emitter-source-smoke","",0,null),("--refraction-smoke","",0,null),
         ("--archive-order-smoke",Environment.GetEnvironmentVariable("SSE_ARCHIVE_TEST_ROOT")==null?"A":"",0,"archive-order-render.txt"),("--reference-effect-smoke","GM",0,"reference-effects.txt"),("--remote-cast-smoke","",0,null),
         ("--camera-smoke","",0,null),("--attachment-smoke","TM",0,"attachment-tests.txt"),("--floor-smoke","",0,null),("--tagfile-smoke","",1,"tagfile-tests.txt"),("--speed-smoke","",2,"speed-tests.txt"),
@@ -164,7 +169,7 @@ public sealed class MainWindow : Form
         requireAlt.Checked=preferences.RequireAlt;viewport.RequireAlt=preferences.RequireAlt;
         emitterSourceSmoke=args.Contains("--emitter-source-smoke");
         recentScenes=new(Path.Combine(AppContext.BaseDirectory,args.Any(a=>a.EndsWith("-smoke",StringComparison.Ordinal))?"verification-recent-scenes.json":"recent-scenes.json"));
-        if(args.Contains("--smp-determinism")||args.Contains("--equipment-smoke")||args.Contains("--queue-smoke")||args.Contains("--frame-smoke")||args.Contains("--precision-smoke")||args.Contains("--window-pick-smoke")||args.Contains("--skeleton-smoke")||args.Contains("--annotation-smoke")||args.Contains("--ff7vfx-smoke")||args.Contains("--flipbook-smoke")||args.Contains("--override-smoke")||args.Contains("--docs-capture")||args.Contains("--frames-capture")||args.Contains("--effect-capture")||args.Contains("--cloud-effect-alpha-smoke")||args.Contains("--bfco-smoke")||args.Contains("--track-bone")||args.Contains("--sound-smoke")||args.Contains("--smp-soak")||args.Contains("--hair-smoke")||args.Contains("--smp-smoke")||args.Contains("--holster-smoke")||args.Contains("--clip-profile")||args.Contains("--mod-sweep")||args.Contains("--weaponart-profile-smoke")||args.Contains("--sources-recent-smoke")||args.Contains("--scene-save-smoke")||args.Contains("--cloud-equipment-smoke")||args.Contains("--bladebeam-smoke")||args.Contains("--timing-smoke")||args.Contains("--emitter-source-smoke")||args.Contains("--refraction-smoke")||args.Contains("--archive-order-smoke")||args.Contains("--reference-effect-smoke")||args.Contains("--remote-cast-smoke")||args.Contains("--camera-smoke")||args.Contains("--smoke")||args.Contains("--particle-smoke")||args.Contains("--library-smoke")||args.Contains("--character-smoke")||args.Contains("--attachment-smoke")||args.Contains("--floor-smoke")||args.Contains("--tagfile-smoke")||args.Contains("--speed-smoke"))settingsPath=Path.Combine(AppContext.BaseDirectory,"verification-session.json");
+        if(args.Contains("--smp-determinism")||args.Contains("--equipment-smoke")||args.Contains("--queue-smoke")||args.Contains("--frame-smoke")||args.Contains("--precision-smoke")||args.Contains("--window-pick-smoke")||args.Contains("--skeleton-smoke")||args.Contains("--annotation-smoke")||args.Contains("--ff7vfx-smoke")||args.Contains("--flipbook-smoke")||args.Contains("--override-smoke")||args.Contains("--docs-capture")||args.Contains("--frames-capture")||args.Contains("--effect-capture")||args.Contains("--cloud-effect-alpha-smoke")||args.Contains("--bfco-smoke")||args.Contains("--track-bone")||args.Contains("--sound-smoke")||args.Contains("--smp-soak")||args.Contains("--hair-smoke")||args.Contains("--smp-smoke")||args.Contains("--holster-smoke")||args.Contains("--clip-profile")||args.Contains("--playback-probe")||args.Contains("--mod-sweep")||args.Contains("--weaponart-profile-smoke")||args.Contains("--sources-recent-smoke")||args.Contains("--scene-save-smoke")||args.Contains("--cloud-equipment-smoke")||args.Contains("--bladebeam-smoke")||args.Contains("--timing-smoke")||args.Contains("--emitter-source-smoke")||args.Contains("--refraction-smoke")||args.Contains("--archive-order-smoke")||args.Contains("--reference-effect-smoke")||args.Contains("--remote-cast-smoke")||args.Contains("--camera-smoke")||args.Contains("--smoke")||args.Contains("--particle-smoke")||args.Contains("--library-smoke")||args.Contains("--character-smoke")||args.Contains("--attachment-smoke")||args.Contains("--floor-smoke")||args.Contains("--tagfile-smoke")||args.Contains("--speed-smoke"))settingsPath=Path.Combine(AppContext.BaseDirectory,"verification-session.json");
         // Existing regression renders measure effect pixels against the bare background; only the floor smoke wants the floor.
         if(settingsPath.EndsWith("verification-session.json")&&!args.Contains("--floor-smoke"))gridFloor.Checked=false;
         if(Background){
@@ -177,7 +182,7 @@ public sealed class MainWindow : Form
         // for (the start-up show command), and an owned window is not subject to that. It keeps its taskbar button.
         if(NoActivate&&!Background)Owner=new Form{ShowInTaskbar=false};
         Text="SSE Animation Previewer "+Application.ProductVersion;Size=new(1580,1000);MinimumSize=new(1150,750);StartPosition=Background?FormStartPosition.Manual:FormStartPosition.CenterScreen;KeyPreview=true;
-        scene=new(assets,viewport,records);viewport.FrameRequested=scene.Frame;effects=new(assets,records);BuildUi();Theme(this);viewport.MaximumPresentationFps=60;
+        scene=new(assets,viewport,records);viewport.FrameRequested=scene.Frame;effects=new(assets,records);BuildUi();SetTimeText("0.000 s");Theme(this);viewport.MaximumPresentationFps=120;
         scene.FollowScene=followCamera.Checked;scene.FramingSubject=(Scene.FrameSubject)cameraSubject.SelectedIndex;scene.ShowFloor=gridFloor.Checked;
         UpdateCameraHint();
         requireAlt.CheckedChanged+=(_,_)=>{viewport.RequireAlt=requireAlt.Checked;preferences.RequireAlt=requireAlt.Checked;UpdateCameraHint();SavePreferences();};
@@ -187,6 +192,7 @@ public sealed class MainWindow : Form
         // which destroys them without activating any.
         FormClosed+=(_,_)=>{if(Background)Environment.Exit(Environment.ExitCode);};
         gridFloor.CheckedChanged+=(_,_)=>{scene.ShowFloor=gridFloor.Checked;if(!busy&&!selecting)SaveSession();};
+        truePbr.CheckedChanged+=(_,_)=>{viewport.TruePbr=truePbr.Checked;viewport.UpdateRequired=true;viewport.Invalidate();UpdatePbrNote();if(!busy&&!selecting)SaveSession();};
         showWeapon.CheckedChanged+=(_,_)=>{scene.ShowWeapon=showWeapon.Checked;if(!busy&&!selecting)SaveSession();};
         sheathed.CheckedChanged+=(_,_)=>{scene.Sheathed=sheathed.Checked;UpdateHolsterLabel();scene.SetTime(clock.Time);if(!busy&&!selecting)SaveSession();};
         smpPhysics.CheckedChanged+=(_,_)=>{scene.PhysicsEnabled=smpPhysics.Checked;UpdatePhysicsLabel();UpdateDiagnostics();if(!busy&&!selecting)SaveSession();};
@@ -225,7 +231,7 @@ public sealed class MainWindow : Form
         tree.AfterSelect+=async(_,e)=>{if(e.Node?.Tag is string info)detail.Text=info;else if(!busy && e.Node?.Tag is ClipEntry entry)await SelectClip(entry);};
         tree.AllowDrop=true;tree.DragEnter+=(_,e)=>e.Effect=e.Data?.GetDataPresent(DataFormats.FileDrop)==true?DragDropEffects.Copy:DragDropEffects.None;
         tree.DragDrop+=(_,e)=>{if(!busy && e.Data?.GetData(DataFormats.FileDrop) is string[] files)DropFiles(files);};
-        races.SelectedIndexChanged+=(_,_)=>{if(!selecting){PopulateHeads();RebuildScene();}};
+        races.SelectedIndexChanged+=(_,_)=>{if(!selecting){clipSkeleton=null;PopulateHeads();RebuildScene();if(SkeletonMismatch() is {} mismatch)status.Text=mismatch;}};
         sex.SelectedIndexChanged+=(_,_)=>{if(!selecting){PopulateHeads();RebuildScene();}};
         hairColor.SelectedIndexChanged+=(_,_)=>{
             if(selecting||hairColor.SelectedItem is not HairChoice choice)return;
@@ -259,10 +265,10 @@ public sealed class MainWindow : Form
         timeline.Scroll+=(_,_)=>ScrubTo(timeline.Value);
         fps.ValueChanged+=(_,_)=>{clock.SourceFps=(double)fps.Value;if(snapFrames.Checked&&!clock.Playing)SeekFrame(0);UpdateTimeLabel(scene.Time);};
         snapFrames.CheckedChanged+=(_,_)=>{if(snapFrames.Checked&&!clock.Playing&&(clip!=null||previewingEffect))SeekFrame(0);UpdateTimeLabel(scene.Time);if(!busy&&!selecting)SaveSession();};
-        timer.Tick+=(_,_)=>TickPlayback();timer.Start();
+        timer=new(this,60);timer.Tick+=(_,_)=>TickPlayback();timer.Start();
         KeyDown+=(_,e)=>{if(e.KeyCode==Keys.Space && ActiveControl is not TextBox and not RichTextBox and not ComboBox){TogglePlay();e.Handled=true;}};
         FormClosed+=(_,_)=>{timer.Stop();timer.Dispose();sceneMenu?.Dispose();scene.Dispose();viewport.Clean();};
-        Shown+=async(_,_)=>{if(args.FirstOrDefault(a=>a is "--effect-capture" or "--cloud-effect-alpha-smoke") is {} capture){int j=Array.IndexOf(args,capture);if(args.Length<j+5){Console.Error.WriteLine(capture+" needs an output folder, two NIFs and a Data folder after it.");Environment.ExitCode=2;Close();return;}await EffectCapture(args[j+1],args[j+2],args[j+3],args[j+4]);return;}bool blocked;try{blocked=SmokeBlocked(args);}catch(Exception ex){ShowError(ex);Environment.ExitCode=2;blocked=true;}if(blocked){Close();return;}if(args.Contains("--weaponart-profile-smoke")){await WeaponArtProfile();return;}if(args.Contains("--smp-determinism")){await SmpDeterminism(args.Skip(Array.IndexOf(args,"--smp-determinism")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--equipment-smoke")){await EquipmentSmoke(args.Skip(Array.IndexOf(args,"--equipment-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--queue-smoke")){await QueueSmoke(args.Skip(Array.IndexOf(args,"--queue-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-soak")){await SmpSoak(args.Skip(Array.IndexOf(args,"--smp-soak")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--dump-annotations")){DumpAnnotations(args.Skip(Array.IndexOf(args,"--dump-annotations")+1).Where(x=>!x.StartsWith("--")).ToArray());Close();return;}if(args.Contains("--track-bone")){await TrackBone(args.Skip(Array.IndexOf(args,"--track-bone")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--override-smoke")){await OverrideSmoke();return;}if(args.Contains("--bfco-smoke")){await BfcoSmoke(args.Skip(Array.IndexOf(args,"--bfco-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frames-capture")){await FramesCapture(args.Skip(Array.IndexOf(args,"--frames-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--docs-capture")){await DocsCapture(args.Skip(Array.IndexOf(args,"--docs-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--flipbook-smoke")){await FlipbookSmoke(args.Skip(Array.IndexOf(args,"--flipbook-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--ff7vfx-smoke")){await Ff7VfxSmoke();return;}if(args.Contains("--annotation-smoke")){await AnnotationSmoke(args[Array.IndexOf(args,"--annotation-smoke")+1]);return;}if(args.Contains("--skeleton-smoke")){await SkeletonSmoke(args[Array.IndexOf(args,"--skeleton-smoke")+1]);return;}if(args.Contains("--window-pick-smoke")){int j=Array.IndexOf(args,"--window-pick-smoke");await WindowPickSmoke(args[j+1],args[j+2]);return;}if(args.Contains("--sound-smoke")){await SoundSmoke();return;}if(args.Contains("--precision-smoke")){await PrecisionSmoke(args.Skip(Array.IndexOf(args,"--precision-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frame-smoke")){await FrameSmoke(args[Array.IndexOf(args,"--frame-smoke")+1]);return;}if(args.Contains("--hair-smoke")){await HairSmoke(args.Skip(Array.IndexOf(args,"--hair-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-smoke")){await SmpSmoke(args.Skip(Array.IndexOf(args,"--smp-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--holster-smoke")){await HolsterSmoke(args[Array.IndexOf(args,"--holster-smoke")+1],args[Array.IndexOf(args,"--holster-smoke")+2],args[Array.IndexOf(args,"--holster-smoke")+3]);return;}if(args.Contains("--clip-profile")){await ClipProfile(args[Array.IndexOf(args,"--clip-profile")+1],args[Array.IndexOf(args,"--clip-profile")+2]);return;}if(args.Contains("--mod-sweep")){await ModSweep(args[Array.IndexOf(args,"--mod-sweep")+1]);return;}if(args.Contains("--sources-recent-smoke")){await SourcesRecentSmoke();return;}if(args.Contains("--scene-save-smoke")){await SceneSaveSmoke();return;}if(args.Contains("--scene-dialog-smoke")){await SceneDialogSmoke();return;}if(args.Contains("--cloud-equipment-smoke")){await CloudEquipmentSmoke();return;}if(args.Contains("--bladebeam-smoke")){await BladeBeamSmoke();return;}if(args.Contains("--timing-smoke")){await TimingSmoke();return;}if(args.Contains("--emitter-source-smoke")){await EmitterSourceSmoke();return;}if(args.Contains("--refraction-smoke")){await RefractionSmoke();return;}if(args.Contains("--archive-order-smoke")){await ArchiveOrderSmoke();return;}if(args.Contains("--reference-effect-smoke")){await ReferenceEffectSmoke();return;}if(args.Contains("--remote-cast-smoke")){await RemoteCastSmoke();return;}if(args.Contains("--camera-smoke")){await CameraSmoke();return;}if(args.Contains("--attachment-smoke")){await AttachmentSmoke();return;}if(args.Contains("--floor-smoke")){await FloorSmoke();return;}if(args.Contains("--tagfile-smoke")){await TagfileSmoke(args[Array.IndexOf(args,"--tagfile-smoke")+1]);return;}if(args.Contains("--speed-smoke")){await SpeedSmoke(args[Array.IndexOf(args,"--speed-smoke")+1],args[Array.IndexOf(args,"--speed-smoke")+2]);return;}if(args.Contains("--character-smoke")){await CharacterSmoke();return;}if(args.Contains("--library-smoke")){await LibrarySmoke();return;}if(args.Contains("--particle-smoke")){await ParticleSmoke();return;}if(args.Contains("--smoke")){await Smoke();return;}int i=Array.IndexOf(args,"--data");if(i>=0 && args.Length>i+1)await Mount(args[i+1],false);};
+        Shown+=async(_,_)=>{if(args.FirstOrDefault(a=>a is "--effect-capture" or "--cloud-effect-alpha-smoke") is {} capture){int j=Array.IndexOf(args,capture);if(args.Length<j+5){Console.Error.WriteLine(capture+" needs an output folder, two NIFs and a Data folder after it.");Environment.ExitCode=2;Close();return;}await EffectCapture(args[j+1],args[j+2],args[j+3],args[j+4]);return;}bool blocked;try{blocked=SmokeBlocked(args);}catch(Exception ex){ShowError(ex);Environment.ExitCode=2;blocked=true;}if(blocked){Close();return;}if(args.Contains("--weaponart-profile-smoke")){await WeaponArtProfile();return;}if(args.Contains("--smp-determinism")){await SmpDeterminism(args.Skip(Array.IndexOf(args,"--smp-determinism")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--equipment-smoke")){await EquipmentSmoke(args.Skip(Array.IndexOf(args,"--equipment-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--queue-smoke")){await QueueSmoke(args.Skip(Array.IndexOf(args,"--queue-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-soak")){await SmpSoak(args.Skip(Array.IndexOf(args,"--smp-soak")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--dump-annotations")){DumpAnnotations(args.Skip(Array.IndexOf(args,"--dump-annotations")+1).Where(x=>!x.StartsWith("--")).ToArray());Close();return;}if(args.Contains("--track-bone")){await TrackBone(args.Skip(Array.IndexOf(args,"--track-bone")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--override-smoke")){await OverrideSmoke();return;}if(args.Contains("--bfco-smoke")){await BfcoSmoke(args.Skip(Array.IndexOf(args,"--bfco-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frames-capture")){await FramesCapture(args.Skip(Array.IndexOf(args,"--frames-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--docs-capture")){await DocsCapture(args.Skip(Array.IndexOf(args,"--docs-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--flipbook-smoke")){await FlipbookSmoke(args.Skip(Array.IndexOf(args,"--flipbook-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--ff7vfx-smoke")){await Ff7VfxSmoke();return;}if(args.Contains("--annotation-smoke")){await AnnotationSmoke(args[Array.IndexOf(args,"--annotation-smoke")+1]);return;}if(args.Contains("--skeleton-smoke")){await SkeletonSmoke(args[Array.IndexOf(args,"--skeleton-smoke")+1]);return;}if(args.Contains("--window-pick-smoke")){int j=Array.IndexOf(args,"--window-pick-smoke");await WindowPickSmoke(args[j+1],args[j+2]);return;}if(args.Contains("--sound-smoke")){await SoundSmoke();return;}if(args.Contains("--precision-smoke")){await PrecisionSmoke(args.Skip(Array.IndexOf(args,"--precision-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frame-smoke")){await FrameSmoke(args[Array.IndexOf(args,"--frame-smoke")+1]);return;}if(args.Contains("--hair-smoke")){await HairSmoke(args.Skip(Array.IndexOf(args,"--hair-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-smoke")){await SmpSmoke(args.Skip(Array.IndexOf(args,"--smp-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--holster-smoke")){await HolsterSmoke(args[Array.IndexOf(args,"--holster-smoke")+1],args[Array.IndexOf(args,"--holster-smoke")+2],args[Array.IndexOf(args,"--holster-smoke")+3]);return;}if(args.Contains("--playback-probe")){int j=Array.IndexOf(args,"--playback-probe");await PlaybackProbe(args[j+1],args.Length>j+2&&double.TryParse(args[j+2],System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out double probeSeconds)?probeSeconds:4);return;}if(args.Contains("--clip-profile")){await ClipProfile(args[Array.IndexOf(args,"--clip-profile")+1],args[Array.IndexOf(args,"--clip-profile")+2]);return;}if(args.Contains("--mod-sweep")){await ModSweep(args[Array.IndexOf(args,"--mod-sweep")+1]);return;}if(args.Contains("--sources-recent-smoke")){await SourcesRecentSmoke();return;}if(args.Contains("--scene-save-smoke")){await SceneSaveSmoke();return;}if(args.Contains("--scene-dialog-smoke")){await SceneDialogSmoke();return;}if(args.Contains("--cloud-equipment-smoke")){await CloudEquipmentSmoke();return;}if(args.Contains("--bladebeam-smoke")){await BladeBeamSmoke();return;}if(args.Contains("--timing-smoke")){await TimingSmoke();return;}if(args.Contains("--emitter-source-smoke")){await EmitterSourceSmoke();return;}if(args.Contains("--refraction-smoke")){await RefractionSmoke();return;}if(args.Contains("--archive-order-smoke")){await ArchiveOrderSmoke();return;}if(args.Contains("--reference-effect-smoke")){await ReferenceEffectSmoke();return;}if(args.Contains("--remote-cast-smoke")){await RemoteCastSmoke();return;}if(args.Contains("--camera-smoke")){await CameraSmoke();return;}if(args.Contains("--attachment-smoke")){await AttachmentSmoke();return;}if(args.Contains("--floor-smoke")){await FloorSmoke();return;}if(args.Contains("--tagfile-smoke")){await TagfileSmoke(args[Array.IndexOf(args,"--tagfile-smoke")+1]);return;}if(args.Contains("--speed-smoke")){await SpeedSmoke(args[Array.IndexOf(args,"--speed-smoke")+1],args[Array.IndexOf(args,"--speed-smoke")+2]);return;}if(args.Contains("--character-smoke")){await CharacterSmoke();return;}if(args.Contains("--library-smoke")){await LibrarySmoke();return;}if(args.Contains("--particle-smoke")){await ParticleSmoke();return;}if(args.Contains("--smoke")){await Smoke();return;}int i=Array.IndexOf(args,"--data");if(i>=0 && args.Length>i+1)await Mount(args[i+1],false);};
     }
     void BuildUi()
     {
@@ -322,7 +328,7 @@ public sealed class MainWindow : Form
         var stack=new FlowLayoutPanel(){Dock=DockStyle.Top,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false};side.Controls.Add(stack);
         side.SizeChanged+=(_,_)=>ResponsiveLayout.Fit(stack,Math.Max(100,side.ClientSize.Width-side.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth));
         void Labelled(string label,Control control) {stack.Controls.Add(new Label{Text=label,AutoSize=true,Margin=new Padding(0,13,0,6)});stack.Controls.Add(control);}
-        Labelled("CAMERA",followCamera);stack.Controls.Add(requireAlt);stack.Controls.Add(gridFloor);cameraSubject.Items.AddRange(["Frame whole scene","Frame character","Frame effects"]);cameraSubject.SelectedIndex=1;stack.Controls.Add(cameraSubject);
+        Labelled("CAMERA",followCamera);stack.Controls.Add(requireAlt);stack.Controls.Add(gridFloor);stack.Controls.Add(truePbr);cameraSubject.Items.AddRange(["Frame whole scene","Frame character","Frame effects"]);cameraSubject.SelectedIndex=1;stack.Controls.Add(cameraSubject);
         var skeletonRow=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=false,Margin=new Padding(0)};
         skeletonRow.Controls.Add(showSkeleton);skeletonRow.Controls.Add(bonesButton=Button("Bones…",OpenBonesWindow));
         Labelled("CHARACTER",skeletonRow);stack.Controls.Add(races);sex.Items.AddRange(["Male","Female"]);sex.SelectedIndex=0;stack.Controls.Add(sex);
@@ -429,7 +435,7 @@ public sealed class MainWindow : Form
     void ChoosePlugins(){using var d=new OpenFileDialog{Filter="MO2 / game load order (plugins.txt)|plugins.txt|Text files|*.txt"};if(d.ShowDialog()==DialogResult.OK){pluginsFile=d.FileName;Config_App.Current.Setting_PluginsTxtPath_SSE=pluginsFile;_=ReloadMounted();}}
     async Task ReloadMounted(){var roots=assets.Roots.ToArray();for(int i=0;i<roots.Length;i++)await Mount(roots[i],i>0);}
     SessionSettings CaptureSettings()=>new(assets.Roots.ToArray(),pluginsFile,assets.DroppedPaths.ToArray(),(float)projectileElevation.Value,cameraSubject.SelectedIndex,followCamera.Checked,gridFloor.Checked,
-        (races.SelectedItem as GameRecord)?.Key,sex.SelectedIndex,heads.CheckedItems.Cast<GameRecord>().Select(h=>h.Key).ToArray(),worn.Select(w=>w.Key).ToArray(),(weapons.SelectedItem as GameRecord)?.Key,selected?.Path,clock.Time,(double)fps.Value,(double)speed.Value,loop.Checked,rootMotion.Checked,effectToggle.Checked,conditionalDac.Checked,(float)particleLod.Value,customModels.ToArray(),customSkeleton,ShowWeapon:showWeapon.Checked,Sheathed:sheathed.Checked,Weight:weight.Value,ParticleBudget:(int)particleBudget.Value,EffectOverlays:effectOverlays.ToArray(),SmpPhysics:smpPhysics.Checked,SmpColliders:smpColliders.Checked,SmpBones:smpBones.Checked,HairColor:hairChoice,SnapFrames:snapFrames.Checked,Queue:queue.Select(q=>q.Path).ToArray(),QueuePlaying:QueuePlaying,QueueBlend:(double)queueBlend.Value,QueueAtWindow:queueAtWindow.Checked,QueueWindow:queueWindowEvent.SelectedItem as string,PrecisionCollisions:precisionShow.Checked,PrecisionNpc:precisionActor.SelectedIndex==1,PlaySounds:playSounds.Checked,QueueWindowPicks:queue.Select(q=>queueWindowPicks.GetValueOrDefault(q)).ToArray(),ShowSkeleton:showSkeleton.Checked,ShowBoneNames:showBoneNames.Checked,BoneFilter:scene.BoneFilter.OrderBy(b=>b,StringComparer.OrdinalIgnoreCase).ToArray());
+        (races.SelectedItem as GameRecord)?.Key,sex.SelectedIndex,heads.CheckedItems.Cast<GameRecord>().Select(h=>h.Key).ToArray(),worn.Select(w=>w.Key).ToArray(),(weapons.SelectedItem as GameRecord)?.Key,selected?.Path,clock.Time,(double)fps.Value,(double)speed.Value,loop.Checked,rootMotion.Checked,effectToggle.Checked,conditionalDac.Checked,(float)particleLod.Value,customModels.ToArray(),customSkeleton,ShowWeapon:showWeapon.Checked,Sheathed:sheathed.Checked,Weight:weight.Value,ParticleBudget:(int)particleBudget.Value,EffectOverlays:effectOverlays.ToArray(),SmpPhysics:smpPhysics.Checked,SmpColliders:smpColliders.Checked,SmpBones:smpBones.Checked,HairColor:hairChoice,SnapFrames:snapFrames.Checked,Queue:queue.Select(q=>q.Path).ToArray(),QueuePlaying:QueuePlaying,QueueBlend:(double)queueBlend.Value,QueueAtWindow:queueAtWindow.Checked,QueueWindow:queueWindowEvent.SelectedItem as string,PrecisionCollisions:precisionShow.Checked,PrecisionNpc:precisionActor.SelectedIndex==1,PlaySounds:playSounds.Checked,QueueWindowPicks:queue.Select(q=>queueWindowPicks.GetValueOrDefault(q)).ToArray(),ShowSkeleton:showSkeleton.Checked,ShowBoneNames:showBoneNames.Checked,BoneFilter:scene.BoneFilter.OrderBy(b=>b,StringComparer.OrdinalIgnoreCase).ToArray(),TruePbr:truePbr.Checked);
     void SaveSession()=>File.WriteAllText(settingsPath,JsonSerializer.Serialize(CaptureSettings(),new JsonSerializerOptions{WriteIndented=true}));
     void PresetMenu(){
         if(busy)return;
@@ -626,7 +632,7 @@ public sealed class MainWindow : Form
             if(settings.Heads!=null){var wanted=settings.Heads.ToHashSet(StringComparer.OrdinalIgnoreCase);for(int i=0;i<heads.Items.Count;i++)heads.SetItemChecked(i,wanted.Contains(((GameRecord)heads.Items[i]).Key));}
             worn.Clear();foreach(string key in settings.Armor??[]){if(records.All.GetValueOrDefault(key) is {Kind:"ARMO"} item)worn.Add(item);else assets.Diagnostics.Add("Scene armor unavailable: "+key);}
             if(settings.Weapon!=null){if(records.All.GetValueOrDefault(settings.Weapon) is {Kind:"WEAP"} weapon)weapons.SelectedItem=weapon;else assets.Diagnostics.Add("Scene weapon unavailable: "+settings.Weapon);}
-            projectileElevation.Value=(decimal)Math.Clamp(settings.ProjectileElevation,-89,89);cameraSubject.SelectedIndex=Math.Clamp(settings.CameraSubject,0,2);followCamera.Checked=settings.FollowCamera;gridFloor.Checked=settings.GridFloor;showWeapon.Checked=settings.ShowWeapon;sheathed.Checked=settings.Sheathed;smpPhysics.Checked=settings.SmpPhysics;smpColliders.Checked=settings.SmpColliders;smpBones.Checked=settings.SmpBones;precisionShow.Checked=settings.PrecisionCollisions;playSounds.Checked=settings.PlaySounds;showSkeleton.Checked=settings.ShowSkeleton;showBoneNames.Checked=settings.ShowBoneNames;scene.BoneFilter.Clear();foreach(string bone in settings.BoneFilter??[])scene.BoneFilter.Add(bone);precisionActor.SelectedIndex=settings.PrecisionNpc?1:0;snapFrames.Checked=settings.SnapFrames;weight.Value=Math.Clamp(settings.Weight,0,100);particleBudget.Value=Math.Clamp(settings.ParticleBudget,0,65535);ParticleNif.PreviewBudget=(int)particleBudget.Value;
+            projectileElevation.Value=(decimal)Math.Clamp(settings.ProjectileElevation,-89,89);cameraSubject.SelectedIndex=Math.Clamp(settings.CameraSubject,0,2);followCamera.Checked=settings.FollowCamera;gridFloor.Checked=settings.GridFloor;showWeapon.Checked=settings.ShowWeapon;sheathed.Checked=settings.Sheathed;smpPhysics.Checked=settings.SmpPhysics;smpColliders.Checked=settings.SmpColliders;smpBones.Checked=settings.SmpBones;precisionShow.Checked=settings.PrecisionCollisions;playSounds.Checked=settings.PlaySounds;showSkeleton.Checked=settings.ShowSkeleton;showBoneNames.Checked=settings.ShowBoneNames;truePbr.Checked=settings.TruePbr;viewport.TruePbr=settings.TruePbr;scene.BoneFilter.Clear();foreach(string bone in settings.BoneFilter??[])scene.BoneFilter.Add(bone);precisionActor.SelectedIndex=settings.PrecisionNpc?1:0;snapFrames.Checked=settings.SnapFrames;weight.Value=Math.Clamp(settings.Weight,0,100);particleBudget.Value=Math.Clamp(settings.ParticleBudget,0,65535);ParticleNif.PreviewBudget=(int)particleBudget.Value;
         }finally{selecting=false;}
         loop.Checked=settings.Loop;rootMotion.Checked=settings.RootMotion;effectToggle.Checked=settings.Effects;conditionalDac.Checked=settings.ConditionalDac;
         fps.Value=(decimal)Math.Clamp(double.IsFinite(settings.Fps)?settings.Fps:30,1,60);speed.Value=(decimal)Math.Clamp(double.IsFinite(settings.Speed)?settings.Speed:1,.05,4);
@@ -656,7 +662,7 @@ public sealed class MainWindow : Form
         }finally{busy=false;selecting=false;UseWaitCursor=false;foreach(Control control in Controls)control.Enabled=true;}
     }
     void ResetPreview(bool save=true){
-        if(busy)return;sceneFile=null;clock.Pause();selecting=true;
+        if(busy)return;sceneFile=null;clock.Pause();selecting=true;lastPbrShapes=0;
         try{
             clip=null;selected=null;scene.Clip=null;previewingEffect=false;clock.Duration=1;clock.Seek(0);worn.Clear();hairChoice=null;queue.Clear();RefreshQueue();cues.Clear();customModels.Clear();effectOverlays.Clear();customSkeleton=null;scene.SkeletonHkx=@"meshes\actors\character\character assets\skeleton.hkx";
             gridFloor.Checked=true;loop.Checked=true;rootMotion.Checked=true;effectToggle.Checked=true;conditionalDac.Checked=false;fps.Value=30;speed.Value=1;particleLod.Value=0;search.Clear();
@@ -664,7 +670,7 @@ public sealed class MainWindow : Form
             assets.Reset();records.All.Clear();records.Diagnostics.Clear();effects.ReadConfigs();
             races.Items.Clear();heads.Items.Clear();weapons.Items.Clear();weapons.Items.Add("(None)");weapons.SelectedIndex=0;armor.Items.Clear();equipped.Items.Clear();triggers.Items.Clear();tree.Nodes.Clear();effectSequence.Items.Clear();sex.SelectedIndex=0;
             pluginsFile=null;Config_App.Current.Setting_PluginsTxtPath_SSE="";
-            scene.Clear();scene.Commit();scene.SetTime(0);detail.Clear();events.Clear();Highlight.Clear();diagnostics.Clear();clipTitle.Text="No animation selected";timeLabel.Text="0.000 s · frame 0";timeline.Value=0;
+            scene.Clear();scene.Commit();scene.SetTime(0);detail.Clear();events.Clear();Highlight.Clear();diagnostics.Clear();clipTitle.Text="No animation selected";SetTimeText("0.000 s · frame 0");timeline.Value=0;
         }finally{selecting=false;}
         RefreshSources();if(save)SaveSession();status.Text="Preview reset. Load a scene or add a Data folder.";
     }
@@ -783,14 +789,16 @@ public sealed class MainWindow : Form
         try {var decoded=await Task.Run(()=>AnimationClip.Load(assets.Read(entry.Path)));selected=entry;
             // A clip that changes speed plays as a one-clip timeline in playback time; otherwise it is the clip itself.
             var timeline=AnimationClip.Timeline(entry.Name,decoded);clip=timeline;clock.Duration=Math.Max(.001,timeline.Duration);clock.Seek(0);ApplyClipSpeed(entry.Name,decoded,resetSpeed);
+            string? raceNote=MatchRaceToClip(entry.Path);
             manualTriggers.Clear();referenceActions.Clear();cues=effects.Build(timeline,conditionalDac.Checked);RebuildScene();clipTitle.Text=entry.Name;RefreshQueue();
+            if(raceNote!=null){scene.Diagnostics.Add(raceNote);UpdateDiagnostics();}
             string overridden=ClipOverrides.Describe(entry,Overriders(entry));tree.Invalidate();
             detail.Text=$"{entry.Framework} / {entry.Mod} / {entry.Group}\n\n{entry.Path}\nSource: {assets.Source(entry.Path)}\n\n"+(overridden.Length>0?overridden+"\n\n":"")+$"{entry.ConfigPath}\n{entry.Config}";
             var map=timeline.Segments?[0].Speed;
             string When(double clipTime)=>map==null?$"{clipTime,8:F4}":$"{map.ToPlay(clipTime),8:F4} (clip {clipTime:F4})";
             events.Text=$"{decoded.Duration:F4} seconds · {decoded.Frames} source frames · {decoded.Tracks} tracks"+(map==null?"":$"\nPlays in {timeline.Duration:F4} s: {timeline.Segments![0].SpeedVariable} {map.Describe()}. Times below are playback times, clip times in brackets.")+"\n\n"+string.Join("\n",decoded.Events.Select(e=>$"{When(e.Time)} {e.Text}"))+(decoded.WeaponEvents.Count==0?"":"\n\nWEAPON ATTACHMENT\n"+$"{0d,8:F4} {(decoded.WeaponSheathedAt(0)==true?"on the holster node":"in the hand")} (state before the first annotation)\n"+string.Join("\n",decoded.WeaponEvents.Select(e=>$"{When(e.Time)} {(e.Sheathed?"weaponSheathe: moves to the holster node":"weaponDraw: moves to the hand")}")))+(decoded.BfcoSpeedChanges.Count==0||Bfco.IsClip(entry.Name,decoded.Events)?"":"\n\nBFCO_AttackSpeed annotations are listed above but not applied: this is not a BFCO clip, and MCO's behaviors read MCO_AttackSpeed only.")+Bfco.Describe(entry.Name,decoded)+PrecisionText()+SoundText()+"\n\nRESOLVED VISUAL EFFECTS\n"+string.Join("\n",cues.Select(c=>$"{c.Time:F4} {c.Model}\n  {c.Origin}"));
             Highlight.Index(decoded.Events.Select(e=>new AnnotationRow(map?.ToPlay(e.Time)??e.Time,e.Text,true,$"{When(e.Time)} {e.Text}")));
-            status.Text=$"{entry.Name} · {decoded.Duration:F3} s"+(map==null?"":$" (plays in {timeline.Duration:F3} s)")+$" · {cues.Count} visual cue(s) · {decoded.Translation.Count} AMR keys";clock.Play();
+            status.Text=$"{entry.Name} · {decoded.Duration:F3} s"+(map==null?"":$" (plays in {timeline.Duration:F3} s)")+$" · {cues.Count} visual cue(s) · {decoded.Translation.Count} AMR keys"+(raceNote==null?"":" · "+raceNote);clock.Play();
         }catch(Exception ex){ShowError(ex);}finally{busy=false;}
     }
     void RefreshQueue()
@@ -1006,7 +1014,24 @@ public sealed class MainWindow : Form
     void RebuildScene()
     {
         if(selecting)return;bool playing=clock.Playing;clock.Pause();scene.Clear();
-        var race=races.SelectedItem as GameRecord;bool female=sex.SelectedIndex==1;scene.LoadSkeleton(customSkeleton??RaceSkeleton(race,female));
+        var race=races.SelectedItem as GameRecord;bool female=sex.SelectedIndex==1;
+        // A clip whose own skeleton has no race in the loaded plugins plays on that skeleton alone: the race's body,
+        // armor, head and weapon are made for another skeleton, so they are left out and the bones are drawn instead.
+        // The body is the NIF named after the actor folder beside the skeleton, as vampirelord.nif and
+        // vampirelordfemale.nif are; without one only the bones are drawn.
+        bool bare=customSkeleton==null&&clipSkeleton!=null;
+        string project=clipSkeleton!=null?Path.GetDirectoryName(Path.GetDirectoryName(clipSkeleton)!)!+@"\":RaceProject(race,female);
+        string? projectHkx=new[]{project+(female?@"character assets female\skeleton_female.hkx":"character assets\\skeleton.hkx"),project+@"character assets\skeleton.hkx"}.FirstOrDefault(assets.Exists);
+        scene.LoadSkeleton(customSkeleton??clipSkeleton??RaceSkeleton(race,female),projectHkx??@"meshes\actors\character\character assets\skeleton.hkx");
+        string? bareBody=null;
+        if(bare){
+            string folder=Path.GetDirectoryName(clipSkeleton!)!,actor=Path.GetFileName(Path.GetDirectoryName(folder)!);
+            bareBody=new[]{Path.Combine(folder,actor+(female?"female":"")+".nif"),Path.Combine(folder,actor+".nif")}.FirstOrDefault(assets.Exists);
+            if(bareBody!=null)scene.AddModel(bareBody);
+            scene.Diagnostics.Add($"Playing on {clipSkeleton}"+(bareBody!=null?$" with {bareBody}":" with the bones only")+": no loaded race uses that skeleton, so the selected race's body, armor, head and weapon are not drawn.");
+        }
+        scene.ShowSkeleton=showSkeleton.Checked||(bare&&bareBody==null);
+        if(!bare){
         var models=new Dictionary<string,(string Path,uint Slots,string[]? Textures)>(StringComparer.OrdinalIgnoreCase);var skin=race==null?null:records.Resolve(race,race.First("WNAM")?.UInt()??0);
         string ModelPath(GameRecord addon)=>ProjectileVisuals.ModelPath(addon.First(female?"MOD3":"MOD2")?.Text);
         uint coveredSlots=worn.SelectMany(item=>records.ArmorAddons(item,race)).Where(addon=>ModelPath(addon).Length>0&&assets.Exists(ModelPath(addon))).Aggregate(0u,(mask,addon)=>mask|addon.Slots);
@@ -1032,14 +1057,96 @@ public sealed class MainWindow : Form
         }
         scene.HolsterNode=weapons.SelectedItem is GameRecord holstered?Records.WeaponHolsterNode(holstered):null;scene.Sheathed=sheathed.Checked;
         if(weapons.SelectedItem is GameRecord w && w.First("MODL") is {} mf)scene.AddModel(mf.Text,true,weaponIndex:Records.WeaponBipedIndex(w));
+        }
         foreach(var m in customModels)scene.AddModel(m);scene.AddEffects(cues);
         foreach(var path in effectOverlays)scene.AddModel(path,false,new EffectCue(0,path,1,0,Math.Max(10,clip?.Duration??0),1,System.Numerics.Vector3.Zero,"Saved effect overlay",WorldSpace:true));
-        scene.Weight=weight.Value;scene.Commit();UpdateHolsterLabel();UpdateWeightLabel();UpdatePhysicsLabel();RefreshEffectSequences();if(clip!=null)scene.BindClip(clip);scene.PrecisionPowerAttack=PowerAttackAt;UpdatePrecisionLabel();UpdateSoundWarnings();if(bonesWindow!=null)FillBoneList();UpdateHolsterLabel();equipped.Items.Clear();equipped.Items.AddRange(worn.Cast<object>().ToArray());((WrappedListBox)equipped).Reflow();scene.SetTime(clock.Time);scene.FrameAfterRebuild();UpdateDiagnostics();if(playing)clock.Play();if(!busy&&!selecting)SaveSession();
+        scene.Weight=weight.Value;scene.Commit();UpdateHolsterLabel();UpdateWeightLabel();UpdatePhysicsLabel();RefreshEffectSequences();if(clip!=null){if(SkeletonMismatch() is {} mismatch)scene.Diagnostics.Add(mismatch);else scene.BindClip(clip);}scene.PrecisionPowerAttack=PowerAttackAt;UpdatePrecisionLabel();UpdateSoundWarnings();if(bonesWindow!=null)FillBoneList();UpdateHolsterLabel();equipped.Items.Clear();equipped.Items.AddRange(worn.Cast<object>().ToArray());((WrappedListBox)equipped).Reflow();scene.SetTime(clock.Time);scene.FrameAfterRebuild();UpdateDiagnostics();UpdatePbrNote();if(playing)clock.Play();if(!busy&&!selecting)SaveSession();
     }
-    static string RaceSkeleton(GameRecord? race,bool female)
+    // A race whose skeleton NIF is not in the mounted data falls back to the human one rather than drawing nothing.
+    string RaceSkeleton(GameRecord? race,bool female)=>DeclaredSkeleton(race,female) is {} declared&&assets.Exists(declared)?declared:(female?@"meshes\actors\character\character assets female\skeleton_female.nif":@"meshes\actors\character\character assets\skeleton.nif");
+    // The skeleton NIF the race record names for that sex: the ANAM after the MNAM (male) or FNAM (female) marker at the
+    // top of the record, before the NAM1 body and NAM0 head blocks reuse those markers. A race without a female
+    // skeleton uses the male one, as the game does. Null when the record names none.
+    internal static string? DeclaredSkeleton(GameRecord? race,bool female)
     {
-        if(race!=null) {int gender=-1;bool skeleton=false;foreach(var f in race.Fields) {if(f.Tag=="NAM0"){skeleton=true;gender=-1;}if(f.Tag=="NAM1")skeleton=false;if(f.Tag=="MNAM")gender=0;if(f.Tag=="FNAM")gender=1;if(skeleton&&gender==(female?1:0)&&f.Tag=="MODL"&&f.Text.EndsWith(".nif",StringComparison.OrdinalIgnoreCase))return @"meshes\"+f.Text;}}
-        return female?@"meshes\actors\character\character assets female\skeleton_female.nif":@"meshes\actors\character\character assets\skeleton.nif";
+        if(race==null)return null;
+        string? male=null,femaleSkeleton=null;int gender=-1;
+        foreach(var f in race.Fields){
+            if(f.Tag is "NAM0" or "NAM1")break;
+            if(f.Tag=="MNAM")gender=0;else if(f.Tag=="FNAM")gender=1;
+            else if(f.Tag=="ANAM"&&f.Text.EndsWith(".nif",StringComparison.OrdinalIgnoreCase)){string path=@"meshes\"+Assets.Normalize(f.Text);if(gender==0)male??=path;else if(gender==1)femaleSkeleton??=path;}
+        }
+        return female?femaleSkeleton??male:male;
+    }
+    // The actor project a race animates in: the folder of its behavior graph (the MODL after MNAM or FNAM in the
+    // NAM3 block), meshes\actors\character\ for DefaultMale.hkx, meshes\actors\werewolfbeast\ for
+    // WerewolfBeastProject.hkx. This, not where the skeleton NIF sits, decides which clips the race plays: a
+    // follower race with its own skeleton under meshes\SC\... still runs the character behavior and its clips.
+    internal static string? RaceBehaviorProject(GameRecord? race,bool female)
+    {
+        if(race==null)return null;
+        string? male=null,femaleGraph=null;int gender=-1;bool behavior=false;
+        foreach(var f in race.Fields){
+            if(f.Tag=="NAM3"){behavior=true;gender=-1;continue;}
+            if(!behavior)continue;
+            if(f.Tag is "NAM4" or "NAM5" or "NAM0" or "NAM1")break;
+            if(f.Tag=="MNAM")gender=0;else if(f.Tag=="FNAM")gender=1;
+            else if(f.Tag=="MODL"&&f.Text.EndsWith(".hkx",StringComparison.OrdinalIgnoreCase)){
+                string folder=Path.GetDirectoryName(@"meshes\"+Assets.Normalize(f.Text))!+@"\";
+                if(gender==0)male??=folder;else if(gender==1)femaleGraph??=folder;
+            }
+        }
+        return female?femaleGraph??male:male;
+    }
+    // The race's project, or the character project for a race that names no behavior graph.
+    static string RaceProject(GameRecord? race,bool female)=>RaceBehaviorProject(race,female)??@"meshes\actors\character\";
+    static bool SameProject(string a,string b)=>a.Equals(b,StringComparison.OrdinalIgnoreCase);
+    // The actor project a clip belongs to, the folder before its "animations" folder: meshes\actors\werewolfbeast\
+    // for a werewolf clip, OAR and DAR folders included. Null for clips outside meshes\actors.
+    internal static string? ClipProject(string path)
+    {
+        path=Assets.Normalize(path);int i=path.IndexOf(@"\animations\",StringComparison.OrdinalIgnoreCase);
+        return i>0&&path.StartsWith(@"meshes\actors\",StringComparison.OrdinalIgnoreCase)?path[..(i+1)]:null;
+    }
+    // A clip only poses the skeleton it was made for: its tracks are numbered against that skeleton.hkx, so a werewolf
+    // clip on the human skeleton moves the wrong bones. When the clip comes from another actor project, this picks a
+    // race whose skeleton lives there (WerewolfBeastRace, DLC1VampireBeastRace, a bear race...) and goes back to the
+    // last character race for character clips. A skeleton the user chose by hand is left alone.
+    // A race picked by hand while a clip from another actor folder is loaded (a vampire race with a werewolf clip
+    // still selected): binding would drive the wrong bones and twist the body, so the clip is not bound and the
+    // character stays in its rest pose until a matching clip or race is picked.
+    string? SkeletonMismatch()
+    {
+        if(customSkeleton!=null||clipSkeleton!=null||selected==null||ClipProject(selected.Path) is not {} project)return null;
+        var race=races.SelectedItem as GameRecord;string raceProject=RaceProject(race,sex.SelectedIndex==1);
+        if(SameProject(raceProject,project))return null;
+        return $"{selected.Name} is made for the skeleton in {project}, but {race?.EditorId??"this race"} animates in {raceProject}. The clip is not applied, so the character stays in its rest pose. Pick a clip made for this race; picking a clip from that folder switches to a race that fits it.";
+    }
+    // When no loaded race fits (a vampire lord clip without Dawnguard.esm), the project's own skeleton.nif is used alone.
+    GameRecord? characterRace;string? clipSkeleton;
+    string? MatchRaceToClip(string clipPath)
+    {
+        clipSkeleton=null;
+        if(customSkeleton!=null||ClipProject(clipPath) is not {} project)return null;
+        bool female=sex.SelectedIndex==1;
+        bool Fits(GameRecord race)=>SameProject(RaceProject(race,female),project);
+        var current=races.SelectedItem as GameRecord;bool characterProject=project.Equals(@"meshes\actors\character\",StringComparison.OrdinalIgnoreCase);
+        if(current!=null&&Fits(current)){if(characterProject)characterRace=current;return null;}
+        // A race named in the clip's file name first (mt_idle_wolf: WolfRace, not DogRace from the same folder), then the
+        // shortest editor ID: WolfRace before C06WolfSpiritRace, a base race before its quest variants.
+        var candidates=races.Items.Cast<GameRecord>().Where(r=>RaceBehaviorProject(r,female)!=null&&Fits(r))
+            .OrderByDescending(r=>Path.GetFileNameWithoutExtension(clipPath).Contains(r.EditorId.Replace("Race",""),StringComparison.OrdinalIgnoreCase)).ThenBy(r=>r.EditorId.Length).ToList();
+        var pick=characterProject&&characterRace!=null&&Fits(characterRace)?characterRace
+            :candidates.FirstOrDefault(r=>characterProject&&r.EditorId=="NordRace")??candidates.FirstOrDefault();
+        if(pick==null){
+            string own=project+@"character assets\skeleton.nif";
+            if(assets.Exists(own)){clipSkeleton=own;return $"No loaded race uses a skeleton from {project} (is its plugin, such as Dawnguard.esm, in the mounted data?), so the clip plays on that folder's own skeleton.";}
+            return $"No race uses a skeleton from {project}, so this clip plays on the {current?.EditorId??"default"} skeleton and its tracks may drive the wrong bones. Choose a matching skeleton NIF in the Character tab.";
+        }
+        if(current!=null&&SameProject(RaceProject(current,female),@"meshes\actors\character\"))characterRace=current;
+        selecting=true;try{races.SelectedItem=pick;}finally{selecting=false;}
+        PopulateHeads();
+        return $"Race switched to {pick.EditorId}: the clip is from {project} and needs that skeleton.";
     }
     void ChooseAnimation(){using var d=new OpenFileDialog{Filter="Havok animations|*.hkx",Multiselect=true};if(d.ShowDialog()==DialogResult.OK)DropFiles(d.FileNames);}
     void DropFiles(string[] files){ClipEntry? last=null;foreach(var file in files)try{if(Directory.Exists(file))foreach(var f in Directory.EnumerateFiles(file,"*",SearchOption.AllDirectories).Where(f=>f.EndsWith(".hkx",StringComparison.OrdinalIgnoreCase)))last=assets.Drop(f);else last=assets.Drop(file);}catch(Exception ex){ShowError(ex);}BuildTree();try{SaveSession();}catch(Exception ex){ShowError(ex);}if(last!=null)_=SelectClip(last);}
@@ -1221,8 +1328,30 @@ public sealed class MainWindow : Form
             int index=clip.SegmentIndex(time);var segment=segments[index];
             text+=clip.Queued?$" · clip {index+1}/{segments.Count} {segment.Name}":$" · clip time {segment.Local(time):F3} s at {segment.Speed.SpeedAt(segment.Local(time)):0.00}x";
         }
-        timeLabel.Text=text;
+        SetTimeText(text);
         Highlight.Update(time,clip==null?null:scene.Precision,follow:clock.Playing);
+    }
+    // The tick box's tooltip counts the True PBR shapes in the scene, so it is clear whether the box changes anything.
+    // The box turns itself on when the scene gains True PBR shapes (none before, some now), on load included. A box
+    // the user unticks stays off while those shapes remain; it is offered again only after a scene without them.
+    int lastPbrShapes;
+    void UpdatePbrNote()
+    {
+        int pbr=scene.TruePbrShapes();
+        if(pbr>0&&lastPbrShapes==0&&!truePbr.Checked){truePbr.Checked=true;status.Text=$"True PBR materials turned on: {pbr} shape(s) in the scene are patched for Community Shaders True PBR.";scene.Diagnostics.Add(status.Text);UpdateDiagnostics();}
+        lastPbrShapes=pbr;
+        pbrTip.SetToolTip(truePbr,"Draws shapes patched for Community Shaders True PBR (shader flag 2 bit 23, RMAOS map in slot 5) with its PBR lighting: GGX specular, metal and roughness from the RMAOS map, AO."
+            +"\nOff, they render as the vanilla shader would read them, as in a game without Community Shaders."
+            +$"\nThis scene: {pbr} True PBR shape(s).");
+    }
+    void SetTimeText(string text)
+    {
+        if(timeLabel.Text==text)return;
+        var size=TextRenderer.MeasureText(text,timeLabel.Font);
+        int width=size.Width+timeLabel.Padding.Horizontal+4,height=size.Height+timeLabel.Padding.Vertical;
+        // Grows at once, shrinks only by a clear margin, so the buttons after it do not shift every frame.
+        if(width>timeLabel.Width||width<timeLabel.Width-60||height!=timeLabel.Height)timeLabel.Size=new Size(width,height);
+        timeLabel.Text=text;
     }
     // Steps whole frames from the current one; 0 moves to the nearest frame. Pauses playback like the old step buttons.
     void SeekFrame(int frames)
@@ -1236,23 +1365,29 @@ public sealed class MainWindow : Form
     void TickPlayback()
     {
         if(busy)return;
-        double now=frameClock.Elapsed.TotalSeconds;if(now-lastSample<1/60d)return;lastSample=now;
+        double now=frameClock.Elapsed.TotalSeconds;if(now-lastSample<.5/60)return;lastSample=now;
         // Physics runs on wall-clock time: with no clip, while scrubbing and while paused, as in game.
         if((clip==null&&!previewingEffect)||scrubbing){StepPhysics(now);return;}
         if(!clock.Loop&&clock.Absolute>=clock.Duration)clock.Pause();
         double time=clock.Time;
         // Snapped playback holds each frame's pose until the clock reaches the next frame.
         if(snapFrames.Checked)time=FrameTime(FrameAt(time));
+        List<(string,double)>? parts=ticksOn?[]:null;var part=parts==null?null:Stopwatch.StartNew();
+        void Mark(string name){if(parts!=null){parts.Add((name,part!.Elapsed.TotalMilliseconds));part.Restart();}}
         if(clock.Playing||time!=scene.Time)scene.SetTime(time);
+        Mark("pose");
         StepPhysics(now);
         FireSounds();
+        Mark("physics");
         viewport.PlayingAnimation=clock.Playing;
         // PlayingAnimation stops the shared viewport's idle pipeline timer.
         // The playback host must consume dirty poses and upload skinning here.
         if(clock.Playing)viewport.InvalidateRender();
-        timeline.Value=(int)Math.Clamp(time/clock.Duration*10000,0,10000);
+        Mark("pipeline");
+        timeline.Value=(int)Math.Clamp(time/clock.Duration*10000,0,10000);Mark("timeline");
         UpdateTimeLabel(time);
         if(scene.ParticleSystems>0)status.Text=$"{scene.ParticleSystems} particle systems · {scene.ParticleCount} live particles · {scene.DrawnParticles} drawn"+(scene.BudgetDrops>0?$" · {scene.BudgetDrops:N0} births over budget":"");
+        Mark("ui");if(parts!=null)ticks.Add(parts);
     }
 
     SoundLibrary Sounds()
@@ -1327,7 +1462,7 @@ public sealed class MainWindow : Form
     }
     void UpdateDiagnostics(){var lines=assets.Diagnostics.Concat(records.Diagnostics).Concat(effects.Diagnostics).Concat(scene.Diagnostics).Concat(scene.BudgetDiagnostics).Distinct().ToList();diagnostics.Text=string.Join("\n",lines);if(diagnosticsTab!=null)diagnosticsTab.Text=lines.Count==0?"Diagnostics":$"Diagnostics · {lines.Count}";if(diagnostics.Text.Length==0)diagnostics.Text="No loader errors. Skyrim engine parity and MO2 virtual-file testing are separate validation steps.";}
     void ShowError(Exception ex){status.Text=ex.Message;diagnostics.AppendText("\n"+ex);File.AppendAllText(Path.Combine(AppContext.BaseDirectory,"previewer.log"),DateTime.Now+" "+ex+"\n");}
-    sealed record SessionSettings(string[] Roots,string? Plugins,string[]? Dropped=null,float ProjectileElevation=0,int CameraSubject=1,bool FollowCamera=true,bool GridFloor=true,string? Race=null,int Sex=0,string[]? Heads=null,string[]? Armor=null,string? Weapon=null,string? Clip=null,double Time=0,double Fps=30,double Speed=1,bool Loop=true,bool RootMotion=true,bool Effects=true,bool ConditionalDac=false,float ParticleLod=0,string[]? Models=null,string? Skeleton=null,int Version=2,bool ShowWeapon=true,bool Sheathed=false,int Weight=100,int ParticleBudget=2000,string[]? EffectOverlays=null,bool SmpPhysics=false,bool SmpColliders=false,bool SmpBones=false,string? HairColor=null,bool SnapFrames=false,string[]? Queue=null,bool QueuePlaying=false,double QueueBlend=.3,bool QueueAtWindow=true,string? QueueWindow="MCO_WinOpen",bool PrecisionCollisions=false,bool PrecisionNpc=false,bool PlaySounds=false,Dictionary<string,int>?[]? QueueWindowPicks=null,bool ShowSkeleton=false,bool ShowBoneNames=false,string[]? BoneFilter=null);
+    sealed record SessionSettings(string[] Roots,string? Plugins,string[]? Dropped=null,float ProjectileElevation=0,int CameraSubject=1,bool FollowCamera=true,bool GridFloor=true,string? Race=null,int Sex=0,string[]? Heads=null,string[]? Armor=null,string? Weapon=null,string? Clip=null,double Time=0,double Fps=30,double Speed=1,bool Loop=true,bool RootMotion=true,bool Effects=true,bool ConditionalDac=false,float ParticleLod=0,string[]? Models=null,string? Skeleton=null,int Version=2,bool ShowWeapon=true,bool Sheathed=false,int Weight=100,int ParticleBudget=2000,string[]? EffectOverlays=null,bool SmpPhysics=false,bool SmpColliders=false,bool SmpBones=false,string? HairColor=null,bool SnapFrames=false,string[]? Queue=null,bool QueuePlaying=false,double QueueBlend=.3,bool QueueAtWindow=true,string? QueueWindow="MCO_WinOpen",bool PrecisionCollisions=false,bool PrecisionNpc=false,bool PlaySounds=false,Dictionary<string,int>?[]? QueueWindowPicks=null,bool ShowSkeleton=false,bool ShowBoneNames=false,string[]? BoneFilter=null,bool TruePbr=false);
     // Label shows the node in use so a missing holster on a custom skeleton is visible at a glance.
     void StepPhysics(double now)
     {
@@ -3815,6 +3950,46 @@ public sealed class MainWindow : Form
         }catch(Exception ex){File.WriteAllText(Path.Combine(output,"failure.txt"),ex.ToString());Environment.ExitCode=1;}
         finally{try{File.WriteAllLines(Path.Combine(output,"frames.csv"),rows);}finally{Close();}}
     }
+    // Plays a clip from the saved session for a few seconds the way the window does and writes what was presented:
+    // frames per second, the gaps between them, the time each part of a tick took, and how the clip bound.
+    async Task PlaybackProbe(string clipSuffix,double seconds){
+        var log=new List<string>();string output=Path.Combine(AppContext.BaseDirectory,"playback-probe");Directory.CreateDirectory(output);
+        var presents=new List<double>();var renders=new List<double>();var watch=new Stopwatch();var renderWatch=new Stopwatch();
+        void Before(){presents.Add(watch.Elapsed.TotalMilliseconds);renderWatch.Restart();}
+        void After(OpenTK.Mathematics.Matrix4 _){renders.Add(renderWatch.Elapsed.TotalMilliseconds);}
+        try{
+            var state=JsonSerializer.Deserialize<SessionSettings>(File.ReadAllText(ToolSessionPath()))!;
+            await ApplySettings(state with {Clip=null,FollowCamera=false});
+            var entry=assets.Clips.FirstOrDefault(c=>c.Path.EndsWith(clipSuffix.Replace('/','\\'),StringComparison.OrdinalIgnoreCase));
+            if(entry==null){File.WriteAllLines(Path.Combine(output,"clips.txt"),assets.Clips.Select(c=>c.Path));throw new InvalidDataException($"No clip ends with {clipSuffix}; clips.txt lists all {assets.Clips.Count}");}
+            await SelectClip(entry);
+            // SSE_PROBE_RACE picks a race by editor ID after the clip, as a user choosing one from the list does.
+            if(Environment.GetEnvironmentVariable("SSE_PROBE_RACE") is {Length:>0} raceId){races.SelectedItem=races.Items.Cast<GameRecord>().First(r=>r.EditorId.Equals(raceId,StringComparison.OrdinalIgnoreCase));log.Add("status after race change: "+status.Text);}
+            // SSE_PROBE_PBR=1 ticks the True PBR box; SSE_PROBE_CLOSE=<factor> moves the camera closer for after.png.
+            if(Environment.GetEnvironmentVariable("SSE_PROBE_PBR")=="1")truePbr.Checked=true;
+            if(double.TryParse(Environment.GetEnvironmentVariable("SSE_PROBE_CLOSE"),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out double close)){followCamera.Checked=false;scene.FollowScene=false;cameraSubject.SelectedIndex=1;scene.Frame();viewport.camera.distance*=(float)close;}
+            log.Add($"True PBR: box {(truePbr.Checked?"on":"off")}, {scene.TruePbrShapes()} True PBR shape(s) in the scene");
+            log.Add($"clip: {entry.Path}");log.Add($"race: {races.SelectedItem}");log.Add($"skeleton HKX: {scene.SkeletonHkx}; {scene.Skeleton.SkeletonDictionary.Count} NIF bones");
+            log.Add($"bound: {(scene.Session==null?"no":$"yes, {scene.Session.TrackCount} tracks, mapping {scene.Session.Diagnostics.MappingStrategy}")}");
+            log.AddRange(scene.Diagnostics.Select(d=>"scene: "+d));
+            clock.Pause();clock.Seek(0);await Task.Delay(300);
+            ticks.Clear();ticksOn=true;viewport.BeforeSceneFrame+=Before;viewport.AfterSceneFrame+=After;watch.Restart();clock.Play();
+            await Task.Delay(TimeSpan.FromSeconds(seconds));
+            clock.Pause();viewport.BeforeSceneFrame-=Before;viewport.AfterSceneFrame-=After;
+            double elapsed=watch.Elapsed.TotalMilliseconds;
+            using(var shot=viewport.CaptureBitmap())shot?.Save(Path.Combine(output,"after.png"));
+            var gaps=presents.Zip(presents.Skip(1),(a,b)=>b-a).OrderBy(g=>g).ToArray();
+            double Pct(double[] v,double p)=>v.Length==0?0:v[Math.Min(v.Length-1,(int)(p*v.Length))];
+            log.Add(FormattableString.Invariant($"presented {presents.Count} frames in {elapsed/1000:F2} s = {presents.Count*1000/elapsed:F1} FPS"));
+            log.Add(FormattableString.Invariant($"gap ms: median {Pct(gaps,.5):F1}, p90 {Pct(gaps,.9):F1}, max {(gaps.Length>0?gaps[^1]:0):F1}"));
+            var render=renders.OrderBy(r=>r).ToArray();log.Add(FormattableString.Invariant($"scene draw ms: median {Pct(render,.5):F2}, p90 {Pct(render,.9):F2}"));
+            log.Add(FormattableString.Invariant($"ticks that did work: {ticks.Count}"));
+            foreach(var part in ticks.SelectMany(t=>t).GroupBy(p=>p.Part)){var v=part.Select(p=>p.Ms).OrderBy(x=>x).ToArray();log.Add(FormattableString.Invariant($"  {part.Key,-10} median {Pct(v,.5):F3} ms, p90 {Pct(v,.9):F3} ms"));}
+        }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
+        finally{ticks.Clear();ticksOn=false;File.WriteAllLines(Path.Combine(output,"playback-probe.txt"),log);Close();}
+    }
+    // Per-tick cost of each part of TickPlayback, collected only by the playback probe.
+    readonly List<List<(string Part,double Ms)>> ticks=[];bool ticksOn;
     async Task WeaponArtProfile(){
         var rows=new List<string>{"time,pose_ms,frame_ms,update_ms,simulation_ms,effect_draw_ms,particles,drawn"};
         string output=Environment.GetEnvironmentVariable("SSE_PROFILE_OUTPUT")??Path.Combine(AppContext.BaseDirectory,"weaponart-profile");Directory.CreateDirectory(output);
@@ -3847,7 +4022,9 @@ public sealed class MainWindow : Form
             if(Math.Abs(clock.Absolute-elapsed)>.1)throw new InvalidDataException("Playback time drifted from elapsed wall time");
             if(frames.Select(f=>Math.Round(f.Time,3)).Distinct().Count()<8)throw new InvalidDataException("Step FPS still throttles presented scene times");
             var gaps=frames.Zip(frames.Skip(1),(a,b)=>b.Wall-a.Wall).ToArray();
-            if(gaps.Length==0||gaps.Min()<1/60d-.001)throw new InvalidDataException("Presented frames exceeded the 60 FPS cap");
+            // The pacer keeps a 60 Hz schedule, so a tick that woke late is followed by a slightly shorter gap. The cap holds
+            // when the average stays at 60 FPS and no two frames are presented for the same tick.
+            if(gaps.Length==0||gaps.Average()<1/60d-.0005||gaps.Min()<.012)throw new InvalidDataException(FormattableString.Invariant($"Presented frames exceeded the 60 FPS cap: {gaps.Length} gaps, shortest {(gaps.Length>0?gaps.Min()*1000:0):F2} ms, {gaps.Count(g=>g<1/60d-.001)} under 15.67 ms, sorted {string.Join(" ",gaps.OrderBy(g=>g).Take(8).Select(g=>(g*1000).ToString("F1")))}"));
             using(var image=viewport.CaptureBitmap())image.Save(Path.Combine(AppContext.BaseDirectory,"timing-render.png"));
             log.Add($"PASS elapsed={elapsed:F6}s playback={clock.Absolute:F6}s presented={frames.Count}; minimum presentation interval={gaps.Min():F6}s; step FPS=1.");
             log.Add("PASS Distinct scene times continue between stepping frames; wall-clock speed and the 60 FPS presentation cap are independent.");

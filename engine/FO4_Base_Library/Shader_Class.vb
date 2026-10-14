@@ -2219,6 +2219,12 @@ uniform sampler2D texGlowmap;
 uniform sampler2D texLightmask;
 uniform sampler2D texDetailMask;
 uniform sampler2D texFaceTintOverlay;   // TETI/TEND composed tint layers, blended on top of diffuse
+// Community Shaders True PBR (the previewer's PBR toggle). bPbr is set only for a shape whose shader carries the
+// True PBR flag (flags 2 bit 23) and an RMAOS map in slot 5: R roughness, G metal, B AO, A specular.
+uniform bool bPbr;
+uniform sampler2D texRmaos;
+uniform float pbrRoughnessScale;   // NIF SpecularStrength
+uniform float pbrSpecularLevel;    // NIF Glossiness
 
 uniform bool bLightEnabled;
 uniform bool bShowTexture;
@@ -2565,6 +2571,36 @@ void directionalLight(in DirectionalLight light, in vec3 lightDir, inout vec3 ou
 	}
 }
 
+// TRUE PBR, ported from Community Shaders (package/Shaders/Common/PBR.hlsli, PBRMath.hlsli, BRDF.hlsli) in
+// its linear-lighting form, which is the space this renderer lights in: GGX distribution, Smith joint
+// approximate visibility, Schlick Fresnel, Lambert diffuse weighted by (1 - F), and the micro-shadow term from
+// the AO channel. CS multiplies light colors by pi to cancel Lambert's 1/pi, so the diffuse term here is
+// light * N.L * (1 - F), the same brightness as the non-PBR Lambert above, and the specular keeps the pi.
+const float PBR_PI = 3.14159265;
+void pbrDirectLight(in DirectionalLight light, in vec3 L, in vec3 F0, in float rough, in float ao, inout vec3 outD, inout vec3 outS)
+{
+	vec3 H = normalize(L + viewDir);
+	float NdotL = dot(normal, L);
+	float sNdotL = clamp(NdotL, 1e-5, 1.0);
+	float sNdotV = clamp(abs(dot(normal, viewDir)) + 1e-5, 0.0, 1.0);
+	float sNdotH = clamp(dot(normal, H), 0.0, 1.0);
+	float sVdotH = clamp(dot(viewDir, H), 0.0, 1.0);
+	float a = rough * rough;
+	float a2 = a * a;
+	float d = sNdotH * sNdotH * (a2 - 1.0) + 1.0;
+	float D = a2 / (PBR_PI * d * d);
+	float visV = sNdotL * (sNdotV * (1.0 + a) + a);
+	float visL = sNdotV * (sNdotL * (1.0 + a) + a);
+	float Vis = 0.5 / max(visV + visL, 1e-5);
+	float Fc = pow(1.0 - sVdotH, 5.0);
+	vec3 F = Fc + (1.0 - Fc) * F0;
+	// ApproximateDirectOcculusion (Shading.hlsli), Micro Shadows on at strength 1 as CS ships it.
+	float micro = clamp((NdotL + 0.1) * inversesqrt(1.0000001 - min(ao, 1.0)), 0.0, 1.0);
+	vec3 radiance = light.diffuse * micro;
+	outD += radiance * sNdotL * (vec3(1.0) - F);
+	outS += radiance * sNdotL * D * Vis * F * PBR_PI;
+}
+
 vec4 colorLookup(in float x, in float y)
 {
 	return texture(texGreyscale, vec2(clamp(x, 0.0, 1.0), clamp(y, 0.0, 1.0)));
@@ -2833,6 +2869,57 @@ void main(void)
 				if (uShadowSlot[3] >= 0) backL.diffuse    *= shadowFactorAt(vWorldPos, wn, uShadowSlot[3]);
 			}
 
+			if (bPbr && bShowTexture && !bIsEffectShader)
+			{
+				// Material, as CS Lighting.hlsl builds it under TRUE_PBR: rawRMAOS *= (roughness scale, 1, 1,
+				// specular level); roughness clamped to [0.04, 1]; vertex color linearized, black meaning white;
+				// F0 = lerp(specular, base color, metal); base color loses the metal share. The albedo is already
+				// linear here: color textures are decoded from sRGB at load.
+				vec4 rm = texture(texRmaos, uv);
+				float rough = clamp(rm.r * pbrRoughnessScale, 0.04, 1.0);
+				float metal = clamp(rm.g, 0.0, 1.0);
+				float ao = clamp(rm.b, 0.0, 1.0);
+				vec3 vc = pow(max(vColor.rgb, vec3(0.0)), vec3(2.2));
+				if (max(max(vc.r, vc.g), vc.b) == 0.0) vc = vec3(1.0);
+				vec3 base = baseMap.rgb * vc;
+				vec3 F0 = mix(vec3(rm.a * pbrSpecularLevel), base, metal);
+				vec3 diffuseColor = base * (1.0 - metal);
+
+				vec3 pd = vec3(0.0);
+				vec3 ps = vec3(0.0);
+				pbrDirectLight(keyLight, lightFrontal, F0, rough, ao, pd, ps);
+				pbrDirectLight(fillL, lightDirectional0, F0, rough, ao, pd, ps);
+				pbrDirectLight(fillR, lightDirectional1, F0, rough, ao, pd, ps);
+				pbrDirectLight(backL, lightDirectional2, F0, rough, ao, pd, ps);
+
+				// Indirect lobes (PBR.hlsli GetIndirectLobeWeights): Lazarov environment BRDF, energy kept
+				// out of the diffuse, multi-bounce AO, specular occlusion. The preview has no cubemap of the
+				// scene, so the reflected radiance is the same sky/ground hemisphere the ambient uses, read
+				// along the reflection vector.
+				float NdotV = clamp(dot(normal, viewDir), 0.0, 1.0);
+				vec4 r = rough * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+				float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
+				vec2 AB = vec2(-1.04, 1.04) * a004 + r.zw;
+				vec3 specW = F0 * AB.x + AB.y;
+				vec3 mbA = 2.0404 * diffuseColor - 0.3324;
+				vec3 mbB = -4.7951 * diffuseColor + 0.6417;
+				vec3 mbC = 2.7552 * diffuseColor + 0.6903;
+				vec3 multiBounce = max(vec3(ao), ((ao * mbA + mbB) * ao + mbC) * ao);
+				vec3 diffW = diffuseColor * (vec3(1.0) - specW) * multiBounce;
+				float specOcc = clamp(pow(NdotV + ao, rough * rough) - 1.0 + ao, 0.0, 1.0);
+				vec3 reflectedDir = reflect(-viewDir, normal);
+
+				vec3 pbrEmit = vec3(0.0);
+				if (bEmissive)
+				{
+					pbrEmit = emissiveColor * emissiveMultiple;
+					if (bGlowmap) pbrEmit *= pow(texture(texGlowmap, uv).rgb, vec3(2.2));
+				}
+
+				color.rgb = diffuseColor * pd + ps + diffW * hemiAmbient(normal) + specW * specOcc * hemiAmbient(reflectedDir) + pbrEmit;
+			}
+			else
+			{
 			directionalLight(keyLight, lightFrontal, outDiffuse, outSpecular);
 			directionalLight(fillL, lightDirectional0, outDiffuse, outSpecular);
 			directionalLight(fillR, lightDirectional1, outDiffuse, outSpecular);
@@ -2966,6 +3053,7 @@ void main(void)
 			if (bHairTint && !bIsEffectShader)
 			{
 				color.rgb *= mix(vec3(1.0), tintColor, vColor.g);
+			}
 			}
 		}
 

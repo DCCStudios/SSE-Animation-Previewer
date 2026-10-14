@@ -343,6 +343,8 @@ Public Class FO4UnifiedMaterial_Class
         copy._skinTintAlpha = _skinTintAlpha
         copy._NifGlossiness = _NifGlossiness
         copy._NifGlossinessFromShader = _NifGlossinessFromShader
+        copy._NifTruePbr = _NifTruePbr
+        copy._NifSpecularStrength = _NifSpecularStrength
         ' Multiplicador runtime del tint (convención ×2 del pelo SSE): vive en el wrapper, no en el
         ' BGSM, así que el loop de reflexión de arriba no lo alcanza. Sin esto un clon perdería el ×2.
         copy.TintColorScale = TintColorScale
@@ -456,6 +458,30 @@ Public Class FO4UnifiedMaterial_Class
     ' Smoothness. Friend para que GetDifferences/AreEqualWithTrace (reflexion solo Public) no lo
     ' dupliquen con Smoothness. Solo se usa en el path SSE; en FO4 el shader deriva de Smoothness.
     Private _NifGlossiness As Single = 1.0F
+
+    ''' <summary>Community Shaders True PBR: pgtools marks a PBR shape with bit 23 of shader flags 2
+    ''' (SLSF2_UNUSED01) and rewrites the slots to 0 albedo (sRGB), 1 normal, 5 RMAOS, 2 glow. Its
+    ''' Glossiness holds the specular level and SpecularStrength the roughness scale (CS Lighting.hlsl:
+    ''' rawRMAOS *= (PBRParams1.x, 1, 1, PBRParams1.z)). Friend: read by the renderer only, kept out of the
+    ''' Public reflection of GetDifferences.</summary>
+    Friend ReadOnly Property NifTruePbr As Boolean
+        Get
+            Return _NifTruePbr
+        End Get
+    End Property
+    Friend ReadOnly Property NifSpecularStrength As Single
+        Get
+            Return _NifSpecularStrength
+        End Get
+    End Property
+    Private _NifTruePbr As Boolean = False
+    Private _NifSpecularStrength As Single = 1.0F
+    Friend Const TruePbrFlag2 As UInteger = 1UI << 23
+    ''' <summary>The True PBR flag for hosts outside this assembly. A function, not a property, so the Public
+    ''' reflection of GetDifferences does not pick it up.</summary>
+    Public Function IsTruePbr() As Boolean
+        Return _NifTruePbr
+    End Function
     Public ReadOnly Property NifGlossiness As Single
         Get
             Return _NifGlossiness
@@ -3630,12 +3656,16 @@ Public Class FO4UnifiedMaterial_Class
             _skinTintAlpha = shad.SkinTintAlpha
             _NifGlossiness = shad.Glossiness
             _NifGlossinessFromShader = True
+            _NifTruePbr = IsSkShader(shad) AndAlso (CUInt(shad.ShaderFlags_SSPF2) And TruePbrFlag2) <> 0
+            _NifSpecularStrength = shad.SpecularStrength
         Else
             _NifShaderType = NiflySharp.Enums.BSLightingShaderType.Default
             _NifEyeEnvironmentMapping = False
             _skinTintAlpha = 1.0F
             _NifGlossiness = 1.0F
             _NifGlossinessFromShader = False
+            _NifTruePbr = False
+            _NifSpecularStrength = 1.0F
         End If
         ApplyAlphaPropertyFromNif(shap, Nif)
         ' NO llamar ApplyShaderTypeToBgsm acá: los flags ya vienen FIELES del shader (Facegen/

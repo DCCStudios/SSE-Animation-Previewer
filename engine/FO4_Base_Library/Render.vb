@@ -223,6 +223,10 @@ void main()
 End Class
 Public Class PreviewControl
     Inherits OpenTK.GLControl.GLControl
+    ''' <summary>Draws Community Shaders True PBR shapes (shader flags 2 bit 23 with an RMAOS map in slot 5) with
+    ''' CS's PBR response instead of the vanilla Skyrim one. Off: those shapes render as the vanilla shader
+    ''' would read their slots, which is what a game without Community Shaders shows.</summary>
+    Public Property TruePbr As Boolean
     Private overlay As TextOverlayRenderer
     Public SharedActiveShader As Shader_Class_Fo4
     Public SharedSSEShader As Shader_Class_SSE
@@ -4592,6 +4596,16 @@ Public Class PreviewModel
                 shader.BindTexture("texEnvMask", envmapMaskTextureId, TextureUnit.Texture3)
             Else
                 shader.BindTexture("texEnvMask", Me.ParentModel.ParentControl.defaultWhiteTex, TextureUnit.Texture3)
+            End If
+
+            ' TRUE PBR (Community Shaders): slot 5 is the RMAOS map, read raw (it is not in ColorTextures_Path_List).
+            ' Only with the viewport toggle on and the map present; otherwise the shape takes the vanilla path.
+            If isSSE Then
+                Dim rmaosId As Integer = If(Me.ParentModel.ParentControl.TruePbr AndAlso materialBase.NifTruePbr AndAlso Not materialBase.IsBGEM, CInt(material.FlowTexture_ID), 0)
+                shader.SetBool("bPbr", rmaosId <> 0)
+                shader.BindTexture("texRmaos", If(rmaosId <> 0, rmaosId, Me.ParentModel.ParentControl.defaultWhiteTex), TextureUnit.Texture11)
+                shader.SetFloat("pbrRoughnessScale", materialBase.NifSpecularStrength)
+                shader.SetFloat("pbrSpecularLevel", materialBase.NifGlossiness)
             End If
 
             ' texSpecular = TXST slot 7. El motor lo lee DOS veces desde material+0x68: t2 (mask especular, bajo

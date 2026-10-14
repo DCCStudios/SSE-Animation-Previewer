@@ -14,6 +14,22 @@ public static class ClipCatalogTests
             Check(outline.Contains("Example.esp")&&outline.Contains("ABC")&&outline.Contains("Custom.dll")&&outline.Contains("Comparison = \">=\""),"Condition arguments and unknown plugin metadata retain their authored values");
             Check(outline.Contains("not evaluated here"),"Readable conditions never imply live actor eligibility");
         }
+        // Which skeleton a clip needs: the actor folder before "animations", and the race whose ANAM names a skeleton there.
+        Check(MainWindow.ClipProject(@"meshes\actors\werewolfbeast\animations\ww_walkforward.hkx")==@"meshes\actors\werewolfbeast\"
+            &&MainWindow.ClipProject(@"meshes\actors\character\animations\OpenAnimationReplacer\Mod\Sub\mco_attack1.hkx")==@"meshes\actors\character\"
+            &&MainWindow.ClipProject(@"meshes\actors\ambient\chicken\animations\mt_idle.hkx")==@"meshes\actors\ambient\chicken\"
+            &&MainWindow.ClipProject(@"meshes\weapons\bow\animations\bow_release.hkx")==null,"A clip's actor project is the folder before its animations folder, OAR folders included");
+        static Field Text(string tag,string text)=>new(tag,System.Text.Encoding.UTF8.GetBytes(text+"\0"));
+        var werewolf=new GameRecord{Kind="RACE",Fields=[Text("EDID","WerewolfBeastRace"),new("DATA",new byte[4]),new("MNAM",[]),Text("ANAM",@"Actors\WerewolfBeast\Character Assets\skeleton.nif"),new("FNAM",[]),Text("ANAM",@"Actors\WerewolfBeast\Character Assets\skeleton.nif"),new("NAM1",[]),new("MNAM",[]),Text("MODL",@"Actors\Character\Character Assets\Tail.nif")]};
+        var nord=new GameRecord{Kind="RACE",Fields=[Text("EDID","NordRace"),new("MNAM",[]),Text("ANAM",@"Actors\Character\Character Assets\skeleton.nif"),new("FNAM",[]),Text("ANAM",@"Actors\Character\Character Assets Female\skeleton_female.nif"),new("NAM0",[]),new("MNAM",[]),Text("ANAM",@"wrong.nif")]};
+        var maleOnly=new GameRecord{Kind="RACE",Fields=[Text("EDID","BearBlackRace"),new("MNAM",[]),Text("ANAM",@"\Actors\Bear\Character Assets\skeleton.nif"),new("FNAM",[])]};
+        Check(MainWindow.DeclaredSkeleton(werewolf,false)==@"meshes\Actors\WerewolfBeast\Character Assets\skeleton.nif"
+            &&MainWindow.DeclaredSkeleton(nord,true)==@"meshes\Actors\Character\Character Assets Female\skeleton_female.nif"
+            &&MainWindow.DeclaredSkeleton(nord,false)==@"meshes\Actors\Character\Character Assets\skeleton.nif","A race's skeleton is the ANAM after its MNAM or FNAM marker, not a field in the body or head blocks");
+        var follower=new GameRecord{Kind="RACE",Fields=[Text("EDID","SC_FF7R_Cloud_Race"),new("MNAM",[]),Text("ANAM",@"SC\0_Followers\000_Cloud\Body\skeleton.nif"),new("NAM1",[]),new("MNAM",[]),Text("MODL",@"Actors\Character\Tail.nif"),new("NAM3",[]),new("MNAM",[]),Text("MODL",@"Actors\Character\DefaultMale.hkx"),new("FNAM",[]),Text("MODL",@"Actors\Character\DefaultFemale.hkx"),new("NAM4",[])]};
+        var wolfBehavior=new GameRecord{Kind="RACE",Fields=[Text("EDID","WolfRace"),new("NAM3",[]),new("MNAM",[]),Text("MODL",@"Actors\Canine\WolfProject.hkx")]};
+        Check(MainWindow.RaceBehaviorProject(follower,false)==@"meshes\Actors\Character\"&&MainWindow.RaceBehaviorProject(follower,true)==@"meshes\Actors\Character\"&&MainWindow.RaceBehaviorProject(wolfBehavior,true)==@"meshes\Actors\Canine\"&&MainWindow.RaceBehaviorProject(nord,false)==null,"A race animates in its behavior graph's folder, even when its skeleton NIF sits elsewhere (a follower race)");
+        Check(MainWindow.DeclaredSkeleton(maleOnly,true)==@"meshes\Actors\Bear\Character Assets\skeleton.nif"&&MainWindow.DeclaredSkeleton(new GameRecord{Kind="RACE"},false)==null,"A race without a female skeleton uses the male one; a race naming none has no declared skeleton");
         var assets=new Assets();
         // The real mod samples need the mod folders; the fixture section below writes its own data and always runs.
         if(SelfTest.TestMods.FirstOrDefault(m=>!SelfTest.HasMod(m)) is {} missingMod)Skip("Real OAR and DAR mod catalog checks and the dropped clip checks that use them: "+SelfTest.Missing(missingMod));else{

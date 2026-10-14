@@ -99,7 +99,8 @@ public sealed class Assets
                 }
             }
         });
-        Roots.Add(folder);Revision++;
+        // Mounting a folder again re-indexes it on top; it is listed once, so a saved session does not mount it twice.
+        Roots.RemoveAll(r=>r.Equals(folder,StringComparison.OrdinalIgnoreCase));Roots.Add(folder);Revision++;
         if(rebuildClips)await Task.Run(RebuildClips);
     }
     public void ApplyArchiveLoadOrder(IEnumerable<string> plugins,string profileFile)

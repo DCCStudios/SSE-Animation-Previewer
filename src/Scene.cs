@@ -104,6 +104,8 @@ public sealed partial class Scene
     // Diagnostic only: particle system names whose draw is skipped (attribution runs), set from the profiler.
     public readonly HashSet<string> HiddenSystems=new(StringComparer.OrdinalIgnoreCase);
     public int ParticleSystems=>particles.Count;
+    // Shapes whose shader carries the Community Shaders True PBR flag, for the viewport's PBR tick box.
+    public int TruePbrShapes()=>view.Model.meshes.Count(m=>m.MeshData.Material?.MaterialBase?.IsTruePbr()==true);
     public int DrawnParticles=>particleRenderer.LastDrawn;public string ParticleDebug=>particleRenderer.DebugState;
     IEnumerable<NifAnimation> EffectAnimations=>effectShapes.Values.Select(e=>e.Animation).Concat(particles.Select(p=>p.System.Animation)).Concat(attachmentAnimations).Distinct();
     public double EffectDuration=>EffectAnimations.Select(a=>a.AuthoredDuration).DefaultIfEmpty(0).Max();
@@ -182,13 +184,14 @@ public sealed partial class Scene
         hairTints.Clear();ClearPhysics();weaponMeshLength=null;
         attachmentAnimations.Clear();inheritedVisibility.Clear();addonLoads=0;modelOwners.Clear();weightBlend.Clear();pooledCues.Clear();bipedShapes.Clear();attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();particleRenderer.InvalidateTextures();refractionRenderer.InvalidateTextures();refractionMeshes.Clear();particles.Clear();shapes.Clear();effectShapes.Clear();effectBindInverse.Clear();bases.Clear();weaponShapes.Clear();Session=null;segmentSessions.Clear();Skeleton.Reset();Diagnostics.Clear();
     }
-    public void LoadSkeleton(string path)
+    // fallbackHkx is the skeleton.hkx used when none sits beside the NIF, the race project's.
+    public void LoadSkeleton(string path,string fallbackHkx)
     {
         if(!assets.Exists(path)){Diagnostics.Add("Missing skeleton NIF: "+path);return;}
         Skeleton.LoadFromBytes(assets.Read(path));
         ReadBoneCapsules(path);
         string hkx=Path.ChangeExtension(path,"hkx");
-        SkeletonHkx=assets.Exists(hkx)?hkx:SkeletonHkx;
+        SkeletonHkx=assets.Exists(hkx)?hkx:fallbackHkx;
         if(assets.Exists(SkeletonHkx))Skeleton.MergeHkxSkeleton(assets.Read(SkeletonHkx));
     }
     public void AddModel(string path,bool weapon=false,EffectCue? cue=null,string[]? textureOverride=null,Color? hairColor=null,uint bipedSlots=0,int weaponIndex=-1,string[]? skinTextureOverride=null,Func<double,System.Numerics.Matrix4x4>? placementOverride=null,Func<double,bool>? visibilityOverride=null,HashSet<string>? addonChain=null,Func<double,float>? addonScale=null,Color? skinColor=null,IReadOnlyList<EffectCue>? pool=null)
