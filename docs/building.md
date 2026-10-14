@@ -40,7 +40,9 @@ This publishes a self-contained build to `Portable`, adds the C++ runtime, licen
 
 GitHub Actions (`.github/workflows/build.yml`) builds every push to `main`, every pull request and every version tag of the form `v1.2.3`, and can be started by hand on any branch. Pushing a tag such as `v0.2.0` also attaches the portable zip to a release and stamps that version into the build. A tag with anything after the three numbers, such as `v0.2.0-rc1`, makes a prerelease.
 
-A release also goes to the Nexus Mods page. `.github/workflows/nexus.yml` uploads the zip as a new version of the main file and archives the version before it, for releases made by a tag push and for releases published by hand. It needs the `NEXUSMODS_API_KEY` secret and the `NEXUSMODS_FILE_ID` variable on the repository. Without the variable it is skipped. With the variable and no key it fails and says so. An optional `NEXUSMODS_MOD_ID` variable, holding the mod's id from the Nexus v3 API, adds a changelog line to each upload. Prereleases are not sent.
+A release also goes to the Nexus Mods page. `.github/workflows/nexus.yml` uploads the zip as a new version of the main file and archives the version before it, for releases made by a tag push and for releases published by hand. It needs the `NEXUSMODS_API_KEY` secret and the `NEXUSMODS_FILE_ID` variable on the repository. Without the variable it is skipped. With the variable and no key it fails and says so. An optional `NEXUSMODS_MOD_ID` variable, holding the mod's id from the Nexus v3 API, turns on changelog entries. Prereleases are not sent.
+
+Before pushing a version tag, add a section for the version to [docs/changelog.md](changelog.md). The release notes are that section, and each of its bullets becomes a changelog entry on the Nexus page. Without a section, the release uses GitHub's generated notes and Nexus gets one line linking the release. `python scripts/changelog.py 0.3.0 --nexus` shows what Nexus will receive.
 
 ### Floor textures
 

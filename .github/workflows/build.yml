@@ -105,6 +105,14 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Only docs/changelog.md and the script that reads it are needed here.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            docs/changelog.md
+            scripts/changelog.py
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@v4
         with:
           name: ${{ needs.build.outputs.name }}
@@ -123,7 +131,29 @@ jobs:
           if (@($existing) -contains $env:GITHUB_REF_NAME) { throw "Release $($env:GITHUB_REF_NAME) already exists and will not be overwritten." }
           # Anything but a plain vX.Y.Z tag is a prerelease, which the Nexus job does not send on.
           $kind = @(if ($env:GITHUB_REF_NAME -notmatch '^v\d+\.\d+\.\d+$') { '--prerelease' })
-          gh release create $env:GITHUB_REF_NAME $zip --title "SSE Animation Previewer $($env:GITHUB_REF_NAME.TrimStart('v'))" --generate-notes --notes 'Also on Nexus Mods: https://www.nexusmods.com/skyrimspecialedition/mods/194768' --verify-tag --repo $env:GITHUB_REPOSITORY @kind
+          # The notes are the version's section of docs/changelog.md. Without one, GitHub's generated notes are used.
+          $nexus = 'Also on Nexus Mods: https://www.nexusmods.com/skyrimspecialedition/mods/194768'
+          $changes = (python scripts/changelog.py $env:GITHUB_REF_NAME) -join "`n"
+          if ($LASTEXITCODE -ne 0) { throw 'Reading docs/changelog.md failed.' }
+          if ($changes) {
+            $notes = @"
+          ## Changes
+
+          $changes
+
+          ## Install
+
+          Unpack the zip anywhere and run ``SSE Animation Previewer.exe``. It includes the .NET and C++ runtimes. You need Windows 10 or 11 (x64), OpenGL 4.3 and a Skyrim SE or AE Data folder.
+
+          $nexus
+          "@
+            Set-Content -LiteralPath notes.md -Value $notes -Encoding utf8
+            $notesArgs = @('--notes-file', 'notes.md')
+          } else {
+            Write-Output "::warning::docs/changelog.md has no section for $($env:GITHUB_REF_NAME); using generated notes."
+            $notesArgs = @('--generate-notes', '--notes', $nexus)
+          }
+          gh release create $env:GITHUB_REF_NAME $zip --title "SSE Animation Previewer $($env:GITHUB_REF_NAME.TrimStart('v'))" @notesArgs --verify-tag --repo $env:GITHUB_REPOSITORY @kind
           if ($LASTEXITCODE -ne 0) { throw 'Publishing the release failed.' }
 
   # Sends the new release to the Nexus Mods page. It does nothing until the repository has the key and file ID set.

@@ -7,7 +7,8 @@ name: Nexus Mods upload
 #   variable NEXUSMODS_FILE_ID   the ID of the main file on the mod page. The first file has to be uploaded by
 #                                hand. Its ID is under Advanced on the Files tab, or on the Manage Files page.
 #   variable NEXUSMODS_MOD_ID    optional. The mod's id from the Nexus v3 API (not the number in the page address).
-#                                When set, each upload also adds a changelog line linking the GitHub release.
+#                                When set, each bullet of the version's section in docs/changelog.md becomes a
+#                                changelog entry on the page, or, without a section, one line linking the release.
 on:
   # A release published by hand on GitHub.
   release:
@@ -60,6 +61,27 @@ jobs:
           echo "path=$(find download -name '*.zip')" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Check out the changelog at the tag
+        if: steps.zip.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          path: source
+          sparse-checkout: |
+            docs/changelog.md
+            scripts/changelog.py
+          sparse-checkout-cone-mode: false
+
+      - name: Read the changelog entries
+        if: steps.zip.outputs.skip != 'true'
+        id: changes
+        run: |
+          set -euo pipefail
+          python3 source/scripts/changelog.py "$TAG" --nexus > changelog.txt
+          count=$(grep -c . changelog.txt || true)
+          echo "Changelog entries for $TAG: $count"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
       - name: Upload to Nexus Mods
         if: steps.zip.outputs.skip != 'true'
         # v1.0.0-beta.10, pinned to its commit because the action receives the API key.
@@ -75,6 +97,25 @@ jobs:
           archive_existing_version: true
           update_mod_version: true
           # The changelog call needs the mod's v3 API id, which is not the number in the page address. It is sent
-          # only when the NEXUSMODS_MOD_ID variable holds that id.
+          # only when the NEXUSMODS_MOD_ID variable holds that id. The action adds a single line, so it is used only
+          # when docs/changelog.md has no section for the version; the next step adds the section's entries.
           mod_id: ${{ vars.NEXUSMODS_MOD_ID }}
-          changelog: ${{ vars.NEXUSMODS_MOD_ID != '' && format('See https://github.com/{0}/releases/tag/{1}', github.repository, env.TAG) || '' }}
+          changelog: ${{ vars.NEXUSMODS_MOD_ID != '' && steps.changes.outputs.count == '0' && format('See https://github.com/{0}/releases/tag/{1}', github.repository, env.TAG) || '' }}
+
+      # One entry per bullet. The changelog endpoint only appends, so a rerun of this job adds the entries again.
+      - name: Add the changelog entries
+        if: steps.zip.outputs.skip != 'true' && vars.NEXUSMODS_MOD_ID != '' && steps.changes.outputs.count != '0'
+        env:
+          NEXUS_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
+          MOD_ID: ${{ vars.NEXUSMODS_MOD_ID }}
+          VERSION: ${{ steps.zip.outputs.version }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            jq -n --arg version "$VERSION" --arg changelog "$entry" '{version: $version, changelog: $changelog}' > body.json
+            curl --silent --show-error --fail-with-body -X POST "https://api.nexusmods.com/v3/mods/$MOD_ID/changelogs" \
+              -H "apikey: $NEXUS_KEY" -H "Content-Type: application/json" -H "Accept: application/json" \
+              --data @body.json > /dev/null
+            echo "Added: ${entry:0:70}"
+          done < changelog.txt
