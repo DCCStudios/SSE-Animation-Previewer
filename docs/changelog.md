@@ -5,6 +5,14 @@ release notes and adds every bullet as its own changelog entry on the Nexus Mods
 markup removed. Write the section before pushing the version tag. A bullet may wrap onto lines indented by two
 spaces.
 
+## 0.5.0
+
+- **Animated camera.** The camera list under CAMERA plays a clip's `Camera3rd [Cam3]` bone, either as the offset
+  Skyrim applies to its own camera or looking through the bone. It is off by default.
+- **Camera annotations.** The tick box beside it turns the animated camera on and off at the clip's
+  StartAnimatedCamera and EndAnimatedCamera annotations.
+- **Frame captures.** `--frames-capture` takes `camera=game`, `camera=look` and `cameraevents`.
+
 ## 0.4.0
 
 - **View captures.** `--view-capture` renders a NIF, or a JSON manifest of placed NIFs, from a camera standing at a

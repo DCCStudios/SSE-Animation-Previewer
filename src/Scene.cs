@@ -778,6 +778,8 @@ public sealed partial class Scene
         // so it keeps fitting the scene.
         if(FollowScene&&Clip!=null)TrackRoot();
         else{followOffset=null;if(FollowScene&&!HoldFraming)FitCamera(true);}
+        // The animated camera goes on top of the orbit or follow camera, once the pose and the framing are settled.
+        ApplyAnimatedCamera(actor);
         LastUpdateMs=System.Diagnostics.Stopwatch.GetElapsedTime(profileStart).TotalMilliseconds;engineStart=System.Diagnostics.Stopwatch.GetTimestamp();
     }
 }

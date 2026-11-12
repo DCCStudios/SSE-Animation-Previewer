@@ -19,7 +19,9 @@ public sealed partial class MainWindow : Form
     double lastSoundAbsolute=double.NaN;CancellationTokenSource? soundSearch;
     // Results of the search through mod folders that are not loaded, by editor ID.
     Dictionary<string,List<string>> soundsElsewhere=new(StringComparer.OrdinalIgnoreCase);
-    readonly ComboBox races=Combo(),sex=Combo(),weapons=Combo(),slot=Combo(),armor=Combo(),triggers=Combo(),effectSequence=Combo(),cameraSubject=Combo();
+    readonly ComboBox races=Combo(),sex=Combo(),weapons=Combo(),slot=Combo(),armor=Combo(),triggers=Combo(),effectSequence=Combo(),cameraSubject=Combo(),animatedCamera=Combo();
+    // Animated camera playback (Camera3rd [Cam3] bone): off unless chosen, never saved in the session.
+    readonly CheckBox cameraEvents=new(){Text="Camera annotations",AutoSize=true};
     readonly CheckedListBox heads=new WrappedCheckedListBox(){Dock=DockStyle.Fill,CheckOnClick=true,BorderStyle=BorderStyle.None,IntegralHeight=false};
     readonly ListBox equipped=new WrappedListBox(){Height=120,Width=310,BorderStyle=BorderStyle.None};
     readonly Label status=new(){Dock=DockStyle.Bottom,Height=30,Padding=new Padding(12,5,0,0),Text="Mount a Data folder or a small mod folder to begin."};
@@ -214,6 +216,8 @@ public sealed partial class MainWindow : Form
         sources.DoubleClick+=(_,_)=>OpenSource();sources.ContextMenuStrip=SourcesMenu();
         sources.MouseDown+=(_,e)=>{if(e.Button==MouseButtons.Right){int i=sources.IndexFromPoint(e.Location);if(i>=0)sources.SelectedIndex=i;}};
         sources.MouseMove+=(_,e)=>{int i=sources.IndexFromPoint(e.Location);string text=i>=0&&sources.Items[i] is SourceEntry entry?entry.Path:"";if(text!=sourceTipText){sourceTipText=text;sourceTip.SetToolTip(sources,text);}};
+        animatedCamera.SelectedIndexChanged+=(_,_)=>{scene.AnimatedCamera=(AnimatedCameraMode)Math.Max(0,animatedCamera.SelectedIndex);viewport.UpdateRequired=true;viewport.Invalidate();};
+        cameraEvents.CheckedChanged+=(_,_)=>{scene.AnimatedCameraEvents=cameraEvents.Checked;viewport.UpdateRequired=true;viewport.Invalidate();};
         cameraSubject.SelectedIndexChanged+=(_,_)=>{scene.FramingSubject=(Scene.FrameSubject)Math.Max(0,cameraSubject.SelectedIndex);scene.Frame();if(!busy&&!selecting)SaveSession();};
         followCamera.CheckedChanged+=(_,_)=>{scene.FollowScene=followCamera.Checked;if(followCamera.Checked)scene.Frame();if(!busy&&!selecting)SaveSession();};
         // Orbiting, panning or zooming by hand leaves Follow camera ticked. With a clip the camera keeps travelling
@@ -332,7 +336,7 @@ public sealed partial class MainWindow : Form
         var stack=new FlowLayoutPanel(){Dock=DockStyle.Top,AutoSize=true,FlowDirection=FlowDirection.TopDown,WrapContents=false};side.Controls.Add(stack);
         side.SizeChanged+=(_,_)=>ResponsiveLayout.Fit(stack,Math.Max(100,side.ClientSize.Width-side.Padding.Horizontal-SystemInformation.VerticalScrollBarWidth));
         void Labelled(string label,Control control) {stack.Controls.Add(new Label{Text=label,AutoSize=true,Margin=new Padding(0,13,0,6)});stack.Controls.Add(control);}
-        Labelled("CAMERA",followCamera);stack.Controls.Add(requireAlt);stack.Controls.Add(gridFloor);stack.Controls.Add(truePbr);cameraSubject.Items.AddRange(["Frame whole scene","Frame character","Frame effects"]);cameraSubject.SelectedIndex=1;stack.Controls.Add(cameraSubject);
+        Labelled("CAMERA",followCamera);stack.Controls.Add(requireAlt);stack.Controls.Add(gridFloor);stack.Controls.Add(truePbr);cameraSubject.Items.AddRange(["Frame whole scene","Frame character","Frame effects"]);cameraSubject.SelectedIndex=1;stack.Controls.Add(cameraSubject);animatedCamera.Items.AddRange(["Animated camera: off","Animated camera: game (Cam3 offset)","Animated camera: look through Cam3"]);animatedCamera.SelectedIndex=0;stack.Controls.Add(animatedCamera);stack.Controls.Add(cameraEvents);
         var skeletonRow=new FlowLayoutPanel{AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,WrapContents=false,Margin=new Padding(0)};
         skeletonRow.Controls.Add(showSkeleton);skeletonRow.Controls.Add(bonesButton=Button("Bones…",OpenBonesWindow));
         Labelled("CHARACTER",skeletonRow);stack.Controls.Add(races);sex.Items.AddRange(["Male","Female"]);sex.SelectedIndex=0;stack.Controls.Add(sex);
@@ -3517,7 +3521,8 @@ public sealed partial class MainWindow : Form
     // Arguments: a scene file, an output folder, seconds to record, then options: fps=15, warm=1.5 (seconds played
     // before recording), clip=<part of a clip path>, queue=<part>|<part>|..., precision, skeleton, smp, colliders, bones, window (the
     // whole window, not the viewport alone), tab=<index>, follow, subject=<0..2>, rotate=<dx>,<dy>, zoom=<steps>,
-    // speed=<rate>, size=<width>x<height>.
+    // speed=<rate>, size=<width>x<height>, camera=game|look (animated camera from the Camera3rd [Cam3] bone: the game's
+    // offset on the normal camera, or looking through the bone) and cameraevents (gate it by the clip's camera annotations).
     // restart replays the clip from 0 after the warm-up; sky=day and nogrid give a bright backdrop.
     // Frames are frame_0000.png and up; frames.txt holds the real frame rate.
     async Task FramesCapture(string[] arguments)
@@ -3548,6 +3553,7 @@ public sealed partial class MainWindow : Form
                 scene.Sky=new SkyState{Upper=new(.36f,.62f,.90f),Horizon=new(.86f,.92f,.97f),Lower=new(.80f,.74f,.60f),Fog=false};
             }
             if(Flag("nogrid"))scene.ShowFloor=false;
+            animatedCamera.SelectedIndex=Option("camera")?.ToLowerInvariant() switch{"game" or "engine"=>1,"look" or "lookthrough"=>2,_=>0};cameraEvents.Checked=Flag("cameraevents");
             clock.Seek(0);scene.SetTime(0);scene.Frame();
             if(Option("rotate") is {} turn){var t=turn.Split(',');viewport.camera.Rotate(float.Parse(t[0],invariant),float.Parse(t[1],invariant));}
             if(Option("zoom")!=null)viewport.Zoom((float)Number("zoom",0));
@@ -3572,6 +3578,7 @@ public sealed partial class MainWindow : Form
             double real=frames/watch.Elapsed.TotalSeconds;
             log.Add(real.ToString("F3",invariant));log.Add($"{frames} frames in {watch.Elapsed.TotalSeconds:F2} s, asked {fps} fps; clip {clipTitle.Text}, duration {clock.Duration:F2} s, {scene.ParticleSystems} particle systems, physics {smpPhysics.Checked}");
             foreach(string d in scene.Diagnostics.Where(d=>d.StartsWith("Missing")).Take(8))log.Add(d);
+            if(scene.AnimatedCamera!=AnimatedCameraMode.Off)log.Add(scene.AnimatedCameraStatus);
             // A capture whose scene never advanced shows one pose in every frame; say so instead of passing silently.
             if(frameStates.Count>1){
                 var first=frameStates[0];var lastState=frameStates[^1];int stuck=frameStates.Count(f=>f.Busy);

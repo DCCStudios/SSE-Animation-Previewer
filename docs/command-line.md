@@ -159,8 +159,17 @@ Not drawn: fuzz, glint, hair, thin surfaces, dynamic cubemaps of the scene (`ENV
 "SSE Animation Previewer.exe" --background --frames-capture <scene file> <output folder> <seconds> [options]
 ```
 
-Loads a saved scene, plays it in real time and writes `frame_0000.png` and up, with the real frame rate on the first line of `frames.txt`. Sounds are muted. Options include `fps=15`, `clip=<part of a clip path>`, `queue=<part>|<part>`, `smp`, `colliders`, `precision`, `skeleton`, `follow`, `window` (the whole window, not the viewport alone), `rotate=<dx>,<dy>`, `zoom=<steps>`, `size=<width>x<height>` (the window keeps its 1150x750 minimum), `sky=day` (a clear daylight gradient behind the scene: blue overhead, pale horizon, sand below, no fog) and `nogrid` (no grid floor, for this capture only). `restart` replays the clip from 0 once the warm-up is over, which a GIF of a whole clip wants. `frames.txt` notes the clip time at the first and last frame and warns when it never changed. Turn the frames into a GIF with a tool such as ffmpeg.
+Loads a saved scene, plays it in real time and writes `frame_0000.png` and up, with the real frame rate on the first line of `frames.txt`. Sounds are muted. Options include `fps=15`, `clip=<part of a clip path>`, `queue=<part>|<part>`, `smp`, `colliders`, `precision`, `skeleton`, `follow`, `window` (the whole window, not the viewport alone), `rotate=<dx>,<dy>`, `zoom=<steps>`, `size=<width>x<height>` (the window keeps its 1150x750 minimum), `camera=game|look` and `cameraevents` (the animated camera, below), `sky=day` (a clear daylight gradient behind the scene: blue overhead, pale horizon, sand below, no fog) and `nogrid` (no grid floor, for this capture only). `restart` replays the clip from 0 once the warm-up is over, which a GIF of a whole clip wants. `frames.txt` notes the clip time at the first and last frame and warns when it never changed. Turn the frames into a GIF with a tool such as ffmpeg.
 
+### Animated camera
+
+The camera list under CAMERA in the window, and `camera=` for frame captures, plays a clip's camera bone `Camera3rd [Cam3]`. It is off by default and is not saved with the session.
+
+- **game** does what Skyrim 1.6.1170 does with the bone once a behavior sends StartAnimatedCamera with that payload: the bone's local transform is an offset on the normal camera, here the orbit or follow camera. The translation is added in the camera's own axes (x right, y forward, z up), and the rotation turns the camera. `Camera Control` local translate z becomes the FOV, read as the horizontal angle in degrees, when it lies between 5 and 170.
+- **look** views along the bone's world transform (+Y forward, +Z up). That is where the FF7 Maya library bakes it, so it matches the Maya shot. The two modes show the same keys as the game plays them and as Maya placed them.
+- **Camera annotations** (`cameraevents`) gates the camera by the clip's StartAnimatedCamera, StartAnimatedCameraDelta and EndAnimatedCamera annotations (the handler names AnimatedCameraStart, AnimatedCameraDeltaStart and AnimatedCameraEnd also count). Start applies at once, Delta ramps in over 1 s (an estimate), End stops it. Without it, the camera runs for the whole clip.
+
+In game these events come from a behavior with the payload "Camera3rd [Cam3]". A clip annotation has no payload, and the game does nothing with it, so the annotation gate shows the timing a behavior would give. The game's transition tween into its animated camera state is not modelled. `frames.txt` ends with a line on what the camera did.
 
 ## Built-in checks
 
