@@ -33,7 +33,7 @@ public sealed class Records
     public GameRecord? Resolve(string plugin,uint id) => All.GetValueOrDefault($"{plugin.ToLowerInvariant()}|{id & 0xffffff:X6}");
     public void Load(Assets assets, string? pluginsFile)
     {
-        All.Clear(); Diagnostics.Clear(); Revision++;
+        All.Clear(); Diagnostics.Clear(); Revision++; localized.Clear(); strings.Clear(); stringsAssets=assets;
         var names=assets.Paths.Where(p=>!p.Contains('\\') && Path.GetExtension(p).ToLowerInvariant() is ".esm" or ".esp" or ".esl").ToList();
         var order=new List<string>();
         if(!string.IsNullOrEmpty(pluginsFile) && File.Exists(pluginsFile))
@@ -57,9 +57,39 @@ public sealed class Records
         if(!string.IsNullOrEmpty(pluginsFile)&&File.Exists(pluginsFile))assets.ApplyArchiveLoadOrder(order.Distinct(StringComparer.OrdinalIgnoreCase).Where(assets.Exists),pluginsFile);
         foreach(var name in order.Distinct(StringComparer.OrdinalIgnoreCase)) {
             if(!assets.Exists(name)) {Diagnostics.Add("Active plugin is missing: "+name);continue;}
-            try {foreach(var r in Parse(assets.Read(name),name)) {if(r.Kind=="TES4")continue; if((r.Flags&0x20)!=0)All.Remove(r.Key); else All[r.Key]=r;}}
+            try {foreach(var r in Parse(assets.Read(name),name)) {if(r.Kind=="TES4"){if((r.Flags&0x80)!=0)localized.Add(name);continue;} if((r.Flags&0x20)!=0)All.Remove(r.Key); else All[r.Key]=r;}}
             catch(Exception ex) {Diagnostics.Add(name+": "+ex.Message);}
         }
+    }
+    readonly HashSet<string> localized=new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string,Dictionary<uint,string>?> strings=new(StringComparer.OrdinalIgnoreCase);
+    Assets? stringsAssets;
+    /// <summary>The record's FULL name. A localized plugin (TES4 flag 0x80) stores a string ID, looked up in
+    /// Strings\&lt;plugin&gt;_english.strings.</summary>
+    public string? FullName(GameRecord r)
+    {
+        if(r.First("FULL") is not {} full)return null;
+        if(!localized.Contains(r.Plugin))return full.Text;
+        if(full.Bytes.Length!=4)return full.Text;
+        var table=StringsFor(r.Plugin);
+        return table!=null&&table.TryGetValue(full.UInt(),out var text)?text:null;
+    }
+    Dictionary<uint,string>? StringsFor(string plugin)
+    {
+        if(strings.TryGetValue(plugin,out var known))return known;
+        Dictionary<uint,string>? table=null;
+        string path=$@"strings\{Path.GetFileNameWithoutExtension(plugin)}_english.strings";
+        try{
+            if(stringsAssets!=null&&stringsAssets.Exists(path)){
+                var b=stringsAssets.Read(path);int count=BitConverter.ToInt32(b,0),data=8+count*8;table=new(count);
+                for(int i=0;i<count;i++){
+                    uint id=BitConverter.ToUInt32(b,8+i*8);int at=data+BitConverter.ToInt32(b,12+i*8);
+                    if(at<data||at>=b.Length)continue;int end=Array.IndexOf(b,(byte)0,at);if(end<0)end=b.Length;
+                    table[id]=Encoding.UTF8.GetString(b,at,end-at);
+                }
+            }
+        }catch(Exception ex){Diagnostics.Add(path+": "+ex.Message);table=null;}
+        return strings[plugin]=table;
     }
     public static List<GameRecord> Parse(byte[] bytes,string plugin)
     {

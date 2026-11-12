@@ -117,7 +117,7 @@ public sealed partial class Scene
         ResetParticles();SetTime(Time);
     }
     public void ResetParticles(){attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();foreach(var animation in EffectAnimations)animation.ResetMotion();foreach(var p in particles)p.System.Simulation.Reset();}
-    public void Dispose(){DisposePhysicsWorld();smpDraw.Dispose();precisionDraw.Dispose();rootArrow.Dispose();skeletonDraw.Dispose();boneLabels.Dispose();particleRenderer.Dispose();refractionRenderer.Dispose();waterRenderer.Dispose();skyRenderer.Dispose();floor.Dispose();}
+    public void Dispose(){DisposePhysicsWorld();smpDraw.Dispose();precisionDraw.Dispose();rootArrow.Dispose();skeletonDraw.Dispose();boneLabels.Dispose();particleRenderer.Dispose();refractionRenderer.Dispose();waterRenderer.Dispose();skyRenderer.Dispose();trailRenderer?.Dispose();floor.Dispose();}
 
     // Water: BSWaterShaderProperty surfaces are hidden from the engine pass and drawn by WaterRenderer between the
     // opaque scene and the blended meshes, so refraction sees the bed and waterfall foam still blends over the water.
@@ -260,12 +260,12 @@ public sealed partial class Scene
     }
 
     public double Time;
-    public Scene(Assets a,Viewport v,Records? records=null){assets=a;view=v;this.records=records;view.BeforeSceneFrame+=BeforeFrame;particleRenderer=new(a);refractionRenderer=new(a);waterRenderer=new(a);skyRenderer=new(a);view.AfterSceneFrame+=AfterFrame;view.BeforeSceneMeshes+=DrawSky;view.BeforeSceneMeshes+=DrawFloor;view.BeforeBlendedMeshes+=DrawFog;view.BeforeBlendedMeshes+=DrawWater;
+    public Scene(Assets a,Viewport v,Records? records=null){assets=a;view=v;this.records=records;view.BeforeSceneFrame+=BeforeFrame;particleRenderer=new(a);refractionRenderer=new(a);waterRenderer=new(a);skyRenderer=new(a);view.AfterSceneFrame+=AfterFrame;view.BeforeSceneMeshes+=DrawSky;view.BeforeSceneMeshes+=DrawFloor;view.BeforeBlendedMeshes+=DrawFog;view.BeforeBlendedMeshes+=DrawWater;view.BeforeBlendedMeshes+=DrawTrails;
         PreviewModel.KeepCpuGeometry=mesh=>skyShapes.Contains(mesh.MeshData.Shape);}
     public void Clear()
     {
         hairTints.Clear();ClearPhysics();weaponMeshLength=null;
-        attachmentAnimations.Clear();inheritedVisibility.Clear();addonLoads=0;modelOwners.Clear();weightBlend.Clear();pooledCues.Clear();bipedShapes.Clear();attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();particleRenderer.InvalidateTextures();refractionRenderer.InvalidateTextures();refractionMeshes.Clear();waterRenderer.InvalidateTextures();waterMeshes.Clear();shapeWaterTypes.Clear();editorMarkersSkipped=0;skyRenderer.Invalidate();skyShapes.Clear();skyMeshes.Clear();Sky=null;shaderlessSkipped=0;particles.Clear();shapes.Clear();effectShapes.Clear();effectBindInverse.Clear();bases.Clear();weaponShapes.Clear();Session=null;segmentSessions.Clear();Skeleton.Reset();Diagnostics.Clear();
+        attachmentAnimations.Clear();inheritedVisibility.Clear();addonLoads=0;modelOwners.Clear();weightBlend.Clear();pooledCues.Clear();bipedShapes.Clear();attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();particleRenderer.InvalidateTextures();refractionRenderer.InvalidateTextures();refractionMeshes.Clear();waterRenderer.InvalidateTextures();waterMeshes.Clear();shapeWaterTypes.Clear();editorMarkersSkipped=0;skyRenderer.Invalidate();skyShapes.Clear();skyMeshes.Clear();Sky=null;ClearTrails();shaderlessSkipped=0;particles.Clear();shapes.Clear();effectShapes.Clear();effectBindInverse.Clear();bases.Clear();weaponShapes.Clear();Session=null;segmentSessions.Clear();Skeleton.Reset();Diagnostics.Clear();
     }
     // fallbackHkx is the skeleton.hkx used when none sits beside the NIF, the race project's.
     public void LoadSkeleton(string path,string fallbackHkx)
@@ -779,6 +779,7 @@ public sealed partial class Scene
         if(FollowScene&&Clip!=null)TrackRoot();
         else{followOffset=null;if(FollowScene&&!HoldFraming)FitCamera(true);}
         // The animated camera goes on top of the orbit or follow camera, once the pose and the framing are settled.
+        UpdateTrails();
         ApplyAnimatedCamera(actor);
         LastUpdateMs=System.Diagnostics.Stopwatch.GetElapsedTime(profileStart).TotalMilliseconds;engineStart=System.Diagnostics.Stopwatch.GetTimestamp();
     }

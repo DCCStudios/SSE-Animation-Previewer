@@ -122,6 +122,7 @@ public static class ParticleTests
         ParticleFalloff.Test(Assert);
         ParticleLighting.Test(Assert);
         Climate.Test(Assert);
+        TrailDefinitions.Test(Assert);
         SpeedMapTests(Assert);
         BfcoTests(Assert);
         // Every double-dash switch literal in the source is one the program accepts, so adding a mode cannot leave it rejected.

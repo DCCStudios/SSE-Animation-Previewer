@@ -5,6 +5,18 @@ release notes and adds every bullet as its own changelog entry on the Nexus Mods
 markup removed. Write the section before pushing the version tag. A bullet may wrap onto lines indented by two
 spaces.
 
+## 0.6.0
+
+- **Precision blade trails.** The trail Precision draws behind a `Collision_Add` capsule on a weapon or shield shows
+  in the window, with the mesh, colour and lifetime taken from the capsule, the Precision trail TOML files and the
+  Precision MCM settings. The tick box is under PRECISION.
+- **Effect frame sequences.** `--effect-frames <jobs file>` renders many effect NIFs as numbered frames and looping
+  GIFs in one run, with the data folder mounted once.
+- **Effect captures wait for textures.** `--effect-capture` waits until the NIF and its textures have loaded before
+  each image, and exits with code 3 when they do not load in time.
+- **Weapon names from localized plugins.** A weapon's name is read from the plugin's strings file when the plugin
+  is localized.
+
 ## 0.5.0
 
 - **Animated camera.** The camera list under CAMERA plays a clip's `Camera3rd [Cam3]` bone, either as the offset

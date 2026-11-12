@@ -17,6 +17,11 @@ public sealed class PrecisionSettings
     public float PlayerAttackLengthMult=1f,PlayerAttackRadiusMult=1.5f;
     public bool RecoilPlayer=true,RecoilNpc=true,RemoveRecoilOnHitframe=true;
     public float RecoilCollisionLength=25f;
+    // [Trails] (Precision Settings.h defaults).
+    public bool DisplayTrails=true;
+    public float TrailSegmentLifetime=.1f,TrailFadeOutTime=.1f,TrailBaseColorScaleMult=1f;
+    public int TrailSegmentsPerSecond=120;
+    public System.Numerics.Vector4 TrailDefaultBaseColor=new(.53f,.53f,.53f,1f);
     public List<string> Sources {get;}=[];
     public const string DefaultsPath=@"MCM\Config\Precision\settings.ini",UserPath=@"MCM\Settings\Precision.ini";
     public static PrecisionSettings Load(Assets assets)
@@ -51,6 +56,15 @@ public sealed class PrecisionSettings
                 case "recoil/brecoilnpc":RecoilNpc=flag;break;
                 case "recoil/bremoverecoilonhitframe":RemoveRecoilOnHitframe=flag;break;
                 case "recoil/frecoilcollisionlength" when isFloat:RecoilCollisionLength=f;break;
+                case "trails/bdisplaytrails":DisplayTrails=flag;break;
+                case "trails/ftrailsegmentlifetime" when isFloat:TrailSegmentLifetime=f;break;
+                case "trails/ftrailfadeouttime" when isFloat:TrailFadeOutTime=f;break;
+                case "trails/utrailsegmentspersecond" when isFloat:TrailSegmentsPerSecond=Math.Max(1,(int)f);break;
+                case "trails/ftrailbasecolorscalemult" when isFloat:TrailBaseColorScaleMult=f;break;
+                case "trails/ftraildefaultbasecolorr" when isFloat:TrailDefaultBaseColor.X=f;break;
+                case "trails/ftraildefaultbasecolorg" when isFloat:TrailDefaultBaseColor.Y=f;break;
+                case "trails/ftraildefaultbasecolorb" when isFloat:TrailDefaultBaseColor.Z=f;break;
+                case "trails/ftraildefaultbasecolora" when isFloat:TrailDefaultBaseColor.W=f;break;
             }
         }
     }
@@ -66,6 +80,10 @@ public sealed class PrecisionDefinition
 {
     public string Node="";public byte? Id;
     public bool NoRecoil,NoTrail,TrailUseTrueLength,WeaponTip;
+    // Trail* parameters. Any one of them makes Precision skip the TOML trail definitions; the ones left out fall back
+    // to the MCM defaults (grey base colour, the settings' scale and lifetime).
+    public float? TrailLifetimeMult,TrailBaseColorScaleMult;public System.Numerics.Vector4? TrailBaseColor;public string? TrailMesh;
+    public bool HasTrailOverride=>TrailLifetimeMult!=null||TrailBaseColorScaleMult!=null||TrailBaseColor!=null||TrailMesh!=null;
     public float? DamageMult,Duration,Radius,RadiusMult,Length,LengthMult,Scale;
     public V3d? Rotation,Translation,GroundShake;
     public bool HasTransform=>Rotation!=null||Translation!=null||Scale!=null;
@@ -120,7 +138,13 @@ public sealed class PrecisionDefinition
                 case "translation":ok=Point(parameter,out p);d.Translation=p;break;
                 case "scale":ok=Float(After(parameter),out f);d.Scale=f;break;
                 case "groundshake":ok=Point(parameter,out p);d.GroundShake=p;break;
-                case "traillifetimemult" or "trailbasecoloroverride" or "trailbasecolorscalemult" or "trailmeshoverride":d.Ignored.Add(parameter);break;
+                case "traillifetimemult":ok=Float(After(parameter),out f);d.TrailLifetimeMult=f;break;
+                case "trailbasecolorscalemult":ok=Float(After(parameter),out f);d.TrailBaseColorScaleMult=f;break;
+                case "trailbasecoloroverride":{
+                    var parts=Inside(parameter).Split(',');float r=0,g=0,b=0,a=0;
+                    ok=parts.Length>=4&&Float(parts[0].TrimStart(' '),out r)&&Float(parts[1].TrimStart(' '),out g)&&Float(parts[2].TrimStart(' '),out b)&&Float(parts[3].TrimStart(' '),out a);
+                    if(ok)d.TrailBaseColor=new(r,g,b,a);break;}
+                case "trailmeshoverride":d.TrailMesh=Inside(parameter);ok=d.TrailMesh.Length>0;break;
                 default:d.Ignored.Add(parameter+" (not a Precision parameter)");break;
             }
             if(!ok){error=$"{parameter} could not be parsed";return null;}

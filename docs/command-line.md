@@ -128,7 +128,7 @@ Renders most of the pictures used in these pages: a Nord with an iron battleaxe,
 "SSE Animation Previewer.exe" --background --effect-capture <output folder> <nif> <nif> <Data folder>
 ```
 
-Renders two effect NIFs (the same file twice is fine) with the textures in the Data folder, and writes `original_sample.png`, `original_wrapped.png`, `corrected_sample.png`, `corrected_wrapped.png` and `validation.txt` to the output folder. It exits with code 1 when an effect shows nothing or its clock does not loop. Other tools use it to build preview sheets.
+Renders two effect NIFs (the same file twice is fine) with the textures in the Data folder, and writes `original_sample.png`, `original_wrapped.png`, `corrected_sample.png`, `corrected_wrapped.png` and `validation.txt` to the output folder. It exits with code 1 when an effect shows nothing or its clock does not loop, and with code 3 when the NIF or its textures were still loading when a frame was due (nothing is saved for that frame, so the caller can retry). Before each image it waits until the engine has uploaded every texture, up to `SSE_EFFECT_CAPTURE_READY_TIMEOUT` seconds (default 180), so several captures can run at once without saving the "Loading..." card. Other tools use it to build preview sheets. For a run of frames, use `--effect-frames` (below).
 
 Environment variables set the shot: `SSE_EFFECT_CAPTURE_TIME` (seconds into the effect, default 0.934), `SSE_EFFECT_CAPTURE_DISTANCE` (camera distance, default 350), `SSE_EFFECT_CAPTURE_FOCUS_ORIGIN=1` (aim at the point 100 units above the origin) and `SSE_EFFECT_CAPTURE_AUTOMOUNT=1` (mount the folder above the NIF's `meshes` folder in place of the Data argument). More settings, all `SSE_EFFECT_CAPTURE_` plus:
 
@@ -153,13 +153,57 @@ True PBR shapes draw what Community Shaders' True PBR draws, read from its sourc
 
 Not drawn: fuzz, glint, hair, thin surfaces, dynamic cubemaps of the scene (`ENVMAP` stands in), screen-space reflections, and CS's wetness.
 
+## Effect frame sequences and GIFs
+
+```
+"SSE Animation Previewer.exe" --effect-frames <jobs file>
+```
+
+Renders effect NIFs as numbered frames (`f0000.png` and up), and optionally a looping GIF, from a JSON jobs file, in one process. The folder is mounted once for every job, without plugin records or the animation library. Frames are taken in time order, so the simulation steps forward from one frame to the next instead of starting over. Before the first frame of each job it waits until the NIF and all its textures are on the GPU; if a later frame finds a texture still loading, it waits and takes that frame again.
+
+```json
+{
+  "Data": "C:/mods/My Spell Mod",
+  "Background": "Black", "Pbr": true, "Budget": 8000,
+  "Floor": false, "FarPlane": 40000,
+  "Jobs": [
+    {"Nif": "C:/mods/My Spell Mod/meshes/effects/MeteorStop.nif", "Out": "C:/shots/stop",
+     "Start": 0, "Fps": 30, "Count": 90, "Distance": 3000, "FocusOrigin": true,
+     "Width": 640, "Height": 360, "Gif": "C:/shots/stop.gif"}
+  ]
+}
+```
+
+Top-level settings apply to every job:
+
+- `Data` is the folder to mount (default: the folder above the first NIF's `meshes` folder). `Base` adds a Skyrim Data folder's archives underneath it.
+- `Pbr`, `Budget`, `Envmap` and `EnvIntensity` work as `PBR`, `BUDGET`, `ENVMAP` and `ENV_INTENSITY` do for `--effect-capture`.
+- `Background` is a flat .NET colour name. Without it the viewer's pale cyan gradient shows, and additive effects add their colour onto it.
+- `Floor` (default false) draws the grid floor, `FloorSize` sets its width in units (default 6144), and `FarPlane` keeps the far clip plane at least that far, for effects thousands of units across.
+- `Window` sets the window size (`"1500x950"` by default); the viewport is part of it.
+- `ReadyTimeout` (seconds, default 180) is how long a job waits for its NIF and textures.
+- `Ffmpeg` is the ffmpeg to use for GIFs (else `SSE_FFMPEG`, else `ffmpeg` on the path).
+
+Each job:
+
+- `Nif` (a file path) and `Out` (a folder; its old `f????.png` files are removed).
+- `Times` (a list of clip times), or `Start`, `Fps` and `Count`. Frame files are numbered in the order given.
+- `MaxClock` (default 60): the longest effect clock, in seconds, the job accepts. A clock outside 0.1 s to `MaxClock` fails the job, because it usually means a NIF's duration was misread. Raise it for a long sequence whose Extras run past 60 s.
+- `Distance` (default 350), `Yaw` and `Pitch` (degrees), `Focus` (`[x, y, z]`) or `FocusOrigin` (the point 100 units above the origin).
+- `Extra`: more NIFs spawned with the first, as `[{"Nif": "...", "Offset": 0.5}]`.
+- `Bloom`, as for `--effect-capture`.
+- `Width` and `Height`: the output size. The frame is cropped around its centre to that shape, then scaled. One alone keeps the viewport's shape.
+- `Gif` and `GifFps` (default `Fps`, else 30): a looping GIF of the frames, encoded with palettegen `reserve_transparent=0`, paletteuse `diff_mode=none`, `-gifflags -transdiff`, and byte 12 of the file set to 0.
+
+Each job writes `frames.txt` to its folder (its time, visible meshes and particles per frame, and any NIF diagnostics). The jobs file gets a `.log.txt` beside it with one line per job. The exit code is 0 when every job worked, 3 when a job timed out waiting for its NIF or textures (worth a retry), and 1 for any other failure.
+
 ## Recording frames for an animated picture
 
 ```
 "SSE Animation Previewer.exe" --background --frames-capture <scene file> <output folder> <seconds> [options]
 ```
 
-Loads a saved scene, plays it in real time and writes `frame_0000.png` and up, with the real frame rate on the first line of `frames.txt`. Sounds are muted. Options include `fps=15`, `clip=<part of a clip path>`, `queue=<part>|<part>`, `smp`, `colliders`, `precision`, `skeleton`, `follow`, `window` (the whole window, not the viewport alone), `rotate=<dx>,<dy>`, `zoom=<steps>`, `size=<width>x<height>` (the window keeps its 1150x750 minimum), `camera=game|look` and `cameraevents` (the animated camera, below), `sky=day` (a clear daylight gradient behind the scene: blue overhead, pale horizon, sand below, no fog) and `nogrid` (no grid floor, for this capture only). `restart` replays the clip from 0 once the warm-up is over, which a GIF of a whole clip wants. `frames.txt` notes the clip time at the first and last frame and warns when it never changed. Turn the frames into a GIF with a tool such as ffmpeg.
+Loads a saved scene, plays it in real time and writes `frame_0000.png` and up, with the real frame rate on the first line of `frames.txt`. Sounds are muted. Options include `fps=15`, `clip=<part of a clip path>`, `queue=<part>|<part>`, `smp`, `colliders`, `precision`, `skeleton`, `follow`, `window` (the whole window, not the viewport alone), `rotate=<dx>,<dy>`, `zoom=<steps>`, `size=<width>x<height>` (the window keeps its 1150x750 minimum), `camera=game|look` and `cameraevents` (the animated camera, below), `notrails` (no Precision blade trails, below), `sky=day` (a clear daylight gradient behind the scene: blue overhead, pale horizon, sand below, no fog) and `nogrid` (no grid floor, for this capture only). `restart` replays the clip from 0 once the warm-up is over, which a GIF of a whole clip wants. `frames.txt` notes the clip time at the first and last frame and warns when it never changed. Turn the frames into a GIF with a tool such as ffmpeg.
 
 ### Animated camera
 
@@ -170,6 +214,22 @@ The camera list under CAMERA in the window, and `camera=` for frame captures, pl
 - **Camera annotations** (`cameraevents`) gates the camera by the clip's StartAnimatedCamera, StartAnimatedCameraDelta and EndAnimatedCamera annotations (the handler names AnimatedCameraStart, AnimatedCameraDeltaStart and AnimatedCameraEnd also count). Start applies at once, Delta ramps in over 1 s (an estimate), End stops it. Without it, the camera runs for the whole clip.
 
 In game these events come from a behavior with the payload "Camera3rd [Cam3]". A clip annotation has no payload, and the game does nothing with it, so the annotation gate shows the timing a behavior would give. The game's transition tween into its animated camera state is not modelled. `frames.txt` ends with a line on what the camera did.
+
+### Precision blade trails
+
+Precision 2.0.4 draws a trail behind every `Collision_Add` capsule on WEAPON or SHIELD unless the capsule says `NoTrail`. The previewer draws the same trail in the window ("Draw Precision blade trails" under PRECISION, on by default) and in frame captures. It picks the trail the way Precision does:
+
+1. The capsule's own `TrailMeshOverride`, `TrailBaseColorOverride`, `TrailBaseColorScaleMult` and `TrailLifetimeMult`. A capsule with any of them uses Precision's defaults for the rest: the grey base colour (0.53, 0.53, 0.53, 1), the mesh's own colour scale and lifetime multiplier 1.
+2. Else the first `[[TrailDefinition]]` in the mounted `SKSE\Plugins\Precision\*.toml` files whose conditions match, by priority. Only `WeaponNames` is supported; it is matched case-sensitively against the selected weapon's FULL name (from the Strings files for a localized plugin). A definition with any other condition never matches.
+3. Else `Effects/WeaponTrails/AttackTrail.nif`.
+
+Segment lifetime, fade time, segments per second, the colour scale multiplier and the default colour come from Precision's MCM ini in the mounted data (`MCM\Settings\Precision.ini`, else Precision's defaults). The strip is as long as the weapon mesh's reach, or the capsule when it says `TrailUseTrueLength` or nothing is in hand.
+
+Precision steps its trail once per game frame. The previewer replays that at a fixed 60 fps from the capsule's start, so a scrubbed frame shows what the game shows at that clip time on a 60 fps machine. `frames.txt` gets one line per drawn trail per frame with the mesh, where it came from, rows alive, fade and colour. The line also says which way the texture runs (Precision's template has u 0 at the oldest row and 1 at the blade, v 0 at the tip and 1 at the base) and how the strip's vertices sit on TrailRoot's children, with a WARNING when the texture runs the other way or a bone carries no vertices.
+
+Precision moves TrailRoot's children by index, so each vertex follows the bones it is skinned to, blended by weight. A mesh without usable skin data falls back to rows by height, and the line says so.
+
+Not modelled: bone roll and any vertex offset off the blade axis (the strip is flat along the blade), the greyscale palette, falloff and soft depth of the trail shader, and TOML conditions other than `WeaponNames`.
 
 ## Built-in checks
 
