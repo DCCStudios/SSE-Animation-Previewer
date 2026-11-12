@@ -253,6 +253,6 @@ public sealed class ParticleRenderer : IDisposable
     internal const uint AssumedAlphaFlags=4109;
     static uint ConvertFlags(object? flags){try{return Convert.ToUInt32(flags);}catch{return 0;}}
     static void Set(EnableCap cap,bool on){if(on)GL.Enable(cap);else GL.Disable(cap);}
-    static BlendingFactor Factor(int n)=>n switch{0=>BlendingFactor.One,1=>BlendingFactor.Zero,2=>BlendingFactor.SrcColor,3=>BlendingFactor.OneMinusSrcColor,4=>BlendingFactor.DstColor,5=>BlendingFactor.OneMinusDstColor,6=>BlendingFactor.SrcAlpha,7=>BlendingFactor.OneMinusSrcAlpha,8=>BlendingFactor.DstAlpha,9=>BlendingFactor.OneMinusDstAlpha,10=>BlendingFactor.SrcAlphaSaturate,_=>BlendingFactor.One};
+    internal static BlendingFactor Factor(int n)=>n switch{0=>BlendingFactor.One,1=>BlendingFactor.Zero,2=>BlendingFactor.SrcColor,3=>BlendingFactor.OneMinusSrcColor,4=>BlendingFactor.DstColor,5=>BlendingFactor.OneMinusDstColor,6=>BlendingFactor.SrcAlpha,7=>BlendingFactor.OneMinusSrcAlpha,8=>BlendingFactor.DstAlpha,9=>BlendingFactor.OneMinusDstAlpha,10=>BlendingFactor.SrcAlphaSaturate,_=>BlendingFactor.One};
     public void Dispose(){foreach(int t in textures.Values)if(t!=0)GL.DeleteTexture(t);textures.Clear();if(vbo!=0)GL.DeleteBuffer(vbo);if(vao!=0)GL.DeleteVertexArray(vao);if(program!=0)GL.DeleteProgram(program);program=vao=vbo=0;}
 }

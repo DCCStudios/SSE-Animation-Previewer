@@ -2223,8 +2223,33 @@ uniform sampler2D texFaceTintOverlay;   // TETI/TEND composed tint layers, blend
 // True PBR flag (flags 2 bit 23) and an RMAOS map in slot 5: R roughness, G metal, B AO, A specular.
 uniform bool bPbr;
 uniform sampler2D texRmaos;
+uniform bool bFlatColor;   // one flat colour per shape (view captures, seam checks)
+uniform vec3 flatColor;
 uniform float pbrRoughnessScale;   // NIF SpecularStrength
 uniform float pbrSpecularLevel;    // NIF Glossiness
+// True PBR features from Community Shaders (TruePBR.cpp, Lighting.hlsl, PBR.hlsli): two-layer coat with interlayer
+// parallax (refraction through the coat onto a parallax-offset inner layer) and subsurface scattering.
+uniform bool bPbrTwoLayer;         // flags 2 bit 24 MultiLayerParallax
+uniform bool bPbrInterlayer;       // with bit 25 SoftLighting: interlayer parallax
+uniform bool bPbrCoatNormal;       // bit 27 BackLighting: the coat normal is slot 6 xyz
+uniform bool bPbrColoredCoat;      // EffectLighting: the coat tints the diffuse
+uniform bool bPbrSubsurface;       // single layer, bit 26 RimLighting
+uniform bool bPbrHasDisplacement;  // slot 3
+uniform bool bPbrHasFeature0;      // slot 7: coat colour + strength, or subsurface colour + thickness
+uniform bool bPbrHasFeature1;      // slot 6: coat normal xyz + coat roughness a
+uniform bool bPbrHasEmissive;      // slot 2
+uniform sampler2D texPbrDisplacement;
+uniform sampler2D texPbrFeature0;
+uniform sampler2D texPbrFeature1;
+uniform sampler2D texPbrEmissive;
+uniform vec4 pbrParams2;           // SpecularColor rgb + Lighting Effect 1: coat colour + strength, or subsurface colour + opacity
+uniform float pbrDisplacementScale; // Lighting Effect 2
+uniform vec2 pbrCoat;              // coat roughness, coat F0 (shader type MultiLayerParallax floats)
+// Environment for PBR reflections: a cubemap when the host binds one, otherwise the ambient hemisphere.
+uniform bool bPbrEnv;
+uniform samplerCube texPbrEnv;
+uniform float pbrEnvMaxLod;
+uniform float pbrEnvIntensity;
 
 uniform bool bLightEnabled;
 uniform bool bShowTexture;
@@ -2252,6 +2277,7 @@ uniform bool bAnisoLighting;
 uniform bool bSoftlight;
 uniform bool bAlphaTest;
 uniform bool bGlowmap;
+uniform bool bHasGlowTex; // slot 2 (glow / True PBR emissive) has a loaded texture
 uniform bool bGreyscaleColor;
 uniform bool bHasTintColor;
 uniform bool bHairTint;
@@ -2344,6 +2370,10 @@ float specGloss = 1.0;
 float specFactor = 1.0;
 
 vec2 uv = vec2(0.0);
+vec2 uvOriginal = vec2(0.0);       // before interlayer parallax: the coat samples here
+float pbrEta = 1.0;                 // coat refraction ratio (Lighting.hlsl: lerp(1, (1 - sqrt(F0)) / (1 + sqrt(F0)), strength))
+vec3 pbrRefractedView = vec3(0.0, 0.0, 1.0);
+vec4 pbrCoatSample = vec4(1.0);     // coat colour + strength after features 0
 vec3 albedo = vec3(0.0);
 vec3 emissive = vec3(0.0);
 
@@ -2577,14 +2607,10 @@ void directionalLight(in DirectionalLight light, in vec3 lightDir, inout vec3 ou
 // the AO channel. CS multiplies light colors by pi to cancel Lambert's 1/pi, so the diffuse term here is
 // light * N.L * (1 - F), the same brightness as the non-PBR Lambert above, and the specular keeps the pi.
 const float PBR_PI = 3.14159265;
-void pbrDirectLight(in DirectionalLight light, in vec3 L, in vec3 F0, in float rough, in float ao, inout vec3 outD, inout vec3 outS)
+// GGX with Smith joint approximate visibility and Schlick Fresnel (PBR.hlsli SpecularMicrofacet). Returns
+// D * Vis * F * pi (the pi cancels the light colour scale, see above) and the Fresnel term.
+vec3 pbrMicrofacet(in float rough, in vec3 F0, in float sNdotL, in float sNdotV, in float sNdotH, in float sVdotH, out vec3 F)
 {
-	vec3 H = normalize(L + viewDir);
-	float NdotL = dot(normal, L);
-	float sNdotL = clamp(NdotL, 1e-5, 1.0);
-	float sNdotV = clamp(abs(dot(normal, viewDir)) + 1e-5, 0.0, 1.0);
-	float sNdotH = clamp(dot(normal, H), 0.0, 1.0);
-	float sVdotH = clamp(dot(viewDir, H), 0.0, 1.0);
 	float a = rough * rough;
 	float a2 = a * a;
 	float d = sNdotH * sNdotH * (a2 - 1.0) + 1.0;
@@ -2593,12 +2619,108 @@ void pbrDirectLight(in DirectionalLight light, in vec3 L, in vec3 F0, in float r
 	float visL = sNdotV * (sNdotL * (1.0 + a) + a);
 	float Vis = 0.5 / max(visV + visL, 1e-5);
 	float Fc = pow(1.0 - sVdotH, 5.0);
-	vec3 F = Fc + (1.0 - Fc) * F0;
-	// ApproximateDirectOcculusion (Shading.hlsli), Micro Shadows on at strength 1 as CS ships it.
+	F = Fc + (1.0 - Fc) * F0;
+	return D * Vis * F * PBR_PI;
+}
+
+// One light on a True PBR surface, as PBR.hlsli GetDirectLightInput (non thin-surface): the inner layer with
+// Lambert * (1 - F) and the microfacet lobe; subsurface adds forward and back scatter as transmission; a two-layer
+// material attenuates the inner layer by the coat Fresnel and adds the coat lobe. With interlayer parallax the inner
+// layer sees the light and the view refracted through the coat normal (Lighting.hlsl refractedLightDirection).
+// Micro shadows (on at strength 1 in CS) scale diffuse, specular and coat diffuse, not the transmission.
+void pbrLayeredLight(in DirectionalLight light, in vec3 Lc, in vec3 F0, in float rough, in float ao,
+	in vec3 coatN, in float coatRough, in float coatF0, in float coatStrength, in bool twoLayer, in bool subsurface,
+	in vec3 sssColor, in float thickness, inout vec3 outD, inout vec3 outS, inout vec3 outCoatD, inout vec3 outT)
+{
+	vec3 L = Lc;
+	vec3 V = viewDir;
+	if (twoLayer && bPbrInterlayer)
+	{
+		V = pbrRefractedView;
+		if (dot(Lc, coatN) > 0.0) L = -refract(-Lc, coatN, pbrEta);
+	}
+	vec3 H = normalize(L + V);
+	float NdotL = dot(normal, L);
+	float sNdotL = clamp(NdotL, 1e-5, 1.0);
+	float sNdotV = clamp(abs(dot(normal, V)) + 1e-5, 0.0, 1.0);
+	float sNdotH = clamp(dot(normal, H), 0.0, 1.0);
+	float sVdotH = clamp(dot(V, H), 0.0, 1.0);
+	vec3 F;
+	vec3 Fr = pbrMicrofacet(rough, F0, sNdotL, sNdotV, sNdotH, sVdotH, F);
+	vec3 kD = vec3(1.0) - F;
+	vec3 d = light.diffuse * sNdotL * kD;
+	vec3 s = Fr * light.diffuse * sNdotL;
+	vec3 cd = vec3(0.0);
+	if (subsurface)
+	{
+		const float subsurfacePower = 12.234;
+		float forwardScatter = exp2(clamp(-dot(V, L), 0.0, 1.0) * subsurfacePower - subsurfacePower);
+		float backScatter = clamp(sNdotL * thickness + (1.0 - thickness), 0.0, 1.0) * 0.5;
+		float sub = mix(backScatter, 1.0, forwardScatter) * (1.0 - thickness);
+		outT += sssColor * sub * light.diffuse * kD;
+	}
+	else if (twoLayer)
+	{
+		float cNdotL = sNdotL;
+		float cNdotV = sNdotV;
+		float cNdotH = sNdotH;
+		float cVdotH = sVdotH;
+		if (bPbrCoatNormal)
+		{
+			vec3 cH = normalize(Lc + viewDir);
+			cNdotL = clamp(dot(coatN, Lc), 1e-5, 1.0);
+			cNdotV = clamp(abs(dot(coatN, viewDir)) + 1e-5, 0.0, 1.0);
+			cNdotH = clamp(dot(coatN, cH), 0.0, 1.0);
+			cVdotH = clamp(dot(viewDir, cH), 0.0, 1.0);
+		}
+		vec3 cF;
+		vec3 cFr = pbrMicrofacet(coatRough, vec3(coatF0), cNdotL, cNdotV, cNdotH, cVdotH, cF);
+		vec3 att = vec3(1.0) - cF * coatStrength;
+		d *= att;
+		s *= att;
+		cd = light.diffuse * cNdotL;
+		s += cFr * light.diffuse * cNdotL * coatStrength;
+	}
 	float micro = clamp((NdotL + 0.1) * inversesqrt(1.0000001 - min(ao, 1.0)), 0.0, 1.0);
-	vec3 radiance = light.diffuse * micro;
-	outD += radiance * sNdotL * (vec3(1.0) - F);
-	outS += radiance * sNdotL * D * Vis * F * PBR_PI;
+	outD += d * micro;
+	outS += s * micro;
+	outCoatD += cd * micro;
+}
+
+// Interlayer parallax, as ExtendedMaterials GetParallaxCoords with the values Lighting.hlsl sets for it: height
+// scale = displacement scale, displacement scale 0.5, offset -0.25 (so the height is 0.5 * the map), maxHeight
+// 0.1 * height scale, minHeight half of it, the warping fix on (z = |z| * 0.7 + 0.3). A fixed 32-step march with
+// a secant refine stands in for CS adaptive step count.
+vec2 pbrParallaxUv(in vec2 coords, in vec3 V)
+{
+	float maxH = 0.1 * pbrDisplacementScale;
+	if (maxH <= 0.0001) return coords;
+	float minH = maxH * 0.5;
+	vec3 vTS = normalize(transpose(mv_tbn) * V);
+	vec2 dir = vTS.xy / max(abs(vTS.z) * 0.7 + 0.3, 0.0625);
+	vec2 gx = dFdx(coords);
+	vec2 gy = dFdy(coords);
+	const int steps = 32;
+	float stepSize = 1.0 / float(steps);
+	float prevBound = 1.0;
+	float prevH = 0.5 * textureGrad(texPbrDisplacement, coords + dir * minH, gx, gy).r;
+	for (int i = 1; i <= steps; i++)
+	{
+		float bound = 1.0 - float(i) * stepSize;
+		vec2 c = coords + dir * (minH - maxH * float(i) * stepSize);
+		float h = 0.5 * textureGrad(texPbrDisplacement, c, gx, gy).r;
+		if (h >= bound)
+		{
+			float dn = prevBound - prevH;
+			float df = bound - h;
+			float r = clamp(dn / max(dn - df, 1e-5), 0.0, 1.0);
+			float amount = mix(prevBound, bound, r);
+			return coords + dir * ((1.0 - amount) * -maxH + minH);
+		}
+		prevBound = bound;
+		prevH = h;
+	}
+	return coords + dir * (minH - maxH);
 }
 
 vec4 colorLookup(in float x, in float y)
@@ -2625,6 +2747,20 @@ vec3 hemiAmbient(in vec3 nrm)
 	return mix(ambientGround, ambientSky, clamp(nWS.z * 0.5 + 0.5, 0.0, 1.0));
 }
 
+// Radiance a True PBR surface reflects along a view-space direction. With a cubemap bound (the host's environment
+// for reflections, standing in for CS dynamic cubemaps or IBL) it is read with the same world direction the vanilla
+// envmap uses, blurred by roughness through the mip chain and linearized; without one it is the ambient hemisphere.
+vec3 pbrEnvRadiance(in vec3 dirView, in float rough)
+{
+	if (bPbrEnv)
+	{
+		vec3 dirWS = vec3(matModel * (matModelViewInverse * vec4(dirView, 0.0)));
+		vec3 c = textureLod(texPbrEnv, dirWS, rough * pbrEnvMaxLod).rgb;
+		return pow(max(c, vec3(0.0)), vec3(2.2)) * pbrEnvIntensity;
+	}
+	return hemiAmbient(dirView);
+}
+
 // 1 = fully lit, 0 = fully shadowed. Only ever called when bShadows is true.
 " & ShadowDepthShaderSource.SharedLookupGlsl & "
 
@@ -2632,6 +2768,30 @@ void main(void)
 {
 	viewDir = normalize(viewDirRaw);   // engine: rsq(dot(v6,v6)) por pixel, ver la nota del varying
     uv = vUV * uvScale + uvOffset;
+	uvOriginal = uv;
+	pbrRefractedView = viewDir;
+	pbrCoatSample = pbrParams2;
+	if (bPbr && bShowTexture && !bIsEffectShader && bPbrTwoLayer)
+	{
+		// Lighting.hlsl, before the base colour is sampled: features 0 scales the coat colour and strength; with
+		// interlayer parallax the view refracts through the entry normal (the coat normal, else the normal map, both
+		// at the original uv) and the inner layer uv moves along the refracted ray over the displacement map.
+		if (bPbrHasFeature0)
+		{
+			vec4 coatProps = texture(texPbrFeature0, uv);
+			pbrCoatSample.rgb *= pow(coatProps.rgb, vec3(2.2));
+			pbrCoatSample.a *= coatProps.a;
+		}
+		if (bPbrInterlayer && bPbrHasDisplacement)
+		{
+			pbrEta = mix(1.0, (1.0 - sqrt(pbrCoat.y)) / (1.0 + sqrt(pbrCoat.y)), pbrCoatSample.a);
+			vec3 entryTS = (bPbrCoatNormal && bPbrHasFeature1) ? texture(texPbrFeature1, uvOriginal).xyz : texture(texNormal, uvOriginal).xyz;
+			vec3 entryN = normalize(mv_tbn * (entryTS * 2.0 - 1.0));
+			if (bDoubleSided && !gl_FrontFacing) entryN = -entryN;
+			pbrRefractedView = -refract(-viewDir, entryN, pbrEta);
+			uv = pbrParallaxUv(uvOriginal, pbrRefractedView);
+		}
+	}
 	vec4 color = vColor;
 	albedo = vColor.rgb;
 	vec3 outDiffuse = vec3(0.0);
@@ -2885,38 +3045,94 @@ void main(void)
 				vec3 F0 = mix(vec3(rm.a * pbrSpecularLevel), base, metal);
 				vec3 diffuseColor = base * (1.0 - metal);
 
+				// Coat and subsurface (Lighting.hlsl material setup). Subsurface is off on any two-layer material.
+				bool twoLayer = bPbrTwoLayer;
+				bool subsurface = bPbrSubsurface && !bPbrTwoLayer;
+				vec3 coatN = normal;
+				float coatRough = pbrCoat.x;
+				float coatF0 = pbrCoat.y;
+				vec3 coatColor = pbrCoatSample.rgb;
+				float coatStrength = twoLayer ? pbrCoatSample.a : 0.0;
+				if (twoLayer && bPbrHasFeature1)
+				{
+					vec4 coatMap = texture(texPbrFeature1, bPbrInterlayer ? uvOriginal : uv);
+					coatRough *= coatMap.a;
+					if (bPbrCoatNormal)
+					{
+						coatN = normalize(mv_tbn * (coatMap.xyz * 2.0 - 1.0));
+						if (bDoubleSided && !gl_FrontFacing) coatN = -coatN;
+					}
+				}
+				coatRough = clamp(coatRough, 0.04, 1.0);
+				vec3 sssColor = vec3(0.0);
+				float thickness = 1.0;
+				if (subsurface)
+				{
+					sssColor = pbrParams2.rgb;
+					thickness = pbrParams2.a;
+					if (bPbrHasFeature0)
+					{
+						vec4 sssMap = texture(texPbrFeature0, uv);
+						sssColor *= pow(sssMap.rgb, vec3(2.2)) * vc;
+						thickness *= sssMap.a;
+					}
+				}
+
 				vec3 pd = vec3(0.0);
 				vec3 ps = vec3(0.0);
-				pbrDirectLight(keyLight, lightFrontal, F0, rough, ao, pd, ps);
-				pbrDirectLight(fillL, lightDirectional0, F0, rough, ao, pd, ps);
-				pbrDirectLight(fillR, lightDirectional1, F0, rough, ao, pd, ps);
-				pbrDirectLight(backL, lightDirectional2, F0, rough, ao, pd, ps);
+				vec3 pcd = vec3(0.0);
+				vec3 pt = vec3(0.0);
+				pbrLayeredLight(keyLight, lightFrontal, F0, rough, ao, coatN, coatRough, coatF0, coatStrength, twoLayer, subsurface, sssColor, thickness, pd, ps, pcd, pt);
+				pbrLayeredLight(fillL, lightDirectional0, F0, rough, ao, coatN, coatRough, coatF0, coatStrength, twoLayer, subsurface, sssColor, thickness, pd, ps, pcd, pt);
+				pbrLayeredLight(fillR, lightDirectional1, F0, rough, ao, coatN, coatRough, coatF0, coatStrength, twoLayer, subsurface, sssColor, thickness, pd, ps, pcd, pt);
+				pbrLayeredLight(backL, lightDirectional2, F0, rough, ao, coatN, coatRough, coatF0, coatStrength, twoLayer, subsurface, sssColor, thickness, pd, ps, pcd, pt);
 
-				// Indirect lobes (PBR.hlsli GetIndirectLobeWeights): Lazarov environment BRDF, energy kept
-				// out of the diffuse, multi-bounce AO, specular occlusion. The preview has no cubemap of the
-				// scene, so the reflected radiance is the same sky/ground hemisphere the ambient uses, read
-				// along the reflection vector.
+				// Indirect lobes (PBR.hlsli GetIndirectLobeWeights): Lazarov environment BRDF, energy kept out of
+				// the diffuse, subsurface added to the diffuse lobe, the coat attenuating the inner layer and adding
+				// its own lobe, multi-bounce AO, specular occlusion. The reflected radiance comes from the
+				// environment (pbrEnvRadiance): the inner layer read along its reflection at its roughness, the coat
+				// along the coat normal at the coat roughness.
 				float NdotV = clamp(dot(normal, viewDir), 0.0, 1.0);
 				vec4 r = rough * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
 				float a004 = min(r.x * r.x, exp2(-9.28 * NdotV)) * r.x + r.y;
 				vec2 AB = vec2(-1.04, 1.04) * a004 + r.zw;
 				vec3 specW = F0 * AB.x + AB.y;
+				vec3 diffW = (diffuseColor + (subsurface ? sssColor * (1.0 - thickness) / PBR_PI : vec3(0.0))) * (vec3(1.0) - specW);
+				vec3 coatSpecW = vec3(0.0);
+				if (twoLayer)
+				{
+					float cNdotV = clamp(dot(normal, viewDir), 0.0, 1.0);
+					vec4 rc = coatRough * vec4(-1.0, -0.0275, -0.572, 0.022) + vec4(1.0, 0.0425, 1.04, -0.04);
+					float c004 = min(rc.x * rc.x, exp2(-9.28 * cNdotV)) * rc.x + rc.y;
+					vec2 ABc = vec2(-1.04, 1.04) * c004 + rc.zw;
+					vec3 coatLobe = vec3(coatF0 * ABc.x + ABc.y);
+					vec3 att = vec3(1.0) - coatLobe * coatStrength;
+					diffW *= att;
+					specW *= att;
+					if (bPbrColoredCoat) diffW += coatColor * (vec3(1.0) - coatLobe) * coatStrength;
+					coatSpecW = coatLobe * coatStrength;
+				}
 				vec3 mbA = 2.0404 * diffuseColor - 0.3324;
 				vec3 mbB = -4.7951 * diffuseColor + 0.6417;
 				vec3 mbC = 2.7552 * diffuseColor + 0.6903;
 				vec3 multiBounce = max(vec3(ao), ((ao * mbA + mbB) * ao + mbC) * ao);
-				vec3 diffW = diffuseColor * (vec3(1.0) - specW) * multiBounce;
+				diffW *= multiBounce;
 				float specOcc = clamp(pow(NdotV + ao, rough * rough) - 1.0 + ao, 0.0, 1.0);
-				vec3 reflectedDir = reflect(-viewDir, normal);
 
+				// Emission (Lighting.hlsl under TRUE_PBR): only with a slot 2 texture, times EmitColor and the vertex
+				// colour. CS uses the texture as stored; with Linear Lighting off that is a gamma value, decoded here like
+				// the albedo (this renderer lights in linear space).
 				vec3 pbrEmit = vec3(0.0);
-				if (bEmissive)
+				if (bPbrHasEmissive)
 				{
-					pbrEmit = emissiveColor * emissiveMultiple;
-					if (bGlowmap) pbrEmit *= pow(texture(texGlowmap, uv).rgb, vec3(2.2));
+					pbrEmit = emissiveColor * emissiveMultiple * pow(texture(texPbrEmissive, uv).rgb, vec3(2.2)) * vc;
 				}
 
-				color.rgb = diffuseColor * pd + ps + diffW * hemiAmbient(normal) + specW * specOcc * hemiAmbient(reflectedDir) + pbrEmit;
+				vec3 directDiffuse = diffuseColor * pd;
+				if (twoLayer && bPbrColoredCoat) directDiffuse = mix(directDiffuse, coatColor * pcd, coatStrength);
+				vec3 envSpec = specW * pbrEnvRadiance(reflect(-viewDir, normal), rough);
+				if (twoLayer) envSpec += coatSpecW * pbrEnvRadiance(reflect(-viewDir, coatN), coatRough);
+				color.rgb = directDiffuse + ps + pt + diffW * hemiAmbient(normal) + envSpec * specOcc + pbrEmit;
 			}
 			else
 			{
@@ -3107,8 +3323,9 @@ void main(void)
 				color.rgb = mix(color.rgb, color.rgb * (outDiffuse + hemiAmbient(normal)), effectLightingInfluence);
 			}
 
-			// Emissive (WM addition - NifSkope effect shader has no separate emissive)
-			color.rgb += emissive;
+			// No separate emissive term for effect shaders: a BSEffectShaderProperty emits through its base colour
+			// and blend mode. (The line that added `emissive` here always added zero, because an effect material
+			// never has EmitEnabled set.)
 
 			// Cubemap (LAST - added on top of everything, matching NifSkope)
 			if (bCubemap && bEnvMap && bShowTexture)
@@ -3348,6 +3565,9 @@ if (bHide)
 			if (fragColor.a < alphaThreshold) // GL_GEQUAL (engine: discard si alpha < ref)
 				discard;
 
+		// Flat colour per shape, after the alpha test so cut-outs stay cut out. A soft key term keeps the shape readable.
+		if (bFlatColor)
+			fragColor.rgb = flatColor * (0.55 + 0.45 * max(dot(normal, normalize(lightFrontal)), 0.0));
 	}
 
 }

@@ -329,6 +329,13 @@ Public Class Nifcontent_Class_Manolo
             Return New RelatedMaterial_Class With {.material = mat, .path = ""}
         End If
 
+        ' Water has no material file: the plane carries a BSWaterShaderProperty and the WATR record supplies the look.
+        If TypeOf shad Is BSWaterShaderProperty Then
+            Dim water As New FO4UnifiedMaterial_Class
+            water.Create_From_WaterShader(Me)
+            Return New RelatedMaterial_Class With {.material = water, .path = ""}
+        End If
+
         ' Extraer solo lo que difiere entre tipos de shader
         Dim shadName As String
         Dim matType As Type

@@ -36,7 +36,8 @@ public sealed class Effects
     // PIE.@FF7VFXEND annotations of the clip being built: when a weapon effect stops being spawned again.
     readonly List<(double Time,string Model)> vfxEnds=[];
     // The FF7 Limit Gauge plugin keeps a weapon effect going for at most this long without an END.
-    public const double Ff7VfxMaximum=12;
+    // FF7 Limit Gauge RebirthVfx.cpp kAnnotatedLimit (25 s since 2026-11-08; was 12).
+    public const double Ff7VfxMaximum=25;
     static string VfxModel(string field){var path=Assets.Normalize(field.Trim());return path.StartsWith(@"meshes\",StringComparison.OrdinalIgnoreCase)?path:@"meshes\"+path;}
     public Effects(Assets a,Records r) {assets=a;records=r;}
     public void ReadConfigs()
@@ -183,7 +184,7 @@ public sealed class Effects
             //   @FF7VFX|<nif under meshes>|root, follow or weapon|<seconds>|<x>|<y>|<z>[|nine rotation numbers, by rows]
             // root: one spawn at the actor root's position at that moment, x right, y forward, z up; a NIF point p
             // goes to R*p + offset. weapon: the NIF follows the blade and is spawned again every <seconds> until
-            // @FF7VFXEND with the same NIF, or 12 s.
+            // @FF7VFXEND with the same NIF, or 25 s.
             if(v.Length<7){Diagnostics.Add("@FF7VFX needs nif|attach|seconds|x|y|z: "+instruction);return;}
             string path=VfxModel(v[1]);string attach=v[2].Trim().ToLowerInvariant();double seconds=F(v[3],0);
             if(!(seconds>0)){Diagnostics.Add("@FF7VFX with no play time is never shown: "+instruction);return;}

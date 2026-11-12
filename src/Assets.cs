@@ -103,6 +103,35 @@ public sealed class Assets
         Roots.RemoveAll(r=>r.Equals(folder,StringComparison.OrdinalIgnoreCase));Roots.Add(folder);Revision++;
         if(rebuildClips)await Task.Run(RebuildClips);
     }
+    /// <summary>Indexes the .bsa archives at the top of <paramref name="folder"/> (a game Data folder) underneath what is
+    /// mounted: an archive file is used only where no mounted file has that path. Among these archives the Skyrim - *
+    /// ones come first and a later archive wins, close to the game's own order. Returns archives read and files added.</summary>
+    public (int Archives,int Files) AddFallbackArchives(string folder)
+    {
+        var archives=Directory.EnumerateFiles(folder,"*.bsa",SearchOption.TopDirectoryOnly)
+            .OrderBy(p=>Path.GetFileName(p).StartsWith("Skyrim - ",StringComparison.OrdinalIgnoreCase)?0:1)
+            .ThenBy(p=>p,StringComparer.OrdinalIgnoreCase).ToArray();
+        var fallback=new Dictionary<string,FilesDictionary_class.File_Location>(StringComparer.OrdinalIgnoreCase);
+        int read=0;
+        foreach(var archive in archives){
+            try{
+                List<KeyValuePair<string,int>> index=[];
+                using(var stream=new FileStream(archive,FileMode.Open,FileAccess.Read,FileShare.Read))
+                using(var reader=new BSA_BA2_Library_DLL.BethesdaArchive.Core.BethesdaReader(stream))
+                    foreach(var entry in reader.EntriesFiles){
+                        string path=Normalize(entry.FullPath);
+                        if(Path.IsPathRooted(path)||path.Split('\\').Any(p=>p=="..")||!Supported(path))continue;
+                        index.Add(new(path,entry.Index));
+                    }
+                foreach(var (key,location) in FilesDictionary_class.BuildExternalArchiveLocations(archive,index,read))fallback[key]=location;
+                read++;
+            }catch(Exception ex){Diagnostics.Add("Could not read base archive "+archive+": "+ex.Message);}
+        }
+        int added=0;
+        foreach(var (key,location) in fallback)if(FilesDictionary_class.Dictionary.TryAdd(key,location))added++;
+        Revision++;
+        return (read,added);
+    }
     public void ApplyArchiveLoadOrder(IEnumerable<string> plugins,string profileFile)
     {
         archiveOverlays.ApplyLoadOrder(this,plugins,profileFile);Revision++;RebuildClips();

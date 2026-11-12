@@ -117,7 +117,89 @@ public sealed partial class Scene
         ResetParticles();SetTime(Time);
     }
     public void ResetParticles(){attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();foreach(var animation in EffectAnimations)animation.ResetMotion();foreach(var p in particles)p.System.Simulation.Reset();}
-    public void Dispose(){DisposePhysicsWorld();smpDraw.Dispose();precisionDraw.Dispose();rootArrow.Dispose();skeletonDraw.Dispose();boneLabels.Dispose();particleRenderer.Dispose();refractionRenderer.Dispose();floor.Dispose();}
+    public void Dispose(){DisposePhysicsWorld();smpDraw.Dispose();precisionDraw.Dispose();rootArrow.Dispose();skeletonDraw.Dispose();boneLabels.Dispose();particleRenderer.Dispose();refractionRenderer.Dispose();waterRenderer.Dispose();skyRenderer.Dispose();floor.Dispose();}
+
+    // Water: BSWaterShaderProperty surfaces are hidden from the engine pass and drawn by WaterRenderer between the
+    // opaque scene and the blended meshes, so refraction sees the bed and waterfall foam still blends over the water.
+    readonly WaterRenderer waterRenderer;
+    readonly List<PreviewModel.RenderableMesh> waterMeshes=[];
+    readonly Dictionary<IRenderableShape,string> shapeWaterTypes=[];
+    string? pendingWaterType;
+    /// <summary>WATR records by EditorID. Null loads them on first use from the plugins in the mounted folders.</summary>
+    public WaterTypes? WaterTypes;
+    /// <summary>The WATR used for a water surface whose model names none.</summary>
+    public string DefaultWaterType="DefaultWater";
+    /// <summary>Depth the far plane keeps past the camera focus every frame (a view capture sets it from the placed scene).</summary>
+    public float MinimumFarPlane;
+    /// <summary>Leave out shapes with no shader property, and shapes named EditorMarker, for effect cues too, as Skyrim does
+    /// for every object. A view capture sets it: it loads placed world objects through the effect path.</summary>
+    public bool SkipShaderlessShapes;
+    public int ShaderlessShapesSkipped=>shaderlessSkipped;
+    int shaderlessSkipped;
+    public int EditorMarkersSkipped=>editorMarkersSkipped;
+    int editorMarkersSkipped;
+    /// <summary>Folder under textures\water with the worldspace's flowmaps ("skyrim.esm" for Tamriel); null for none.</summary>
+    public string? FlowmapFolder{get=>waterRenderer.FlowmapFolder;set=>waterRenderer.FlowmapFolder=value;}
+    public int DrawnWaterSurfaces=>waterRenderer.LastDrawn;
+    public IReadOnlyCollection<string> WaterFlowmapsUsed=>waterRenderer.FlowmapsUsed;
+    public IReadOnlyDictionary<string,int> WaterShaderFlagSets=>waterRenderer.FlagSets;
+    /// <summary>Water type names used by the last water pass, with how many surfaces each.</summary>
+    public readonly Dictionary<string,int> WaterTypesDrawn=new(StringComparer.OrdinalIgnoreCase);
+    void DrawWater(M4 projection)
+    {
+        WaterTypesDrawn.Clear();
+        if(waterMeshes.Count==0){return;}
+        if(WaterTypes==null){WaterTypes=new();WaterTypes.Load(assets.Roots.SelectMany(SSEPreview.WaterTypes.PluginsIn));}
+        var surfaces=new List<(PreviewModel.RenderableMesh,WaterType)>();
+        foreach(var mesh in waterMeshes){
+            string name=shapeWaterTypes.GetValueOrDefault(mesh.MeshData.Shape)??DefaultWaterType;
+            var type=WaterTypes.Find(name);
+            if(type==null){string issue=$"Water type {name} was not found in the loaded plugins; {DefaultWaterType} is used.";if(!Diagnostics.Contains(issue))Diagnostics.Add(issue);type=WaterTypes.Find(DefaultWaterType)??WaterType.Default;}
+            surfaces.Add((mesh,type));WaterTypesDrawn[type.EditorId]=WaterTypesDrawn.GetValueOrDefault(type.EditorId)+1;
+        }
+        var light=view.Model.FrameKeyLight();
+        Func<PreviewModel.RenderableMesh,OpenTK.Mathematics.Vector3?>? flat=null;
+        if(view.FlatShapeColors)flat=mesh=>{int h=(waterMeshes.IndexOf(mesh)*2654435761u).GetHashCode();return new OpenTK.Mathematics.Vector3(.2f+.6f*((h>>4)&255)/255f,.2f+.6f*((h>>12)&255)/255f,.2f+.6f*((h>>20)&255)/255f);};
+        waterRenderer.Draw(surfaces,projection,view.camera,Time,(light.Direction,light.Color),flat);
+        foreach(var d in waterRenderer.Diagnostics.Concat(WaterTypes.Diagnostics))if(!Diagnostics.Contains(d))Diagnostics.Add(d);
+    }
+    // Weather sky (view captures): the TNAM sky statics are hidden from the engine pass and drawn by SkyRenderer behind
+    // every mesh, after a gradient of the weather's sky colours; its fog is drawn over the opaque scene before water.
+    readonly SkyRenderer skyRenderer;
+    readonly HashSet<IRenderableShape> skyShapes=[];
+    readonly List<PreviewModel.RenderableMesh> skyMeshes=[];
+    bool pendingSky;
+    /// <summary>The weather's sky and fog at the capture's hour; null draws the viewer's own background and no fog.</summary>
+    public SkyState? Sky;
+    public int DrawnSkyStatics=>skyRenderer.StaticsDrawn;
+    public bool FogDrawn=>skyRenderer.FogDrawn;
+    public IReadOnlyCollection<string> SkyTexturesUsed=>skyRenderer.TexturesUsed;
+    public IReadOnlyDictionary<string,(int Facing,int Total,bool DoubleSided)> SkyFacing=>skyRenderer.Facing;
+    public IReadOnlyCollection<string> SkyTexturesMissing=>skyRenderer.TexturesMissing;
+    internal bool IsSkyMesh(PreviewModel.RenderableMesh mesh)=>skyShapes.Contains(mesh.MeshData.Shape);
+    void DrawSky(M4 projection)
+    {
+        if(Sky==null||view.FlatShapeColors)return;
+        var surfaces=new List<SkySurface>();
+        foreach(var mesh in skyMeshes){
+            var shape=mesh.MeshData.Shape;
+            string texture=Assets.Normalize(mesh.MeshData.Material.MaterialBase?.Diffuse_or_Base_Texture??"");
+            if(texture.Length>0&&!texture.StartsWith(@"textures\",StringComparison.OrdinalIgnoreCase))texture=@"textures\"+texture;
+            var color=OpenTK.Mathematics.Vector4.One;float scale=1;var offset=OpenTK.Mathematics.Vector2.Zero;var uvScale=OpenTK.Mathematics.Vector2.One;
+            if(shape.NifShader is BSEffectShaderProperty bs){color=new(bs.BaseColor.R,bs.BaseColor.G,bs.BaseColor.B,bs.BaseColor.A);scale=bs.BaseColorScale;offset=new(bs.UVOffset.U,bs.UVOffset.V);uvScale=new(bs.UVScale.U,bs.UVScale.V);}
+            else if(shape.NifShader is BSLightingShaderProperty lit){color=new(1,1,1,lit.Alpha);offset=new(lit.UVOffset.U,lit.UVOffset.V);uvScale=new(lit.UVScale.U,lit.UVScale.V);}
+            uint flags=0;byte threshold=0;
+            if(effectShapes.TryGetValue(shape,out var effect)&&shape.NifShape.AlphaPropertyRef is {} alphaRef&&effect.Animation.Block(alphaRef) is NiAlphaProperty alpha){flags=alpha.Flags.Value;threshold=alpha.Threshold;}
+            surfaces.Add(new SkySurface(mesh,texture,color,scale,offset,uvScale,flags,threshold,mesh.MeshData.Material.MaterialBase?.TwoSided==true));
+        }
+        skyRenderer.DrawSky(Sky,surfaces,projection,view.camera);
+        foreach(var d in skyRenderer.Diagnostics)if(!Diagnostics.Contains(d))Diagnostics.Add(d);
+    }
+    void DrawFog(M4 projection)
+    {
+        if(Sky==null||view.FlatShapeColors)return;
+        skyRenderer.DrawFog(Sky,projection,view.camera);
+    }
     // Runs inside the engine model pass, after its own floor and before any mesh, so blended effect
     // meshes and particles compose over the ground.
     void DrawFloor(M4 projection)
@@ -134,7 +216,7 @@ public sealed partial class Scene
     // Body weight 0..100 across every _0/_1 mesh pair in the scene; reapplied through the morph pass without a reload.
     public float Weight{get=>weightBlend.Weight;set{if(weightBlend.Weight==value)return;weightBlend.Weight=value;weightChangedAt=physicsClock.Elapsed.TotalSeconds;if(weightBlend.Count>0){view.Intent.MarkDirty(RenderDirtyFlags.Morphs,weightBlend.Shapes);view.InvalidateRender();}view.UpdateRequired=true;view.Invalidate();}}
     readonly List<PreviewModel.RenderableMesh> refractionMeshes=[];
-    internal bool SubmittedForDrawing(PreviewModel.RenderableMesh mesh)=>!mesh.MeshData.Shape.RenderHide||refractionMeshes.Contains(mesh);
+    internal bool SubmittedForDrawing(PreviewModel.RenderableMesh mesh)=>!mesh.MeshData.Shape.RenderHide||refractionMeshes.Contains(mesh)||waterMeshes.Contains(mesh)||skyMeshes.Contains(mesh);
     internal bool RefractionEnabled=true;
     public int DrawnRefractionLayers=>refractionRenderer.LastDrawn;
     public List<string> Diagnostics {get;}=[];
@@ -178,11 +260,12 @@ public sealed partial class Scene
     }
 
     public double Time;
-    public Scene(Assets a,Viewport v,Records? records=null){assets=a;view=v;this.records=records;view.BeforeSceneFrame+=BeforeFrame;particleRenderer=new(a);refractionRenderer=new(a);view.AfterSceneFrame+=AfterFrame;view.BeforeSceneMeshes+=DrawFloor;}
+    public Scene(Assets a,Viewport v,Records? records=null){assets=a;view=v;this.records=records;view.BeforeSceneFrame+=BeforeFrame;particleRenderer=new(a);refractionRenderer=new(a);waterRenderer=new(a);skyRenderer=new(a);view.AfterSceneFrame+=AfterFrame;view.BeforeSceneMeshes+=DrawSky;view.BeforeSceneMeshes+=DrawFloor;view.BeforeBlendedMeshes+=DrawFog;view.BeforeBlendedMeshes+=DrawWater;
+        PreviewModel.KeepCpuGeometry=mesh=>skyShapes.Contains(mesh.MeshData.Shape);}
     public void Clear()
     {
         hairTints.Clear();ClearPhysics();weaponMeshLength=null;
-        attachmentAnimations.Clear();inheritedVisibility.Clear();addonLoads=0;modelOwners.Clear();weightBlend.Clear();pooledCues.Clear();bipedShapes.Clear();attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();particleRenderer.InvalidateTextures();refractionRenderer.InvalidateTextures();refractionMeshes.Clear();particles.Clear();shapes.Clear();effectShapes.Clear();effectBindInverse.Clear();bases.Clear();weaponShapes.Clear();Session=null;segmentSessions.Clear();Skeleton.Reset();Diagnostics.Clear();
+        attachmentAnimations.Clear();inheritedVisibility.Clear();addonLoads=0;modelOwners.Clear();weightBlend.Clear();pooledCues.Clear();bipedShapes.Clear();attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();particleRenderer.InvalidateTextures();refractionRenderer.InvalidateTextures();refractionMeshes.Clear();waterRenderer.InvalidateTextures();waterMeshes.Clear();shapeWaterTypes.Clear();editorMarkersSkipped=0;skyRenderer.Invalidate();skyShapes.Clear();skyMeshes.Clear();Sky=null;shaderlessSkipped=0;particles.Clear();shapes.Clear();effectShapes.Clear();effectBindInverse.Clear();bases.Clear();weaponShapes.Clear();Session=null;segmentSessions.Clear();Skeleton.Reset();Diagnostics.Clear();
     }
     // fallbackHkx is the skeleton.hkx used when none sits beside the NIF, the race project's.
     public void LoadSkeleton(string path,string fallbackHkx)
@@ -194,9 +277,9 @@ public sealed partial class Scene
         SkeletonHkx=assets.Exists(hkx)?hkx:fallbackHkx;
         if(assets.Exists(SkeletonHkx))Skeleton.MergeHkxSkeleton(assets.Read(SkeletonHkx));
     }
-    public void AddModel(string path,bool weapon=false,EffectCue? cue=null,string[]? textureOverride=null,Color? hairColor=null,uint bipedSlots=0,int weaponIndex=-1,string[]? skinTextureOverride=null,Func<double,System.Numerics.Matrix4x4>? placementOverride=null,Func<double,bool>? visibilityOverride=null,HashSet<string>? addonChain=null,Func<double,float>? addonScale=null,Color? skinColor=null,IReadOnlyList<EffectCue>? pool=null)
+    public void AddModel(string path,bool weapon=false,EffectCue? cue=null,string[]? textureOverride=null,Color? hairColor=null,uint bipedSlots=0,int weaponIndex=-1,string[]? skinTextureOverride=null,Func<double,System.Numerics.Matrix4x4>? placementOverride=null,Func<double,bool>? visibilityOverride=null,HashSet<string>? addonChain=null,Func<double,float>? addonScale=null,Color? skinColor=null,IReadOnlyList<EffectCue>? pool=null,string? waterType=null,bool sky=false)
     {
-        poolAccepted=false;
+        poolAccepted=false;pendingWaterType=waterType;pendingSky=sky;
         path=Assets.Normalize(path);if(!path.StartsWith(@"meshes\",StringComparison.OrdinalIgnoreCase)&&!Path.IsPathRooted(path))path=@"meshes\"+path;
         if(!assets.Exists(path)&&!Path.IsPathRooted(path)){Diagnostics.Add("Missing model: "+path);return;}
         try {
@@ -261,7 +344,11 @@ public sealed partial class Scene
                 // Skyrim draws nothing for geometry without a shader property. On armor, hair and weapons such
                 // shapes are HDT-SMP collision proxies (VirtualGround, body colliders); they stay available to physics.
                 if(shape.NifShader==null&&cue==null){Diagnostics.Add($"{path}: shape {shape.NifShape?.Name} has no shader property and is not drawn (collision proxy).");continue;}
-                modelOwners[shape]=nif;shapes.Add(shape);if(hairColor is {} resolvedHair&&shape.NifShader?.IsTypeHairTint==true)hairTints[shape]=resolvedHair;if(weapon)weaponShapes.Add(shape);
+                // Placed world objects (view captures) follow the same rule: a waterfall's CurrentPlane shapes carry no shader.
+                if(shape.NifShader==null&&SkipShaderlessShapes){shaderlessSkipped++;continue;}
+                // The game never draws a shape named EditorMarker (the Creation Kit's placement box).
+                if(SkipShaderlessShapes&&string.Equals(shape.ShapeName,"EditorMarker",StringComparison.OrdinalIgnoreCase)){editorMarkersSkipped++;continue;}
+                modelOwners[shape]=nif;shapes.Add(shape);if(pendingWaterType!=null&&shape.NifShader is BSWaterShaderProperty)shapeWaterTypes[shape]=pendingWaterType;if(pendingSky)skyShapes.Add(shape);if(hairColor is {} resolvedHair&&shape.NifShader?.IsTypeHairTint==true)hairTints[shape]=resolvedHair;if(weapon)weaponShapes.Add(shape);
                 void Register(int index){if(!bipedShapes.TryGetValue(index,out var group))bipedShapes[index]=group=[];group.Add(shape);}
                 for(int index=0;index<32;index++)if((bipedSlots&(1u<<index))!=0)Register(index);
                 if(weapon&&weaponIndex>=32&&weaponIndex<42)Register(weaponIndex);
@@ -532,7 +619,7 @@ public sealed partial class Scene
     // Set when the user moves the camera by hand: an effect preview then stops re-fitting each frame, so the chosen
     // view holds while Follow camera stays ticked. Framing the scene again clears it.
     public bool HoldFraming;
-    public float FloorSize=>floor.Size;
+    public float FloorSize{get=>floor.Size;set{floor.Size=value;view.UpdateRequired=true;view.Invalidate();}}
     public void Frame(){HoldFraming=false;BeforeFrame();FitCamera(false);}
     // The engine reset frames every mesh at bind pose, including effect shapes that are not visible yet and
     // backdrop geometry far larger than the actor. After a rebuild the host asks for the selected subject instead.
@@ -613,15 +700,15 @@ public sealed partial class Scene
         if(committing)return;
         long profileStart=System.Diagnostics.Stopwatch.GetTimestamp();evaluationFrame++;
         // The engine's far plane hugs the mesh bounds; keep the whole floor disc inside it.
-        view.FarPlaneExtension=floor.Enabled?view.camera.FocusPosition.Length+floor.Size*.75f:0;view.UpdateProjection();
+        view.FarPlaneExtension=Math.Max(MinimumFarPlane,floor.Enabled?view.camera.FocusPosition.Length+floor.Size*.75f:0);view.UpdateProjection();
         var motion=RootMotion && Clip!=null?Clip.Motion(Time):(System.Numerics.Vector3.Zero,0f);
         var actor=M4.CreateRotationZ(motion.Item2)*M4.CreateTranslation(motion.Item1.X,motion.Item1.Y,motion.Item1.Z);
         foreach(var p in particles){double age=Time-(p.Cue?.Time??0);if(age>=0&&ShowEffects&&CueVisible(p.Cue,p.System.Animation,age)){long seekStart=System.Diagnostics.Stopwatch.GetTimestamp();p.System.Seek(age);p.System.LastSeekMs=System.Diagnostics.Stopwatch.GetElapsedTime(seekStart).TotalMilliseconds;}else{p.System.Simulation.Reset();p.System.LastSeekMs=0;}}
         LastSimulationMs=System.Diagnostics.Stopwatch.GetElapsedTime(profileStart).TotalMilliseconds;
-        refractionMeshes.Clear();
+        refractionMeshes.Clear();waterMeshes.Clear();skyMeshes.Clear();
         instanceStates.Clear();long tLoop=System.Diagnostics.Stopwatch.GetTimestamp();
         foreach(var mesh in view.Model.meshes) {
-            var shape=mesh.MeshData.Shape;if(mesh.MeshData.Material.MaterialBase?.Refraction==true)shape.RenderHide=false;
+            var shape=mesh.MeshData.Shape;if(mesh.MeshData.Material.MaterialBase?.Refraction==true||shape.NifShader is BSWaterShaderProperty||skyShapes.Contains(shape))shape.RenderHide=false;
             if(effectShapes.TryGetValue(shape,out var effect)) {
                 // The cue-level decision is identical for every shape of one effect instance; a baked effect has
                 // thousands of shapes, so it is made once per instance per frame (cue lookups hash the whole record).
@@ -666,6 +753,8 @@ public sealed partial class Scene
             }
             else mesh.MeshData.Transform=bases.GetValueOrDefault(shape,M4.Identity)*actor;
             if(mesh.MeshData.Material.MaterialBase?.Refraction==true){refractionMeshes.Add(mesh);shape.RenderHide=true;}
+            else if(shape.NifShader is BSWaterShaderProperty){if(!shape.RenderHide)waterMeshes.Add(mesh);shape.RenderHide=true;}
+            else if(skyShapes.Contains(shape)){if(!shape.RenderHide)skyMeshes.Add(mesh);shape.RenderHide=true;}
         }
         ParticleSimulation.Bucket("scene:mesh-loop (incl. evaluate)",tLoop);tLoop=System.Diagnostics.Stopwatch.GetTimestamp();
         // Frustum culling must use the same animated placement as the vertex shader.

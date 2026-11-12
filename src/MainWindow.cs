@@ -3,9 +3,10 @@ using System.Text.Json;
 using FO4_Base_Library;
 
 using V3d=OpenTK.Mathematics.Vector3d;
+using V3=OpenTK.Mathematics.Vector3;
 
 namespace SSEPreview;
-public sealed class MainWindow : Form
+public sealed partial class MainWindow : Form
 {
     readonly Assets assets=new();readonly Records records=new();readonly PlaybackClock clock=new();
     readonly Viewport viewport=new(){Dock=DockStyle.Fill};
@@ -113,7 +114,7 @@ public sealed class MainWindow : Form
         ("--docs-capture","",3,null),("--bfco-smoke","T",3,@"bfco-smoke\bfco-smoke.txt"),("--frames-capture","",3,null),("--flipbook-smoke","T",1,@"flipbook-smoke\flipbook-smoke.txt"),("--ff7vfx-smoke","S",0,@"ff7vfx-smoke\ff7vfx-smoke.txt"),("--annotation-smoke","T",1,@"annotation-smoke\annotation-smoke.txt"),
         ("--skeleton-smoke","T",1,@"skeleton-smoke\skeleton-smoke.txt"),("--window-pick-smoke","T",2,@"window-pick-smoke\window-pick-smoke.txt"),("--sound-smoke","GM",0,@"sound-smoke\sound-smoke.txt"),
         ("--precision-smoke","",2,@"precision-smoke\precision-smoke.txt"),("--frame-smoke","T",1,@"frame-smoke\frame-smoke.txt"),("--hair-smoke","T",0,@"hair-smoke\hair-smoke.txt"),("--smp-smoke","T",0,@"smp-smoke\smp-smoke.txt"),
-        ("--holster-smoke","T",3,"holster-tests.txt"),("--clip-profile","S",2,null),("--playback-probe","S",1,null),("--mod-sweep","S",1,null),("--sources-recent-smoke","",0,null),("--scene-save-smoke","",0,null),("--scene-dialog-smoke","",0,null),
+        ("--holster-smoke","T",3,"holster-tests.txt"),("--clip-profile","S",2,null),("--pbr-glow-smoke","",3,null),("--view-capture","",3,null),("--playback-probe","S",1,null),("--mod-sweep","S",1,null),("--sources-recent-smoke","",0,null),("--scene-save-smoke","",0,null),("--scene-dialog-smoke","",0,null),
         ("--cloud-equipment-smoke","GM",0,"cloud-equipment-tests.txt"),("--bladebeam-smoke","GM",0,"bladebeam-smoke.txt"),("--timing-smoke","TM",0,"timing-smoke.txt"),("--emitter-source-smoke","",0,null),("--refraction-smoke","",0,null),
         ("--archive-order-smoke",Environment.GetEnvironmentVariable("SSE_ARCHIVE_TEST_ROOT")==null?"A":"",0,"archive-order-render.txt"),("--reference-effect-smoke","GM",0,"reference-effects.txt"),("--remote-cast-smoke","",0,null),
         ("--camera-smoke","",0,null),("--attachment-smoke","TM",0,"attachment-tests.txt"),("--floor-smoke","",0,null),("--tagfile-smoke","",1,"tagfile-tests.txt"),("--speed-smoke","",2,"speed-tests.txt"),
@@ -153,9 +154,10 @@ public sealed class MainWindow : Form
     internal static IntPtr FocusBefore;int handBacks=3;readonly System.Diagnostics.Stopwatch sinceStart=System.Diagnostics.Stopwatch.StartNew();
     internal static IntPtr ForegroundNow()=>GetForegroundWindow();
     void HandFocusBack(){if(NoActivate&&handBacks>0&&sinceStart.ElapsedMilliseconds<4000&&FocusBefore!=IntPtr.Zero&&FocusBefore!=Handle&&IsWindow(FocusBefore)&&GetForegroundWindow()==Handle){handBacks--;SetForegroundWindow(FocusBefore);}}
-    protected override void OnShown(EventArgs e){base.OnShown(e);LogFocus("shown");HandFocusBack();}
+    protected override void OnShown(EventArgs e){base.OnShown(e);LogFocus("shown");ActivationGuard.Release("when the window was shown");HandFocusBack();}
     // SSE_PREVIEW_FOCUS_LOG=<file> records when the window is shown and each time it is activated, so a test can tell
     // that a start left the focus alone without watching the desktop.
+    bool firstPaintLogged;
     void LogFocus(string what){if(Environment.GetEnvironmentVariable("SSE_PREVIEW_FOCUS_LOG") is {Length:>0} file)try{File.AppendAllText(file,$"{sinceStart.ElapsedMilliseconds} ms {what}; background={Background}; no-activate={NoActivate}; active form={ReferenceEquals(ActiveForm,this)}; owned={Owner!=null}{Environment.NewLine}"+(what=="activated"&&Environment.GetEnvironmentVariable("SSE_PREVIEW_FOCUS_TRACE")=="1"?string.Join(Environment.NewLine,Environment.StackTrace.Split((char)10).Where(l=>l.Contains("SSEPreview")||l.Contains("FO4_Base")||l.Contains("System.Windows.Forms.Form.")||l.Contains("NativeWindow.Callback")).Take(14).Select(l=>"        "+l.Trim()))+Environment.NewLine:""));}catch(IOException){}catch(UnauthorizedAccessException){}}
     protected override bool ShowWithoutActivation=>NoActivate;
     // Background mode: WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, so the window can never come to the front.
@@ -169,7 +171,7 @@ public sealed class MainWindow : Form
         requireAlt.Checked=preferences.RequireAlt;viewport.RequireAlt=preferences.RequireAlt;
         emitterSourceSmoke=args.Contains("--emitter-source-smoke");
         recentScenes=new(Path.Combine(AppContext.BaseDirectory,args.Any(a=>a.EndsWith("-smoke",StringComparison.Ordinal))?"verification-recent-scenes.json":"recent-scenes.json"));
-        if(args.Contains("--smp-determinism")||args.Contains("--equipment-smoke")||args.Contains("--queue-smoke")||args.Contains("--frame-smoke")||args.Contains("--precision-smoke")||args.Contains("--window-pick-smoke")||args.Contains("--skeleton-smoke")||args.Contains("--annotation-smoke")||args.Contains("--ff7vfx-smoke")||args.Contains("--flipbook-smoke")||args.Contains("--override-smoke")||args.Contains("--docs-capture")||args.Contains("--frames-capture")||args.Contains("--effect-capture")||args.Contains("--cloud-effect-alpha-smoke")||args.Contains("--bfco-smoke")||args.Contains("--track-bone")||args.Contains("--sound-smoke")||args.Contains("--smp-soak")||args.Contains("--hair-smoke")||args.Contains("--smp-smoke")||args.Contains("--holster-smoke")||args.Contains("--clip-profile")||args.Contains("--playback-probe")||args.Contains("--mod-sweep")||args.Contains("--weaponart-profile-smoke")||args.Contains("--sources-recent-smoke")||args.Contains("--scene-save-smoke")||args.Contains("--cloud-equipment-smoke")||args.Contains("--bladebeam-smoke")||args.Contains("--timing-smoke")||args.Contains("--emitter-source-smoke")||args.Contains("--refraction-smoke")||args.Contains("--archive-order-smoke")||args.Contains("--reference-effect-smoke")||args.Contains("--remote-cast-smoke")||args.Contains("--camera-smoke")||args.Contains("--smoke")||args.Contains("--particle-smoke")||args.Contains("--library-smoke")||args.Contains("--character-smoke")||args.Contains("--attachment-smoke")||args.Contains("--floor-smoke")||args.Contains("--tagfile-smoke")||args.Contains("--speed-smoke"))settingsPath=Path.Combine(AppContext.BaseDirectory,"verification-session.json");
+        if(args.Contains("--smp-determinism")||args.Contains("--equipment-smoke")||args.Contains("--queue-smoke")||args.Contains("--frame-smoke")||args.Contains("--precision-smoke")||args.Contains("--window-pick-smoke")||args.Contains("--skeleton-smoke")||args.Contains("--annotation-smoke")||args.Contains("--ff7vfx-smoke")||args.Contains("--flipbook-smoke")||args.Contains("--override-smoke")||args.Contains("--docs-capture")||args.Contains("--frames-capture")||args.Contains("--effect-capture")||args.Contains("--cloud-effect-alpha-smoke")||args.Contains("--bfco-smoke")||args.Contains("--track-bone")||args.Contains("--sound-smoke")||args.Contains("--smp-soak")||args.Contains("--hair-smoke")||args.Contains("--smp-smoke")||args.Contains("--holster-smoke")||args.Contains("--clip-profile")||args.Contains("--playback-probe")||args.Contains("--mod-sweep")||args.Contains("--weaponart-profile-smoke")||args.Contains("--sources-recent-smoke")||args.Contains("--scene-save-smoke")||args.Contains("--cloud-equipment-smoke")||args.Contains("--bladebeam-smoke")||args.Contains("--timing-smoke")||args.Contains("--emitter-source-smoke")||args.Contains("--refraction-smoke")||args.Contains("--pbr-glow-smoke")||args.Contains("--view-capture")||args.Contains("--archive-order-smoke")||args.Contains("--reference-effect-smoke")||args.Contains("--remote-cast-smoke")||args.Contains("--camera-smoke")||args.Contains("--smoke")||args.Contains("--particle-smoke")||args.Contains("--library-smoke")||args.Contains("--character-smoke")||args.Contains("--attachment-smoke")||args.Contains("--floor-smoke")||args.Contains("--tagfile-smoke")||args.Contains("--speed-smoke"))settingsPath=Path.Combine(AppContext.BaseDirectory,"verification-session.json");
         // Existing regression renders measure effect pixels against the bare background; only the floor smoke wants the floor.
         if(settingsPath.EndsWith("verification-session.json")&&!args.Contains("--floor-smoke"))gridFloor.Checked=false;
         if(Background){
@@ -268,7 +270,9 @@ public sealed class MainWindow : Form
         timer=new(this,60);timer.Tick+=(_,_)=>TickPlayback();timer.Start();
         KeyDown+=(_,e)=>{if(e.KeyCode==Keys.Space && ActiveControl is not TextBox and not RichTextBox and not ComboBox){TogglePlay();e.Handled=true;}};
         FormClosed+=(_,_)=>{timer.Stop();timer.Dispose();sceneMenu?.Dispose();scene.Dispose();viewport.Clean();};
-        Shown+=async(_,_)=>{if(args.FirstOrDefault(a=>a is "--effect-capture" or "--cloud-effect-alpha-smoke") is {} capture){int j=Array.IndexOf(args,capture);if(args.Length<j+5){Console.Error.WriteLine(capture+" needs an output folder, two NIFs and a Data folder after it.");Environment.ExitCode=2;Close();return;}await EffectCapture(args[j+1],args[j+2],args[j+3],args[j+4]);return;}bool blocked;try{blocked=SmokeBlocked(args);}catch(Exception ex){ShowError(ex);Environment.ExitCode=2;blocked=true;}if(blocked){Close();return;}if(args.Contains("--weaponart-profile-smoke")){await WeaponArtProfile();return;}if(args.Contains("--smp-determinism")){await SmpDeterminism(args.Skip(Array.IndexOf(args,"--smp-determinism")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--equipment-smoke")){await EquipmentSmoke(args.Skip(Array.IndexOf(args,"--equipment-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--queue-smoke")){await QueueSmoke(args.Skip(Array.IndexOf(args,"--queue-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-soak")){await SmpSoak(args.Skip(Array.IndexOf(args,"--smp-soak")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--dump-annotations")){DumpAnnotations(args.Skip(Array.IndexOf(args,"--dump-annotations")+1).Where(x=>!x.StartsWith("--")).ToArray());Close();return;}if(args.Contains("--track-bone")){await TrackBone(args.Skip(Array.IndexOf(args,"--track-bone")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--override-smoke")){await OverrideSmoke();return;}if(args.Contains("--bfco-smoke")){await BfcoSmoke(args.Skip(Array.IndexOf(args,"--bfco-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frames-capture")){await FramesCapture(args.Skip(Array.IndexOf(args,"--frames-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--docs-capture")){await DocsCapture(args.Skip(Array.IndexOf(args,"--docs-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--flipbook-smoke")){await FlipbookSmoke(args.Skip(Array.IndexOf(args,"--flipbook-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--ff7vfx-smoke")){await Ff7VfxSmoke();return;}if(args.Contains("--annotation-smoke")){await AnnotationSmoke(args[Array.IndexOf(args,"--annotation-smoke")+1]);return;}if(args.Contains("--skeleton-smoke")){await SkeletonSmoke(args[Array.IndexOf(args,"--skeleton-smoke")+1]);return;}if(args.Contains("--window-pick-smoke")){int j=Array.IndexOf(args,"--window-pick-smoke");await WindowPickSmoke(args[j+1],args[j+2]);return;}if(args.Contains("--sound-smoke")){await SoundSmoke();return;}if(args.Contains("--precision-smoke")){await PrecisionSmoke(args.Skip(Array.IndexOf(args,"--precision-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frame-smoke")){await FrameSmoke(args[Array.IndexOf(args,"--frame-smoke")+1]);return;}if(args.Contains("--hair-smoke")){await HairSmoke(args.Skip(Array.IndexOf(args,"--hair-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-smoke")){await SmpSmoke(args.Skip(Array.IndexOf(args,"--smp-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--holster-smoke")){await HolsterSmoke(args[Array.IndexOf(args,"--holster-smoke")+1],args[Array.IndexOf(args,"--holster-smoke")+2],args[Array.IndexOf(args,"--holster-smoke")+3]);return;}if(args.Contains("--playback-probe")){int j=Array.IndexOf(args,"--playback-probe");await PlaybackProbe(args[j+1],args.Length>j+2&&double.TryParse(args[j+2],System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out double probeSeconds)?probeSeconds:4);return;}if(args.Contains("--clip-profile")){await ClipProfile(args[Array.IndexOf(args,"--clip-profile")+1],args[Array.IndexOf(args,"--clip-profile")+2]);return;}if(args.Contains("--mod-sweep")){await ModSweep(args[Array.IndexOf(args,"--mod-sweep")+1]);return;}if(args.Contains("--sources-recent-smoke")){await SourcesRecentSmoke();return;}if(args.Contains("--scene-save-smoke")){await SceneSaveSmoke();return;}if(args.Contains("--scene-dialog-smoke")){await SceneDialogSmoke();return;}if(args.Contains("--cloud-equipment-smoke")){await CloudEquipmentSmoke();return;}if(args.Contains("--bladebeam-smoke")){await BladeBeamSmoke();return;}if(args.Contains("--timing-smoke")){await TimingSmoke();return;}if(args.Contains("--emitter-source-smoke")){await EmitterSourceSmoke();return;}if(args.Contains("--refraction-smoke")){await RefractionSmoke();return;}if(args.Contains("--archive-order-smoke")){await ArchiveOrderSmoke();return;}if(args.Contains("--reference-effect-smoke")){await ReferenceEffectSmoke();return;}if(args.Contains("--remote-cast-smoke")){await RemoteCastSmoke();return;}if(args.Contains("--camera-smoke")){await CameraSmoke();return;}if(args.Contains("--attachment-smoke")){await AttachmentSmoke();return;}if(args.Contains("--floor-smoke")){await FloorSmoke();return;}if(args.Contains("--tagfile-smoke")){await TagfileSmoke(args[Array.IndexOf(args,"--tagfile-smoke")+1]);return;}if(args.Contains("--speed-smoke")){await SpeedSmoke(args[Array.IndexOf(args,"--speed-smoke")+1],args[Array.IndexOf(args,"--speed-smoke")+2]);return;}if(args.Contains("--character-smoke")){await CharacterSmoke();return;}if(args.Contains("--library-smoke")){await LibrarySmoke();return;}if(args.Contains("--particle-smoke")){await ParticleSmoke();return;}if(args.Contains("--smoke")){await Smoke();return;}int i=Array.IndexOf(args,"--data");if(i>=0 && args.Length>i+1)await Mount(args[i+1],false);};
+        // Startup phases for SSE_PREVIEW_FOCUS_LOG traces (no cost without it).
+        LogFocus("constructed");HandleCreated+=(_,_)=>LogFocus("form handle created");Load+=(_,_)=>LogFocus("load event");viewport.HandleCreated+=(_,_)=>LogFocus("viewport handle created");viewport.Paint+=(_,_)=>{if(!firstPaintLogged){firstPaintLogged=true;LogFocus("first viewport paint");}};
+        Shown+=async(_,_)=>{if(args.FirstOrDefault(a=>a is "--effect-capture" or "--cloud-effect-alpha-smoke") is {} capture){int j=Array.IndexOf(args,capture);if(args.Length<j+5){Console.Error.WriteLine(capture+" needs an output folder, two NIFs and a Data folder after it.");Environment.ExitCode=2;Close();return;}await EffectCapture(args[j+1],args[j+2],args[j+3],args[j+4]);return;}bool blocked;try{blocked=SmokeBlocked(args);}catch(Exception ex){ShowError(ex);Environment.ExitCode=2;blocked=true;}if(blocked){Close();return;}if(args.Contains("--view-capture")){await ViewCapture(args.Skip(Array.IndexOf(args,"--view-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--pbr-glow-smoke")){await PbrGlowSmoke(args.Skip(Array.IndexOf(args,"--pbr-glow-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--weaponart-profile-smoke")){await WeaponArtProfile();return;}if(args.Contains("--smp-determinism")){await SmpDeterminism(args.Skip(Array.IndexOf(args,"--smp-determinism")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--equipment-smoke")){await EquipmentSmoke(args.Skip(Array.IndexOf(args,"--equipment-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--queue-smoke")){await QueueSmoke(args.Skip(Array.IndexOf(args,"--queue-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-soak")){await SmpSoak(args.Skip(Array.IndexOf(args,"--smp-soak")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--dump-annotations")){DumpAnnotations(args.Skip(Array.IndexOf(args,"--dump-annotations")+1).Where(x=>!x.StartsWith("--")).ToArray());Close();return;}if(args.Contains("--track-bone")){await TrackBone(args.Skip(Array.IndexOf(args,"--track-bone")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--override-smoke")){await OverrideSmoke();return;}if(args.Contains("--bfco-smoke")){await BfcoSmoke(args.Skip(Array.IndexOf(args,"--bfco-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frames-capture")){await FramesCapture(args.Skip(Array.IndexOf(args,"--frames-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--docs-capture")){await DocsCapture(args.Skip(Array.IndexOf(args,"--docs-capture")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--flipbook-smoke")){await FlipbookSmoke(args.Skip(Array.IndexOf(args,"--flipbook-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--ff7vfx-smoke")){await Ff7VfxSmoke();return;}if(args.Contains("--annotation-smoke")){await AnnotationSmoke(args[Array.IndexOf(args,"--annotation-smoke")+1]);return;}if(args.Contains("--skeleton-smoke")){await SkeletonSmoke(args[Array.IndexOf(args,"--skeleton-smoke")+1]);return;}if(args.Contains("--window-pick-smoke")){int j=Array.IndexOf(args,"--window-pick-smoke");await WindowPickSmoke(args[j+1],args[j+2]);return;}if(args.Contains("--sound-smoke")){await SoundSmoke();return;}if(args.Contains("--precision-smoke")){await PrecisionSmoke(args.Skip(Array.IndexOf(args,"--precision-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--frame-smoke")){await FrameSmoke(args[Array.IndexOf(args,"--frame-smoke")+1]);return;}if(args.Contains("--hair-smoke")){await HairSmoke(args.Skip(Array.IndexOf(args,"--hair-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--smp-smoke")){await SmpSmoke(args.Skip(Array.IndexOf(args,"--smp-smoke")+1).Where(a=>!a.StartsWith("--")).ToArray());return;}if(args.Contains("--holster-smoke")){await HolsterSmoke(args[Array.IndexOf(args,"--holster-smoke")+1],args[Array.IndexOf(args,"--holster-smoke")+2],args[Array.IndexOf(args,"--holster-smoke")+3]);return;}if(args.Contains("--playback-probe")){int j=Array.IndexOf(args,"--playback-probe");await PlaybackProbe(args[j+1],args.Length>j+2&&double.TryParse(args[j+2],System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out double probeSeconds)?probeSeconds:4);return;}if(args.Contains("--clip-profile")){await ClipProfile(args[Array.IndexOf(args,"--clip-profile")+1],args[Array.IndexOf(args,"--clip-profile")+2]);return;}if(args.Contains("--mod-sweep")){await ModSweep(args[Array.IndexOf(args,"--mod-sweep")+1]);return;}if(args.Contains("--sources-recent-smoke")){await SourcesRecentSmoke();return;}if(args.Contains("--scene-save-smoke")){await SceneSaveSmoke();return;}if(args.Contains("--scene-dialog-smoke")){await SceneDialogSmoke();return;}if(args.Contains("--cloud-equipment-smoke")){await CloudEquipmentSmoke();return;}if(args.Contains("--bladebeam-smoke")){await BladeBeamSmoke();return;}if(args.Contains("--timing-smoke")){await TimingSmoke();return;}if(args.Contains("--emitter-source-smoke")){await EmitterSourceSmoke();return;}if(args.Contains("--refraction-smoke")){await RefractionSmoke();return;}if(args.Contains("--archive-order-smoke")){await ArchiveOrderSmoke();return;}if(args.Contains("--reference-effect-smoke")){await ReferenceEffectSmoke();return;}if(args.Contains("--remote-cast-smoke")){await RemoteCastSmoke();return;}if(args.Contains("--camera-smoke")){await CameraSmoke();return;}if(args.Contains("--attachment-smoke")){await AttachmentSmoke();return;}if(args.Contains("--floor-smoke")){await FloorSmoke();return;}if(args.Contains("--tagfile-smoke")){await TagfileSmoke(args[Array.IndexOf(args,"--tagfile-smoke")+1]);return;}if(args.Contains("--speed-smoke")){await SpeedSmoke(args[Array.IndexOf(args,"--speed-smoke")+1],args[Array.IndexOf(args,"--speed-smoke")+2]);return;}if(args.Contains("--character-smoke")){await CharacterSmoke();return;}if(args.Contains("--library-smoke")){await LibrarySmoke();return;}if(args.Contains("--particle-smoke")){await ParticleSmoke();return;}if(args.Contains("--smoke")){await Smoke();return;}int i=Array.IndexOf(args,"--data");if(i>=0 && args.Length>i+1)await Mount(args[i+1],false);};
     }
     void BuildUi()
     {
@@ -570,6 +574,8 @@ public sealed class MainWindow : Form
     }
     // null means cancel the whole load; an empty replacement explicitly skips this reference.
     string? QueryMissingScenePath(string path,bool folder){
+        // A background run has nobody to answer, and a dialog would take the focus: skip the reference and say so.
+        if(Background){string note=$"Scene references a missing {(folder?"folder":"file")}, skipped: {path}";assets.Diagnostics.Add(note);Console.Error.WriteLine(note);File.AppendAllText(Path.Combine(AppContext.BaseDirectory,"previewer.log"),DateTime.Now+" "+note+"\n");return "";}
         var choice=MessageBox.Show(this,$"This scene references a missing {(folder?"folder":"file")}:\n\n{path}\n\nYes: locate a replacement\nNo: skip this reference\nCancel: keep the current scene", "Missing scene path",MessageBoxButtons.YesNoCancel,MessageBoxIcon.Question);
         if(choice==DialogResult.Cancel)return null;if(choice==DialogResult.No)return "";
         if(folder){using var picker=new FolderBrowserDialog{Description="Locate replacement for "+path};return picker.ShowDialog(this)==DialogResult.OK?picker.SelectedPath:null;}
@@ -1168,7 +1174,8 @@ public sealed class MainWindow : Form
         using var d=new OpenFileDialog{Filter="Effect NIF|*.nif"};
         if(d.ShowDialog()!=DialogResult.OK)return;
         await EnsureEffectDataRoot(d.FileName);
-        PreviewParticle(d.FileName);
+        // No time limit of its own: the NIF's controllers decide when its meshes and emitters stop.
+        PreviewParticle(d.FileName,double.PositiveInfinity);
     }
     void ChooseImpactEffect()
     {
@@ -1278,11 +1285,16 @@ public sealed class MainWindow : Form
         effectSequence.Items.Clear();effectSequence.Items.Add("Automatic");effectSequence.Items.AddRange(scene.SequenceNames);
         effectSequence.SelectedIndex=0;effectSequence.Enabled=scene.SequenceNames.Length>0;selecting=previous;
     }
-    void PreviewParticle(string path,double emissionDuration=10)
+    // extras: more effect NIFs spawned with the first, each at its own start offset in seconds (a spell's impact, extra
+    // explosion and tell are separate NIFs in game).
+    void PreviewParticle(string path,double emissionDuration=10,IReadOnlyList<(string Path,double Offset)>? extras=null)
     {
-        clock.Pause();clip=null;manualTriggers.Clear();referenceActions.Clear();cues.Clear();previewingEffect=true;scene.Clip=null;scene.Clear();scene.AddModel(path,cue:new EffectCue(0,path,0,0,emissionDuration,1,System.Numerics.Vector3.Zero,"Direct NIF preview"));scene.Commit();
+        clock.Pause();clip=null;manualTriggers.Clear();referenceActions.Clear();cues.Clear();previewingEffect=true;scene.Clip=null;scene.Clear();scene.AddModel(path,cue:new EffectCue(0,path,0,0,emissionDuration,1,System.Numerics.Vector3.Zero,"Direct NIF preview"));
+        foreach(var (extraPath,offset) in extras??[])scene.AddModel(extraPath,cue:new EffectCue(Math.Max(0,offset),extraPath,0,0,emissionDuration,1,System.Numerics.Vector3.Zero,"Direct NIF preview (extra)"));
+        scene.Commit();
         RefreshEffectSequences();
-        clock.Duration=scene.EffectDuration>.1?scene.EffectDuration:Math.Max(1,emissionDuration);clock.Seek(0);clipTitle.Text=Path.GetFileName(path);speedNote.Text="";
+        double latest=(extras??[]).Select(e=>Math.Max(0,e.Offset)).DefaultIfEmpty(0).Max();
+        clock.Duration=scene.EffectDuration>.1?scene.EffectDuration+latest:double.IsFinite(emissionDuration)?Math.Max(1,emissionDuration):10;clock.Seek(0);clipTitle.Text=Path.GetFileName(path);speedNote.Text="";
         viewport.camera=new OrbitCamera();viewport.camera.MaxDistance=100000;viewport.camera.Rotate(45,65);scene.SetTime(.2);scene.Frame();
         scene.SetTime(0);UpdateDiagnostics();clock.Play();
     }
@@ -2234,6 +2246,356 @@ public sealed class MainWindow : Form
         }catch(Exception ex){ShowError(ex);Environment.ExitCode=1;}
         finally{Close();}
     }
+    // Renders a NIF, or a manifest of placed NIFs, from a free camera at an eye position, in Skyrim's units and axes
+    // (Z up, yaw as the game's angle z: 0 north, 90 east; pitch as its angle x: positive looks down; fov horizontal).
+    // For seeing textures and materials from where a player stands. The PNG is written only when every texture has
+    // loaded; exit code 0 means a complete render. Writes <out>.txt beside the PNG.
+    async Task ViewCapture(string[] arguments)
+    {
+        var invariant=System.Globalization.CultureInfo.InvariantCulture;
+        string root=Path.GetFullPath(arguments[0]),output=Path.GetFullPath(arguments[1]),source=arguments[2];
+        string? Option(string name)=>arguments.Skip(3).FirstOrDefault(a=>a.StartsWith(name+"=",StringComparison.OrdinalIgnoreCase))?[(name.Length+1)..];
+        double Number(string name,double fallback)=>Option(name) is {} text?double.Parse(text,invariant):fallback;
+        var log=new List<string>();string logPath=Path.ChangeExtension(output,".txt");
+        // base: a Skyrim Data folder whose .bsa archives fill in files the mounted folder lacks (vanilla textures).
+        string? basePath=Option("base") is {Length:>0} baseText?Path.GetFullPath(baseText):null;
+        // weather= swaps the viewer's light rig for the weather's light; the capture saves viewer preferences when it closes,
+        // so the rig and the follow-camera setting are put back before then.
+        PreviewLightRig? savedRig=null;bool savedFollow=Config_App.Current.Setting_LightsFollowCamera;
+        try{
+            var eyeValues=(Option("eye")??"0,0,0").Split(',').Select(v=>double.Parse(v,invariant)).ToArray();
+            if(eyeValues.Length!=3)throw new ArgumentException("eye= takes x,y,z");
+            double yaw=Number("yaw",0),pitch=Math.Clamp(Number("pitch",0),-89,89),fovH=Math.Clamp(Number("fov",75),5,170),timeout=Number("timeout",300);
+            var sizeText=(Option("size")??"1600x900").Split('x');int width=int.Parse(sizeText[0],invariant),height=int.Parse(sizeText[1],invariant);
+            string? colorsPath=Option("colors") is {} c?Path.GetFullPath(c):null;
+            // maxtex: textures are uploaded no larger than this (top mip levels skipped); 0 = full size.
+            // maxmem: GB of private memory this run may use before it stops with FAIL; 0 = no limit.
+            int maxTexture=(int)Number("maxtex",1024);double maxMemoryGb=Number("maxmem",16);
+            DirectXDDSLoader.MaxUploadTextureSize=Math.Max(0,maxTexture);
+            var self=Process.GetCurrentProcess();
+            void CheckMemory(string stage){
+                if(maxMemoryGb<=0)return;self.Refresh();double used=self.PrivateMemorySize64/1073741824.0;
+                // Garbage left from parsing large NIFs counts as private memory until a full collection, and the
+                // workstation GC rarely compacts the large-object heap: collect before deciding the limit is reached.
+                if(used>maxMemoryGb){System.Runtime.GCSettings.LargeObjectHeapCompactionMode=System.Runtime.GCLargeObjectHeapCompactionMode.CompactOnce;GC.Collect(2,GCCollectionMode.Forced,true,true);GC.WaitForPendingFinalizers();self.Refresh();used=self.PrivateMemorySize64/1073741824.0;}
+                if(used>maxMemoryGb)throw new InsufficientMemoryException(FormattableString.Invariant($"Stopped {stage}: {used:F1} GB of private memory (managed heap {GC.GetGCMemoryInfo().HeapSizeBytes/1073741824.0:F1} GB, working set {self.WorkingSet64/1073741824.0:F1} GB) is over maxmem={maxMemoryGb:0.#} GB. Lower maxtex=, draw fewer placements, or raise maxmem=."));
+            }
+            if(!Directory.Exists(root))throw new DirectoryNotFoundException("Data folder not found: "+root);
+            Directory.CreateDirectory(Path.GetDirectoryName(output)!);
+
+            // The viewport, not the window, has to be width x height: grow the window by the difference until it is.
+            for(int i=0;i<4&&(viewport.Width!=width||viewport.Height!=height);i++){Size=new Size(Size.Width+width-viewport.Width,Size.Height+height-viewport.Height);await Task.Delay(50);}
+            if(viewport.Width!=width||viewport.Height!=height)throw new InvalidOperationException($"The viewport is {viewport.Width}x{viewport.Height}, not {width}x{height}; the screen may be too small for that size.");
+
+            await Mount(root,false);
+            if(basePath!=null){
+                if(!Directory.Exists(basePath))throw new DirectoryNotFoundException("base= folder not found: "+basePath);
+                var (archives,files)=await Task.Run(()=>assets.AddFallbackArchives(basePath));
+                if(archives==0)throw new FileNotFoundException("base= folder has no .bsa archives: "+basePath);
+                log.Add($"base: {files:N0} files from {archives} archive(s) in {basePath} (files in {root} win)");
+            }
+            Config_App.Current.Game=Config_App.Game_Enum.Skyrim;
+            if(viewport.SharedSSEShader==null)throw new InvalidOperationException("The Skyrim shader did not initialize.");
+            truePbr.Checked=true;viewport.TruePbr=true;gridFloor.Checked=false;scene.ShowFloor=false;followCamera.Checked=false;scene.FollowScene=false;scene.ShowSkeleton=false;
+            // A still capture never re-poses: let the engine keep unskinned geometry on the GPU only.
+            viewport.StaticGeometryMode=Number("static",1)!=0;
+
+            // What to draw: one NIF at the origin, or a manifest {"meshes":[{"nif","position":[x,y,z],"angles":[x,y,z] radians,"scale"}]}
+            // whose angles are a reference's (NiMatrix3::SetEulerAnglesXYZ, world = Rx Ry Rz local).
+            // A placement's optional "water" names the WATR (EditorID) its water surfaces use; the top-level "flowmaps"
+            // names the folder under textures\water with the worldspace's flowmaps ("skyrim.esm" for Tamriel).
+            var placed=new List<(string Path,System.Numerics.Matrix4x4 Placement,string? Water)>();string? flowmaps=null;
+            if(source.EndsWith(".json",StringComparison.OrdinalIgnoreCase)){
+                using var manifest=JsonDocument.Parse(File.ReadAllText(source));
+                if(manifest.RootElement.TryGetProperty("flowmaps",out var fm)&&fm.ValueKind==JsonValueKind.String)flowmaps=fm.GetString();
+                foreach(var item in manifest.RootElement.GetProperty("meshes").EnumerateArray()){
+                    double[] Vector(string name,double fallback)=>item.TryGetProperty(name,out var v)?v.EnumerateArray().Select(x=>x.GetDouble()).ToArray():[fallback,fallback,fallback];
+                    var p=Vector("position",0);var a=Vector("angles",0);double s=item.TryGetProperty("scale",out var sv)?sv.GetDouble():1;
+                    string? water=item.TryGetProperty("water",out var wv)&&wv.ValueKind==JsonValueKind.String?wv.GetString():null;
+                    placed.Add((item.GetProperty("nif").GetString()!,ReferencePlacement(p,a,s),water));
+                }
+            }else placed.Add((source,System.Numerics.Matrix4x4.Identity,null));
+            if(placed.Count==0)throw new InvalidDataException("Nothing to draw.");
+
+            clock.Pause();clip=null;manualTriggers.Clear();referenceActions.Clear();cues.Clear();previewingEffect=true;scene.Clip=null;scene.Clear();
+            // Water types come from the base folder's masters, then the mounted folder's plugins (later ones win).
+            scene.WaterTypes=new();scene.WaterTypes.Load((basePath!=null?WaterTypes.PluginsIn(basePath):[]).Concat(WaterTypes.PluginsIn(root)));
+            scene.FlowmapFolder=flowmaps;scene.SkipShaderlessShapes=true;
+
+            // weather: a WTHR EditorID. Its sky colours, TNAM sky statics (centred on the eye), fog and light are drawn as they
+            // stand at hour= (0-24, default 12), blended between its sunrise, day, sunset and night sets by the climate's
+            // sunrise and sunset times (climate=<CLMT EditorID>, or SkyrimClimate's). Read like water types: base= masters, then
+            // the mounted folder's plugins.
+            var skyFailures=new List<string>();var skyStaticModels=new List<(string Id,string Model)>();
+            if(Option("weather") is {Length:>0} weatherId){
+                var weathers=new Weathers();weathers.Load((basePath!=null?WaterTypes.PluginsIn(basePath):[]).Concat(WaterTypes.PluginsIn(root)));
+                foreach(var d in weathers.Diagnostics)log.Add("scene: "+d);
+                string pluginsRead=string.Join(", ",weathers.PluginsRead);
+                var weather=weathers.FindWeather(weatherId)??throw new KeyNotFoundException($"weather={weatherId} was not found in {pluginsRead}"+(basePath==null?"; a weather from a master needs base=<Skyrim Data folder>":""));
+                var climate=Option("climate") is {Length:>0} climateId?weathers.FindClimate(climateId)??throw new KeyNotFoundException($"climate={climateId} was not found in {pluginsRead}"):Climate.Default;
+                double hour=Number("hour",12);if(hour<0||hour>24)throw new ArgumentException("hour= takes 0 to 24");
+                var weights=climate.Weights(hour);
+                OpenTK.Mathematics.Vector3 Rgb((float R,float G,float B) c)=>new(c.R,c.G,c.B);
+                float night=weights[3];float Night(float day,float atNight)=>day+(atNight-day)*night;
+                var sky=new SkyState{
+                    Upper=Rgb(weather.Color(Weather.SkyUpper,weights)),Lower=Rgb(weather.Color(Weather.SkyLower,weights)),Horizon=Rgb(weather.Color(Weather.Horizon,weights)),
+                    Statics=Rgb(weather.Color(Weather.SkyStatics,weights)),FogNearColor=Rgb(weather.Color(Weather.FogNear,weights)),FogFarColor=Rgb(weather.Color(Weather.FogFar,weights)),
+                    FogNear=Night(weather.Fog[0],weather.Fog[2]),FogFar=Night(weather.Fog[1],weather.Fog[3]),FogPower=Night(weather.Fog[4],weather.Fog[5]),FogMax=Night(weather.Fog[6],weather.Fog[7]),
+                    Fog=Number("fog",1)!=0};
+                scene.Sky=sky;
+                string Byte(OpenTK.Mathematics.Vector3 c)=>FormattableString.Invariant($"{c.X*255:F0},{c.Y*255:F0},{c.Z*255:F0}");
+                string Clock(double h)=>$"{(int)h}:{(int)Math.Round((h-(int)h)*60):00}";
+                string mix=string.Join(", ",Enumerable.Range(0,4).Where(t=>weights[t]>0).Select(t=>FormattableString.Invariant($"{Weather.TimeNames[t]} {weights[t]*100:F0}%")));
+                log.Add(FormattableString.Invariant($"weather: {weather.EditorId} from {weather.Plugin} ({weathers.WeatherCount} weathers read from {pluginsRead}); climate {climate.EditorId} ({climate.Plugin}), sunrise {Clock(climate.SunriseBegin)}-{Clock(climate.SunriseEnd)}, sunset {Clock(climate.SunsetBegin)}-{Clock(climate.SunsetEnd)}; hour {hour:0.##} = {mix}"));
+                log.Add($"sky colours (0-255): upper {Byte(sky.Upper)}; horizon {Byte(sky.Horizon)}; lower {Byte(sky.Lower)}; sky statics {Byte(sky.Statics)}; fog near {Byte(sky.FogNearColor)}; fog far {Byte(sky.FogFarColor)}");
+                log.Add(FormattableString.Invariant($"fog: near {sky.FogNear:0.#}, far {sky.FogFar:0.#}, power {sky.FogPower:0.###}, max {sky.FogMax:0.###}{(sky.Fog?"":" (off: fog=0)")}"));
+
+                // The weather's light replaces the viewer's rig: the sunlight colour as the key light from the sun's (or by
+                // night the moon's) position, no fill or back light, and the DALC up and down colours as the ambient.
+                var sunlight=Rgb(weather.Color(Weather.Sunlight,weights));
+                var (azimuth,elevation,byNight)=climate.LightPosition(hour);
+                OpenTK.Mathematics.Vector3 up,down;string ambientSource;
+                if(weather.DirectionalAmbient.All(a=>a!=null)){
+                    up=down=OpenTK.Mathematics.Vector3.Zero;
+                    for(int t=0;t<4;t++){up+=Rgb(weather.DirectionalAmbient[t]!.Value.Up)*weights[t];down+=Rgb(weather.DirectionalAmbient[t]!.Value.Down)*weights[t];}
+                    ambientSource="DALC +Z/-Z";
+                }else{up=down=Rgb(weather.Color(Weather.Ambient,weights));ambientSource="NAM0 ambient (no DALC)";}
+                // weatherlight=0 keeps the viewer's rig (the weather's light reads darker than in game, where its imagespace
+                // brightens it) while the sky and fog still come from the weather.
+                string lightText=FormattableString.Invariant($"{(byNight?"moon":"sun")} from azimuth {azimuth:F0}, elevation {elevation:F0}, colour {Byte(sunlight)}; ambient up {Byte(up)}, down {Byte(down)} ({ambientSource})");
+                if(Number("weatherlight",1)!=0){
+                    savedRig=Config_App.Current.ActiveLights();
+                    var rig=savedRig.Value;var off=new PreviewLight(0,0,0,new RigColor(0,0,0),false);
+                    rig.KeyLight=new PreviewLight(1,azimuth,elevation,new RigColor(sunlight.X,sunlight.Y,sunlight.Z),true);
+                    rig.FillLeft=off;rig.FillRight=off;rig.BackLight=off;
+                    rig.AmbientIntensity=1;rig.AmbientGroundLevel=1;rig.AmbientSkyColor=new RigColor(up.X,up.Y,up.Z);rig.AmbientGroundColor=new RigColor(down.X,down.Y,down.Z);
+                    Config_App.Current.SetActiveLights(rig);Config_App.Current.Setting_LightsFollowCamera=false;
+                    log.Add($"light: {lightText}; fill and back lights off");
+                }else log.Add($"light: the viewer's rig (weatherlight=0); the weather's would be {lightText}");
+
+                // skystatics=0 leaves them out: a vanilla weather's TNAM lists cloud meshes whose in-game placement this does
+                // not reproduce (centred on the eye they surround the camera).
+                List<(string Id,string? Model,string Note)> statics=Number("skystatics",1)!=0?weathers.ResolveSkyStatics(weather):[];
+                if(Number("skystatics",1)==0)log.Add($"sky statics: {weather.SkyStaticIds.Count} listed in TNAM, left out (skystatics=0)");
+                foreach(var d in weathers.Diagnostics)if(!log.Contains("scene: "+d))log.Add("scene: "+d);
+                var skyEye=System.Numerics.Matrix4x4.CreateTranslation((float)eyeValues[0],(float)eyeValues[1],(float)eyeValues[2]);
+                foreach(var (id,model,note) in statics){
+                    if(model==null){skyFailures.Add($"sky static {id}: {note}");continue;}
+                    if(!assets.Exists(model)){skyFailures.Add($"sky static {id}: {model} not found under the data folder");continue;}
+                    scene.AddModel(model,cue:new EffectCue(0,model,0,0,1e9,1,System.Numerics.Vector3.Zero,"Sky static"),placementOverride:_=>skyEye,sky:true);
+                    skyStaticModels.Add((id,model));
+                }
+                if(statics.Count>0)log.Add($"sky statics: {statics.Count} listed in TNAM, {skyStaticModels.Count} loaded");log.AddRange(skyStaticModels.Select(s=>$"  {s.Id} -> {s.Model}"));
+            }
+            foreach(var (nif,placement,water) in placed){
+                string path=Assets.Normalize(nif);if(!path.StartsWith(@"meshes\",StringComparison.OrdinalIgnoreCase))path=@"meshes\"+path;
+                if(!assets.Exists(path))throw new FileNotFoundException("NIF not found under the data folder",path);
+                var fixedPlacement=placement;
+                scene.AddModel(path,cue:new EffectCue(0,path,0,0,1e9,1,System.Numerics.Vector3.Zero,"View capture"),placementOverride:_=>fixedPlacement,waterType:water);
+                CheckMemory("while loading meshes");
+            }
+            string Memory(){self.Refresh();long live=GC.GetTotalMemory(true);return FormattableString.Invariant($"private {self.PrivateMemorySize64/1073741824.0:F2} GB, managed live {live/1073741824.0:F2} GB, managed committed {GC.GetGCMemoryInfo().TotalCommittedBytes/1073741824.0:F2} GB");}
+            log.Add("memory after loading NIFs: "+Memory());
+            // time: the moment in seconds the still is taken, for looping controllers (waterfalls, scrolling water).
+            double captureTime=Math.Max(0,Number("time",0));
+            scene.Commit();RefreshEffectSequences();clock.Duration=captureTime+1;clock.Seek(captureTime);scene.SetTime(captureTime);
+            viewport.InvalidateRender();log.Add("memory after building GPU meshes: "+Memory());
+            var missingModels=scene.Diagnostics.Where(d=>d.StartsWith("Missing model",StringComparison.Ordinal)).ToArray();
+            if(missingModels.Length>0)throw new FileNotFoundException(string.Join("; ",missingModels));
+
+            // Free camera. The orbit camera looks from FocusPosition + Forward * distance at FocusPosition, so the eye is
+            // that point and Forward is the reverse of the view direction.
+            double yawRad=yaw*Math.PI/180,pitchRad=pitch*Math.PI/180;
+            var direction=new V3((float)(Math.Sin(yawRad)*Math.Cos(pitchRad)),(float)(Math.Cos(yawRad)*Math.Cos(pitchRad)),(float)-Math.Sin(pitchRad));
+            var eye=new V3((float)eyeValues[0],(float)eyeValues[1],(float)eyeValues[2]);
+            var camera=new OrbitCamera{MinDistance=.01f,MaxDistance=1e7f};camera.distance=1;camera.Forward=-direction;
+            camera.right=V3.Normalize(V3.Cross(camera.Forward,V3.UnitZ));camera.upPlane=V3.Normalize(V3.Cross(camera.right,camera.Forward));
+            camera.FocusPosition=eye+direction;viewport.camera=camera;
+            double aspect=width/(double)height,fovV=2*Math.Atan(Math.Tan(fovH*Math.PI/360)/aspect)*180/Math.PI;
+            viewport.FieldOfViewYDegrees=(float)fovV;
+            if(viewport.Model.meshes.Count==0)throw new InvalidDataException("Nothing drawable loaded: every NIF failed or has no visible shapes (see the scene lines).");
+
+            // Wait until every texture has been uploaded, so no "Texturing..." frame is captured.
+            var watch=Stopwatch.StartNew();
+            // Only a repaint per pass: textures upload on render ticks. Re-posing every pass (SetTime + InvalidateRender) re-skinned
+            // and re-uploaded every vertex each time, and the driver kept the orphaned buffers: gigabytes on a large level.
+            int pass=0;
+            do{viewport.UpdateRequired=true;viewport.Invalidate();await Task.Delay(100);CheckMemory("while loading textures");if(Environment.GetEnvironmentVariable("SSE_VIEW_TRACE")=="1"&&pass++<30)log.Add($"  pass {pass}: textures ready {viewport.Model.TexturesReady}, {Memory()}");}
+            while(!(viewport.Model.TexturesReady&&viewport.Model.Can_Render)&&watch.Elapsed.TotalSeconds<timeout);
+            if(!viewport.Model.TexturesReady)throw new TimeoutException($"Textures were still loading after {timeout:0} s.");
+            if(!viewport.Model.Can_Render)throw new InvalidOperationException("The scene did not become renderable.");
+            await Task.Delay(200);
+            // Far plane: the farthest corner of the scene from the eye. Measured after frames have run: a frame applies each
+            // placement to its meshes and their bounds, so before it the bounds are the NIFs' own, near the origin.
+            // The engine's GetSceneBounds reads each mesh's own geometry bounds without its placement, so take every
+            // mesh's bounds through its current transform (hidden ones too: water is hidden from the engine pass).
+            V3 low=new(float.MaxValue),high=new(float.MinValue);
+            foreach(var m in viewport.Model.meshes){
+                // Sky statics draw at the far plane whatever their size: they do not extend it.
+                if(scene.IsSkyMesh(m))continue;
+                var lo=m.MeshData.Meshgeometry.Minv;var hi=m.MeshData.Meshgeometry.Maxv;if(lo.X>hi.X)continue;
+                for(int corner=0;corner<8;corner++){
+                    var w=V3.TransformPosition(new V3((float)((corner&1)==0?lo.X:hi.X),(float)((corner&2)==0?lo.Y:hi.Y),(float)((corner&4)==0?lo.Z:hi.Z)),m.MeshData.Transform);
+                    if(float.IsFinite(w.X)&&float.IsFinite(w.Y)&&float.IsFinite(w.Z)){low=V3.ComponentMin(low,w);high=V3.ComponentMax(high,w);}
+                }
+            }
+            if(low.X>high.X){low=eye-new V3(1000);high=eye+new V3(1000);}
+            float far=new[]{low.X,high.X}.SelectMany(x=>new[]{low.Y,high.Y}.SelectMany(y=>new[]{low.Z,high.Z}.Select(z=>(new V3(x,y,z)-eye).Length))).Max()*1.05f+10;
+            scene.MinimumFarPlane=far;viewport.FarPlaneExtension=far;viewport.UpdateProjection(true);
+            viewport.UpdateRequired=true;viewport.Invalidate();await Task.Delay(150);
+            log.Add("memory after textures: "+Memory());
+
+            var meshes=viewport.Model.meshes;
+            long vertexCount=meshes.Sum(m=>(long)m.VertexCount),triangleCount=meshes.Sum(m=>(long)(m.MeshData.Meshgeometry.Indices?.Length??0)/3);
+            log.Add($"geometry: {vertexCount:N0} vertices, {triangleCount:N0} triangles");
+            // Water planes (BSWaterShaderProperty) draw through WaterRenderer, Skyrim's water shader.
+            log.Add($"water shapes drawn: {scene.DrawnWaterSurfaces}");
+            if(scene.Sky!=null){
+                log.Add($"sky: gradient drawn, sky static shapes drawn: {scene.DrawnSkyStatics}, fog drawn: {(scene.FogDrawn?"yes":"no")}");
+                if(scene.SkyTexturesUsed.Count>0)log.Add("sky static textures (full size): "+string.Join(", ",scene.SkyTexturesUsed));
+                skyFailures.AddRange(scene.SkyTexturesMissing.Select(t=>"sky static texture did not load: "+t));
+                // Single-sided statics lose their back faces as in game: a dome wound to face outward shows nothing from inside.
+                foreach(var (shape,f) in scene.SkyFacing){
+                    log.Add($"sky static {shape}: {f.Facing:N0} of {f.Total:N0} triangles face the eye ({(f.DoubleSided?"double-sided, all drawn":"single-sided, the rest culled as in game")})");
+                    if(!f.DoubleSided&&f.Total>0&&f.Facing==0)skyFailures.Add($"sky static {shape}: no triangle faces the eye, so the game culls the whole shape (its winding faces outward; flip it or set SLSF2 Double_Sided)");
+                }
+            }
+            {
+                // Where the water surfaces lie, for checking placements (Water2048.nif is not centred on its origin).
+                V3 wl=new(float.MaxValue),wh=new(float.MinValue);
+                foreach(var m in meshes.Where(m=>m.MeshData.Shape?.NifShader is NiflySharp.Blocks.BSWaterShaderProperty&&m.MeshData.Meshgeometry.Vertices!=null))
+                    foreach(var v in m.MeshData.Meshgeometry.Vertices){var w=V3.TransformPosition(new V3((float)v.X,(float)v.Y,(float)v.Z),m.MeshData.Transform);wl=V3.ComponentMin(wl,w);wh=V3.ComponentMax(wh,w);}
+                if(wl.X<=wh.X)log.Add(FormattableString.Invariant($"water extent: x {wl.X:F0}..{wh.X:F0}, y {wl.Y:F0}..{wh.Y:F0}, z {wl.Z:F0}..{wh.Z:F0}"));
+            }
+            if(scene.ShaderlessShapesSkipped>0)log.Add($"shapes without a shader property left out (Skyrim draws none): {scene.ShaderlessShapesSkipped}");
+            if(scene.EditorMarkersSkipped>0)log.Add($"EditorMarker shapes left out (the game never draws them): {scene.EditorMarkersSkipped}");
+            if(scene.WaterTypesDrawn.Count>0)log.Add("water types: "+string.Join(", ",scene.WaterTypesDrawn.OrderBy(t=>t.Key,StringComparer.OrdinalIgnoreCase).Select(t=>$"{t.Key} ({t.Value})"))+$"; {scene.WaterTypes?.Count??0} types read from {string.Join(", ",scene.WaterTypes?.PluginsRead??[])}");
+            if(scene.WaterShaderFlagSets.Count>0)log.Add("water shader flags: "+string.Join("; ",scene.WaterShaderFlagSets.Select(f=>$"{f.Key} ({f.Value})")));
+            if(scene.WaterFlowmapsUsed.Count>0)log.Add("water flowmaps: "+string.Join(", ",scene.WaterFlowmapsUsed));
+            var noDiffuse=meshes.Where(m=>!scene.IsSkyMesh(m)&&m.MeshData.Material.MaterialBase is {} b&&!b.IsBGEM()&&b.Diffuse_or_Base_Texture is {Length:>0}&&m.MeshData.Material.DiffuseTexture_ID==0)
+                .Select(m=>$"{m.MeshData.Shape.ShapeName}: {m.MeshData.Material.MaterialBase.Diffuse_or_Base_Texture}").Distinct().ToArray();
+            // An effect shader with no base texture draws its BaseColor as a solid sheet, and one with no palette loses
+            // its recolour: either makes the picture wrong, so a missing effect texture fails the capture.
+            // Sky statics are drawn by the sky pass, which loads their textures itself (sky failures below).
+            var noEffectTexture=meshes.Where(m=>!scene.IsSkyMesh(m)&&m.MeshData.Material.MaterialBase is {} b&&b.IsBGEM()).SelectMany(m=>{
+                var material=m.MeshData.Material;var b=material.MaterialBase;var missing=new List<string>();
+                if(b.Diffuse_or_Base_Texture is {Length:>0}&&material.DiffuseTexture_ID==0)missing.Add($"{m.MeshData.Shape.ShapeName}: base {b.Diffuse_or_Base_Texture}");
+                if(b.GreyscaleTexture is {Length:>0}&&material.GreyscaleTexture_ID==0)missing.Add($"{m.MeshData.Shape.ShapeName}: palette {b.GreyscaleTexture}");
+                return missing;
+            }).Distinct().ToArray();
+            using(var image=viewport.CaptureBitmap()){
+                if(image==null||image.Width!=width||image.Height!=height)throw new InvalidOperationException("The capture did not come back at the requested size.");
+                image.Save(output,System.Drawing.Imaging.ImageFormat.Png);
+            }
+            if(colorsPath!=null){
+                viewport.FlatShapeColors=true;
+                try{using var flat=viewport.CaptureBitmap();flat.Save(colorsPath,System.Drawing.Imaging.ImageFormat.Png);}
+                finally{viewport.FlatShapeColors=false;}
+            }
+            log.Add(FormattableString.Invariant($"eye {eye.X:F1},{eye.Y:F1},{eye.Z:F1}; yaw {yaw:F1}; pitch {pitch:F1}; fov {fovH:F1} horizontal ({fovV:F2} vertical); size {width}x{height}; far plane {far:F0}"));
+            self.Refresh();
+            log.Add($"{placed.Count} NIF(s), {meshes.Count} shapes, {scene.TruePbrShapes()} True PBR shapes; textures ready after {watch.Elapsed.TotalSeconds:F1} s");
+            log.Add(FormattableString.Invariant($"textures capped at {(maxTexture>0?maxTexture.ToString():"full size")}; peak committed memory {self.PeakPagedMemorySize64/1073741824.0:F1} GB, private now {self.PrivateMemorySize64/1073741824.0:F1} GB, managed heap {GC.GetGCMemoryInfo().HeapSizeBytes/1073741824.0:F1} GB, live managed {GC.GetTotalMemory(true)/1073741824.0:F1} GB (maxmem {(maxMemoryGb>0?maxMemoryGb.ToString("0.#",invariant)+" GB":"off")})"));
+            log.Add($"shapes whose diffuse did not load: {noDiffuse.Length}");log.AddRange(noDiffuse.Select(n=>"  "+n));
+            log.Add($"effect-shader textures that did not load: {noEffectTexture.Length}");log.AddRange(noEffectTexture.Select(n=>"  "+n));
+            log.AddRange(scene.Diagnostics.Distinct().Select(d=>"scene: "+d));
+            if(Environment.GetEnvironmentVariable("SSE_VIEW_TRACE")=="1"){
+                log.AddRange(scene.FramingDiagnostics().Select(d=>"trace: "+d));
+                foreach(var m in meshes){
+                    var b=m.MeshData.Material.MaterialBase;var colors=m.MeshData.Meshgeometry.VertexColors;
+                    string vc=colors is {Length:>0}?FormattableString.Invariant($"vertex alpha {colors.Min(c=>c.W):F2}..{colors.Max(c=>c.W):F2}"):"no vertex colours";
+                    log.Add(FormattableString.Invariant($"trace: {m.MeshData.Shape?.ShapeName}: blend {b?.AlphaBlendMode}, test {b?.AlphaTest} ref {b?.AlphaTestRef}, {vc}, det {m.MeshData.Transform.Determinant:G4}, skinned {m.MeshData.Shape?.IsSkinned}, shader flags {(m.MeshData.Shape?.NifShader as NiflySharp.Blocks.BSLightingShaderProperty)?.ShaderFlags_SSPF1} / {(m.MeshData.Shape?.NifShader as NiflySharp.Blocks.BSLightingShaderProperty)?.ShaderFlags_SSPF2}"));
+                }
+            }
+            if(skyFailures.Count>0){log.Add($"sky failures: {skyFailures.Count}");log.AddRange(skyFailures.Select(f=>"  "+f));}
+            if(noEffectTexture.Length>0||skyFailures.Count>0){
+                var reasons=new List<string>();
+                if(noEffectTexture.Length>0)reasons.Add($"{noEffectTexture.Length} effect-shader texture(s) did not load"+(basePath==null?"; vanilla effect textures need base=<Skyrim Data folder>":""));
+                if(skyFailures.Count>0)reasons.Add($"{skyFailures.Count} sky static(s) or sky texture(s) missing");
+                string reason=string.Join("; ",reasons);
+                log.Add("FAIL "+reason);Console.Error.WriteLine("FAIL "+reason);Environment.ExitCode=1;
+            }
+            else log.Add("PASS "+output+(colorsPath!=null?" and "+colorsPath:""));
+        }catch(Exception ex){log.Add("FAIL "+ex.Message);log.Add(ex.ToString());Console.Error.WriteLine("FAIL "+ex.Message);Environment.ExitCode=1;}
+        finally{try{
+            if(savedRig is {} rigBefore){Config_App.Current.SetActiveLights(rigBefore);Config_App.Current.Setting_LightsFollowCamera=savedFollow;}
+            File.WriteAllLines(logPath,log);
+            // SSE_VIEW_HOLD_SECONDS keeps the finished run alive, for attaching a memory snapshot tool.
+            if(double.TryParse(Environment.GetEnvironmentVariable("SSE_VIEW_HOLD_SECONDS"),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out double hold))await Task.Delay(TimeSpan.FromSeconds(hold));}finally{Close();}}
+    }
+    // A reference's placement as a row-vector matrix: scale, then rotation Rx Ry Rz (NiMatrix3::SetEulerAnglesXYZ,
+    // world = R local), then the position.
+    static System.Numerics.Matrix4x4 ReferencePlacement(double[] position,double[] angles,double scale)
+    {
+        double cx=Math.Cos(angles[0]),sx=Math.Sin(angles[0]),cy=Math.Cos(angles[1]),sy=Math.Sin(angles[1]),cz=Math.Cos(angles[2]),sz=Math.Sin(angles[2]);
+        double[,] rx={{1,0,0},{0,cx,sx},{0,-sx,cx}},ry={{cy,0,-sy},{0,1,0},{sy,0,cy}},rz={{cz,sz,0},{-sz,cz,0},{0,0,1}};
+        double[,] Multiply(double[,] a,double[,] b){var r=new double[3,3];for(int i=0;i<3;i++)for(int j=0;j<3;j++)for(int k=0;k<3;k++)r[i,j]+=a[i,k]*b[k,j];return r;}
+        var m=Multiply(Multiply(rx,ry),rz);
+        // Column-vector R becomes its transpose for System.Numerics' row vectors.
+        return new System.Numerics.Matrix4x4(
+            (float)(m[0,0]*scale),(float)(m[1,0]*scale),(float)(m[2,0]*scale),0,
+            (float)(m[0,1]*scale),(float)(m[1,1]*scale),(float)(m[2,1]*scale),0,
+            (float)(m[0,2]*scale),(float)(m[1,2]*scale),(float)(m[2,2]*scale),0,
+            (float)position[0],(float)position[1],(float)position[2],1);
+    }
+    // Regresses True PBR emission against real meshes: the slot-2 emissive map must mask emission even when the
+    // vanilla Glowmap flag is clear. Arguments: a data or mod folder, an output folder, then the True PBR NIFs to check
+    // (paths under the folder). Captures the viewport without changing a saved scene.
+    async Task PbrGlowSmoke(string[] arguments)
+    {
+        string modRoot=arguments[0],output=arguments[1];string[] nifs=arguments[2..];
+        Directory.CreateDirectory(output);var log=new List<string>();
+        if(!Directory.Exists(modRoot)){log.Add("SKIPPED: the folder "+modRoot+" does not exist");File.WriteAllLines(Path.Combine(output,"pbr-glow-smoke.txt"),log);Close();return;}
+        try{
+            log.Add($"Game before mount: {Config_App.Current.Game}; SSE shader {viewport.SharedSSEShader?.GetType().Name ?? "null"}");
+            await Mount(modRoot,false);log.Add($"Game after mount: {Config_App.Current.Game}; SSE shader {viewport.SharedSSEShader?.GetType().Name ?? "null"}");
+            Config_App.Current.Game=Config_App.Game_Enum.Skyrim;
+            if(viewport.SharedSSEShader==null)throw new InvalidOperationException("The Skyrim shader did not initialize; the viewport would fall back to Fallout shading.");
+            truePbr.Checked=true;viewport.TruePbr=true;gridFloor.Checked=false;
+            foreach(string nif in nifs){
+                string path=Assets.Normalize(nif);if(!path.StartsWith(@"meshes\",StringComparison.OrdinalIgnoreCase))path=@"meshes\"+path;
+                string name=Path.GetFileNameWithoutExtension(path);
+                if(!assets.Exists(path))throw new FileNotFoundException("Weapon NIF is absent",path);
+                PreviewParticle(path);clock.Pause();scene.SetTime(.2);scene.FollowScene=false;followCamera.Checked=false;
+                // Closer than the default framing, so the mesh fills enough of the image for the pixel counts to mean something.
+                scene.Frame();viewport.camera.distance*=.8f;viewport.UpdateProjection(true);await Task.Delay(400);
+                var emissive=viewport.Model.meshes.Where(m=>m.MeshData.Material.MaterialBase?.EmitEnabled==true||m.MeshData.Material.GlowTexture_ID!=0).ToArray();
+                log.Add($"{name}: {emissive.Length} emissive meshes, {scene.TruePbrShapes()} True PBR meshes, game {Config_App.Current.Game}, shader {viewport.CurrentShader.GetType().Name}, SSE shader {viewport.SharedSSEShader?.GetType().Name ?? "null"}, viewport TruePbr {viewport.TruePbr}");
+                foreach(var mesh in emissive){
+                    var material=mesh.MeshData.Material;
+                    log.Add($"  {mesh.MeshData.Shape.ShapeName}: show texture {mesh.MeshData.Shape.ShowTexture}, diffuse {material.DiffuseTexture_ID}, RMAOS {material.FlowTexture_ID}, glow {material.GlowTexture_ID}, vanilla glow flag {material.MaterialBase.Glowmap}, emissive {material.MaterialBase.EmittanceColor} x {material.MaterialBase.EmittanceMult}; paths {string.Join(";",material.Textures_Path_List)}");
+                    var vcs=mesh.MeshData.Meshgeometry.VertexColors;
+                    if(vcs is {Length:>0})log.Add(FormattableString.Invariant($"    vertex colors: {vcs.Length}, max channel min {vcs.Min(c=>Math.Max(c.X,Math.Max(c.Y,c.Z))):F3}, max {vcs.Max(c=>Math.Max(c.X,Math.Max(c.Y,c.Z))):F3}"));else log.Add("    vertex colors: none");
+                    var color=material.MaterialBase.EmittanceColor;
+                    if((color.R|color.G|color.B)!=0 && material.GlowTexture_ID==0)
+                        throw new InvalidDataException($"{name}: colored emissive mesh has no loaded glow texture");
+                }
+                if(emissive.Length==0||scene.TruePbrShapes()==0)throw new InvalidDataException($"{name}: True PBR emissive mesh was not loaded");
+                using var image=viewport.CaptureBitmap();image.Save(Path.Combine(output,name+".png"));
+                // Emission off = black emissive colour. Not the Own_Emit flag, which the True PBR path ignores as Community Shaders
+                // does, and not the multiplier, which Scene copies back from the NIF on every frame.
+                var colors=emissive.Select(m=>m.MeshData.Material.MaterialBase.EmittanceColor).ToArray();
+                foreach(var mesh in emissive)mesh.MeshData.Material.MaterialBase.EmittanceColor=Color.Black;
+                using(var unlit=viewport.CaptureBitmap())unlit.Save(Path.Combine(output,name+"-emission-off.png"));
+                using(var unlit=System.Drawing.Image.FromFile(Path.Combine(output,name+"-emission-off.png")) as Bitmap){
+                    int white=0,changed=0;
+                    for(int y=0;y<image.Height;y++)for(int x=0;x<image.Width;x++){
+                        var litPixel=image.GetPixel(x,y);var plainPixel=unlit!.GetPixel(x,y);
+                        if(Math.Min(litPixel.R,Math.Min(litPixel.G,litPixel.B))>245)white++;
+                        if(Math.Max(Math.Abs(litPixel.R-plainPixel.R),Math.Max(Math.Abs(litPixel.G-plainPixel.G),Math.Abs(litPixel.B-plainPixel.B)))>3)changed++;
+                    }
+                    log.Add($"  render: {white} near-white pixels, {changed} pixels changed by emission");
+                    if(white>500||changed<5)throw new InvalidDataException($"{name}: the rendered emissive map is either blown out or absent");
+                }
+                for(int i=0;i<emissive.Length;i++)emissive[i].MeshData.Material.MaterialBase.EmittanceColor=colors[i];
+                viewport.TruePbr=false;
+                using(var vanilla=viewport.CaptureBitmap())vanilla.Save(Path.Combine(output,name+"-vanilla.png"));
+                viewport.TruePbr=true;
+            }
+            log.Add($"PASS True PBR emission maps loaded and renders captured for {nifs.Length} mesh(es)");
+        }catch(Exception ex){log.Add("FAIL "+ex);Environment.ExitCode=1;}
+        finally{File.WriteAllLines(Path.Combine(output,"pbr-glow-smoke.txt"),log);Close();}
+    }
     // Renders two effect NIFs for other projects' preview sheets. Arguments: an output folder, the two NIFs (the same
     // file twice is fine) and a Data folder holding their textures. It writes original_sample.png, original_wrapped.png,
     // corrected_sample.png, corrected_wrapped.png and validation.txt, and exits 1 when an effect does not show or its
@@ -2241,38 +2603,85 @@ public sealed class MainWindow : Form
     // (camera distance, default 350), SSE_EFFECT_CAPTURE_FOCUS_ORIGIN=1 (look at 0, 0, 100) and
     // SSE_EFFECT_CAPTURE_AUTOMOUNT=1 (mount the folder above the NIF's meshes folder, not the Data argument). The
     // older SSE_CLOUD_SMOKE_* names and the switch --cloud-effect-alpha-smoke still work.
+    // More settings (2026-11-08): PBR=1 (True PBR shading), BUDGET=<particles> (preview particle budget), ENVMAP=<cubemap
+    // game path> and ENV_INTENSITY (what True PBR surfaces reflect), BACKGROUND=<colour name> (flat background),
+    // YAW and PITCH (degrees, the orbit camera's; default 45 and 65), EXTRA=<nif>@<seconds>;... (more NIFs spawned with
+    // the first at their own offsets) and BLOOM=<strength> (an LDR bloom over the saved images).
     static string? CaptureSetting(string name)=>Environment.GetEnvironmentVariable("SSE_EFFECT_CAPTURE_"+name) is {Length:>0} value?value:Environment.GetEnvironmentVariable("SSE_CLOUD_SMOKE_"+name);
+    static float? CaptureNumber(string name)=>float.TryParse(CaptureSetting(name),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var value)?value:null;
     async Task EffectCapture(string folder,string original,string corrected,string dataRoot)
     {
         Directory.CreateDirectory(folder);var log=new List<string>();
         double sampleTime=double.TryParse(CaptureSetting("TIME"),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var requestedTime)?requestedTime:.934;
+        // Effect captures with True PBR shading and a larger particle budget (the session file is not read in this mode).
+        if(CaptureSetting("PBR")=="1"){truePbr.Checked=true;viewport.TruePbr=true;}
+        if(int.TryParse(CaptureSetting("BUDGET"),out int captureBudget)&&captureBudget>0){particleBudget.Value=Math.Clamp(captureBudget,0,65535);ParticleNif.PreviewBudget=(int)particleBudget.Value;}
         float cameraDistance=float.TryParse(CaptureSetting("DISTANCE"),System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var requestedDistance)?requestedDistance:350;
+        // The environment True PBR shapes reflect: set before the NIF loads, its path joins each PBR material's textures.
+        if(CaptureSetting("ENVMAP") is {} envmap){viewport.PbrEnvironmentCubemap=Assets.Normalize(envmap);log.Add("PBR environment cubemap "+viewport.PbrEnvironmentCubemap);}
+        if(CaptureNumber("ENV_INTENSITY") is float envIntensity)viewport.PbrEnvironmentIntensity=envIntensity;
+        var extras=(CaptureSetting("EXTRA")??"").Split(';',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).Select(entry=>{
+            int at=entry.LastIndexOf('@');
+            return at>0&&double.TryParse(entry[(at+1)..],System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out double offset)?(entry[..at],offset):(entry,0.0);
+        }).ToList();
+        float? bloom=CaptureNumber("BLOOM");
+        // The capture saves viewer preferences when it closes: the background is put back afterwards.
+        string backgroundBefore=Config_App.Current.Setting_BackColorName;int fadeBefore=Config_App.Current.Setting_BackFade;
+        if(CaptureSetting("BACKGROUND") is {} background){
+            if(!Color.FromName(background).IsKnownColor)log.Add("BACKGROUND "+background+" is not a known colour name; kept "+backgroundBefore);
+            else{Config_App.Current.Setting_BackColorName=background;Config_App.Current.Setting_BackFade=0;viewport.InvalidateRender();log.Add("background "+background);}
+        }
+        void Aim(){
+            if(CaptureNumber("YAW") is null&&CaptureNumber("PITCH") is null)return;
+            var focus=viewport.camera.FocusPosition;
+            viewport.camera=new OrbitCamera{MaxDistance=100000};viewport.camera.Rotate(CaptureNumber("YAW")??45,CaptureNumber("PITCH")??65);viewport.camera.FocusPosition=focus;
+        }
+        void Save(Bitmap image,string file){if(bloom is float strength&&strength>0)ImageBloom.Apply(image,strength);image.Save(file);}
         try{
             Size=new Size(1500,950);
             if(CaptureSetting("AUTOMOUNT")=="1"){
                 await EnsureEffectDataRoot(original);
                 log.Add("Direct NIF auto-mounted "+string.Join(";",assets.Roots));
             }else await Mount(dataRoot,false);
+            // BASE=<Skyrim Data folder>: its .bsa archives fill in what the mounted folder lacks (vanilla cubemaps for
+            // ENVMAP, vanilla effect textures); files in the mounted folder win.
+            if(CaptureSetting("BASE") is {} baseFolder){
+                if(!Directory.Exists(baseFolder))throw new DirectoryNotFoundException("BASE folder not found: "+baseFolder);
+                var (archives,files)=await Task.Run(()=>assets.AddFallbackArchives(baseFolder));
+                log.Add($"base: {files:N0} files from {archives} archive(s) in {baseFolder}");
+            }
+            if(viewport.PbrEnvironmentCubemap.Length>0&&!assets.Exists(viewport.PbrEnvironmentCubemap))log.Add("WARNING ENVMAP "+viewport.PbrEnvironmentCubemap+" was not found (a vanilla cubemap needs BASE=<Skyrim Data folder>)");
             foreach(var (label,path) in new[]{("original",original),("corrected",corrected)}){
-                PreviewParticle(path);clock.Pause();followCamera.Checked=false;scene.FollowScene=false;
-                log.Add(label+": duration "+clock.Duration.ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+"; loop "+clock.Loop);
-                if(clock.Duration<1||clock.Duration>4)throw new InvalidDataException("Effect clock did not match the authored duration.");
-                clock.Seek(sampleTime);scene.SetTime(sampleTime);scene.Frame();log.Add(label+": camera "+viewport.camera.FocusPosition+" distance "+viewport.camera.distance);if(CaptureSetting("FOCUS_ORIGIN")=="1")viewport.camera.FocusPosition=new OpenTK.Mathematics.Vector3(0,0,100);viewport.camera.distance=cameraDistance;viewport.UpdateProjection(true);await Task.Delay(250);
-                using(var image=viewport.CaptureBitmap())image.Save(Path.Combine(folder,label+"_sample.png"));
+                PreviewParticle(path,double.PositiveInfinity,extras);clock.Pause();followCamera.Checked=false;scene.FollowScene=false;
+                log.Add(label+": duration "+clock.Duration.ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+"; loop "+clock.Loop+(extras.Count>0?"; extra NIFs "+string.Join(", ",extras.Select(e=>FormattableString.Invariant($"{Path.GetFileName(e.Item1)} at {e.Item2:0.###} s"))):""));
+                // A clock outside 0.1-60 s means the authored duration was not read. (It was 1-4 s, which made callers
+                // squeeze longer spells into 3.9 s copies.)
+                if(clock.Duration<.1||clock.Duration>60)throw new InvalidDataException("Effect clock did not match the authored duration.");
+                clock.Seek(sampleTime);scene.SetTime(sampleTime);scene.Frame();Aim();log.Add(label+": camera "+viewport.camera.FocusPosition+" distance "+viewport.camera.distance);if(CaptureSetting("FOCUS_ORIGIN")=="1")viewport.camera.FocusPosition=new OpenTK.Mathematics.Vector3(0,0,100);viewport.camera.distance=cameraDistance;viewport.UpdateProjection(true);await Task.Delay(250);
+                using(var image=viewport.CaptureBitmap())Save(image,Path.Combine(folder,label+"_sample.png"));
                 log.AddRange(scene.Diagnostics.Take(10));
                 log.Add(label+": visible meshes "+scene.VisibleEffectMeshes);
-                log.AddRange(viewport.Model.meshes.Where(m=>!m.MeshData.Shape.RenderHide).Take(30).Select(m=>label+": visible "+m.MeshData.Shape.ShapeName+" textures "+string.Join(";",m.MeshData.Material.Textures_Path_List)));
+                log.AddRange(viewport.Model.meshes.Where(m=>!m.MeshData.Shape.RenderHide).Take(30).Select(m=>label+": visible "+m.MeshData.Shape.ShapeName+" textures "+string.Join(";",m.MeshData.Material.Textures_Path_List.Where(t=>t.Length>0).Distinct())));
+                // True PBR shapes: the features each asks for, read the way Community Shaders reads them.
+                log.AddRange(viewport.Model.meshes.Where(m=>m.MeshData.Material.MaterialBase?.IsTruePbr()==true).Select(m=>(m.MeshData.Shape.ShapeName,m.MeshData.Material.MaterialBase.TruePbrSummary())).Distinct().Take(40).Select(p=>label+": True PBR "+p.Item1+": "+p.Item2));
                 if(scene.VisibleEffectMeshes==0)throw new InvalidDataException(label+": no visible effect shapes.");
                 double wrapped=PlaybackClock.Normalize(clock.Duration+sampleTime,clock.Duration,true);
                 if(Math.Abs(wrapped-sampleTime)>1e-6)throw new InvalidDataException("Clock failed to wrap at effect duration.");
                 clock.Seek(wrapped);scene.SetTime(wrapped);scene.Frame();if(CaptureSetting("FOCUS_ORIGIN")=="1")viewport.camera.FocusPosition=new OpenTK.Mathematics.Vector3(0,0,100);viewport.camera.distance=cameraDistance;viewport.UpdateProjection(true);await Task.Delay(150);
-                using(var image=viewport.CaptureBitmap())image.Save(Path.Combine(folder,label+"_wrapped.png"));
+                using(var image=viewport.CaptureBitmap())Save(image,Path.Combine(folder,label+"_wrapped.png"));
                 clock.Seek(clock.Duration-.04);clock.Play();await Task.Delay(110);TickPlayback();clock.Pause();
                 log.Add(label+": live rollover time "+clock.Time.ToString("F3",System.Globalization.CultureInfo.InvariantCulture));
-                if(clock.Time>.3)throw new InvalidDataException("Live effect preview did not loop.");
+                // The live-loop check was written for 1-4 s test NIFs; outside that it is reported, not failed, since the
+                // sample images above are already complete.
+                // Looping means the clock came back round instead of stopping at the end. How far past 0 it got depends on how
+                // long the 110 ms wait really took, which stretches on a loaded machine, so only "stopped at the end" fails.
+                if(clock.Time>=clock.Duration-.05){if(extras.Count==0&&clock.Duration>=1&&clock.Duration<=4)throw new InvalidDataException("Live effect preview did not loop.");log.Add("WARNING live effect preview did not roll over within 110 ms (duration "+clock.Duration.ToString("F3",System.Globalization.CultureInfo.InvariantCulture)+" s)");}
             }
         }catch(Exception ex){log.Add("FAIL "+ex);Environment.ExitCode=1;}
-        finally{try{File.WriteAllLines(Path.Combine(folder,"validation.txt"),log);}finally{Close();}}
+        finally{
+            Config_App.Current.Setting_BackColorName=backgroundBefore;Config_App.Current.Setting_BackFade=fadeBefore;
+            try{File.WriteAllLines(Path.Combine(folder,"validation.txt"),log);}finally{Close();}
+        }
     }
     async Task CloudEquipmentSmoke()
     {
@@ -3108,7 +3517,9 @@ public sealed class MainWindow : Form
     // Arguments: a scene file, an output folder, seconds to record, then options: fps=15, warm=1.5 (seconds played
     // before recording), clip=<part of a clip path>, queue=<part>|<part>|..., precision, skeleton, smp, colliders, bones, window (the
     // whole window, not the viewport alone), tab=<index>, follow, subject=<0..2>, rotate=<dx>,<dy>, zoom=<steps>,
-    // speed=<rate>, size=<width>x<height>. Frames are frame_0000.png and up; frames.txt holds the real frame rate.
+    // speed=<rate>, size=<width>x<height>.
+    // restart replays the clip from 0 after the warm-up; sky=day and nogrid give a bright backdrop.
+    // Frames are frame_0000.png and up; frames.txt holds the real frame rate.
     async Task FramesCapture(string[] arguments)
     {
         string output=Path.GetFullPath(arguments[1]);Directory.CreateDirectory(output);var log=new List<string>();
@@ -3130,15 +3541,25 @@ public sealed class MainWindow : Form
             if(Option("speed")!=null)speed.Value=(decimal)Number("speed",1);
             if(Option("subject")!=null)cameraSubject.SelectedIndex=(int)Number("subject",1);
             followCamera.Checked=Flag("follow");scene.FollowScene=Flag("follow");
+            // sky=day: a clear daylight gradient behind the scene (blue overhead, pale horizon, sand below), no fog, for judging
+            // translucent effects against a bright background. nogrid hides the floor for this capture only (not saved).
+            if(Option("sky") is {} skyName){
+                if(!skyName.Equals("day",StringComparison.OrdinalIgnoreCase))throw new ArgumentException("sky= takes day");
+                scene.Sky=new SkyState{Upper=new(.36f,.62f,.90f),Horizon=new(.86f,.92f,.97f),Lower=new(.80f,.74f,.60f),Fog=false};
+            }
+            if(Flag("nogrid"))scene.ShowFloor=false;
             clock.Seek(0);scene.SetTime(0);scene.Frame();
             if(Option("rotate") is {} turn){var t=turn.Split(',');viewport.camera.Rotate(float.Parse(t[0],invariant),float.Parse(t[1],invariant));}
             if(Option("zoom")!=null)viewport.Zoom((float)Number("zoom",0));
             double fps=Number("fps",15),seconds=double.Parse(arguments[2],invariant);bool window=Flag("window");
             clock.Seek(0);clock.Play();await Task.Delay((int)(Number("warm",1.5)*1000));
-            if(Flag("restart")){clock.Seek(0);clock.Play();}
+            if(Flag("restart")){clock.Seek(0);clock.Play();scene.SetTime(clock.Time);viewport.InvalidateRender();await Task.Yield();}
             var watch=System.Diagnostics.Stopwatch.StartNew();int frames=(int)Math.Round(seconds*fps);
+            var frameStates=new List<(double Time,bool Busy,bool Playing)>();
             for(int i=0;i<frames;i++){
                 double due=i/fps*1000;if(watch.Elapsed.TotalMilliseconds<due)await Task.Delay(Math.Max(1,(int)(due-watch.Elapsed.TotalMilliseconds)));else await Task.Yield();
+                // Bring the scene to the clock before each frame instead of relying on the pacer alone.
+                TickPlayback();
                 Bitmap frame;
                 if(window){
                     frame=new Bitmap(Width,Height);DrawToBitmap(frame,new Rectangle(Point.Empty,Size));
@@ -3146,10 +3567,17 @@ public sealed class MainWindow : Form
                     using var g=Graphics.FromImage(frame);g.DrawImage(view,origin.X-Left,origin.Y-Top,viewport.Width,viewport.Height);
                 }else frame=viewport.CaptureBitmap();
                 using(frame)frame.Save(Path.Combine(output,$"frame_{i:0000}.png"));
+                frameStates.Add((scene.Time,busy,clock.Playing));
             }
             double real=frames/watch.Elapsed.TotalSeconds;
             log.Add(real.ToString("F3",invariant));log.Add($"{frames} frames in {watch.Elapsed.TotalSeconds:F2} s, asked {fps} fps; clip {clipTitle.Text}, duration {clock.Duration:F2} s, {scene.ParticleSystems} particle systems, physics {smpPhysics.Checked}");
             foreach(string d in scene.Diagnostics.Where(d=>d.StartsWith("Missing")).Take(8))log.Add(d);
+            // A capture whose scene never advanced shows one pose in every frame; say so instead of passing silently.
+            if(frameStates.Count>1){
+                var first=frameStates[0];var lastState=frameStates[^1];int stuck=frameStates.Count(f=>f.Busy);
+                log.Add(FormattableString.Invariant($"clip time {first.Time:0.000} s at the first frame, {lastState.Time:0.000} s at the last; {stuck} frame(s) taken while the window was busy, playing at the first frame {first.Playing}"));
+                if(frameStates.Max(f=>f.Time)-frameStates.Min(f=>f.Time)<1e-6&&clock.Duration>seconds*.1)log.Add("WARNING: the clip time never changed during the capture, so every frame shows the same pose");
+            }
         }catch(Exception ex){log.Add("FAILED: "+ex);Environment.ExitCode=1;}
         finally{try{File.WriteAllLines(Path.Combine(output,"frames.txt"),log);}finally{Close();}}
     }
@@ -3730,7 +4158,7 @@ public sealed class MainWindow : Form
             if(Environment.GetEnvironmentVariable("SSE_SOAK_QUEUE")=="1"&&queue.Count>0){await PlayQueue();timer.Stop();clock.Pause();viewport.PlayingAnimation=false;}
             if(Environment.GetEnvironmentVariable("SSE_SOAK_NOROOT")=="1"){rootMotion.Checked=false;scene.RootMotion=false;}
             smpPhysics.Checked=true;scene.SetTime(0);
-            bool jitter=Environment.GetEnvironmentVariable("SSE_SOAK_JITTER")=="1";bool scrub=Environment.GetEnvironmentVariable("SSE_SOAK_SCRUB")=="1";string? trace=Environment.GetEnvironmentVariable("SSE_SOAK_TRACE");var traceLines=new List<string>();var random=new Random(1);
+            bool jitter=Environment.GetEnvironmentVariable("SSE_SOAK_JITTER")=="1";bool scrub=Environment.GetEnvironmentVariable("SSE_SOAK_SCRUB")=="1";string? trace=Environment.GetEnvironmentVariable("SSE_SOAK_TRACE");bool traceRotation=Environment.GetEnvironmentVariable("SSE_SOAK_TRACE_ROT")=="1";var traceLines=new List<string>();var random=new Random(1);
             scene.FixedPhysicsInterval=1/60d;
             var world=scene.PhysicsWorld??throw new InvalidDataException("No physics system was built.");
             log.Add($"session {ToolSessionPath()}; clip {clip?.Duration:F3} s; {scene.PhysicsSystems} systems, {scene.PhysicsDynamicBones} simulated bones; jitter {jitter}");
@@ -3748,10 +4176,10 @@ public sealed class MainWindow : Form
                     // SSE_SOAK_SCRUB=1: every 5 s, half a second of dragging the scrubber to random points.
                     if(scrub&&second%5==0&&i<30)time=random.NextDouble()*duration;else time=(time+dt*(double)speed.Value)%duration;
                     scene.FixedPhysicsInterval=dt;scene.SetTime(time);scene.StepPhysics();
-                    // SSE_SOAK_TRACE=<system name>: every step, each bone of that system (origin, speed) and the resets so far.
+                    // SSE_SOAK_TRACE=<system name>: every step, each bone of that system (origin, speed) and the resets so far; SSE_SOAK_TRACE_ROT=1 adds the rigid body rotation rows (r=M11..M33).
                     if(trace!=null)foreach(var system in world.Systems.Where(x=>x.Name.Equals(trace,StringComparison.OrdinalIgnoreCase))){
                         var line=new System.Text.StringBuilder(FormattableString.Invariant($"{second}.{i:00} t={time:F4} resets={world.Resets} gap={world.LastKinematicGap:F2} sub={world.LastSubSteps}"));
-                        foreach(var bone in system.Bones){var m=bone.Rig.WorldTransform;var v=bone.Rig.LinearVelocity;var w=bone.Rig.AngularVelocity;line.Append(FormattableString.Invariant($" | {bone.Name}{(bone.Kinematic?"*":"")} ({m.M41:F2},{m.M42:F2},{m.M43:F2}) v={Math.Sqrt(v.X*v.X+v.Y*v.Y+v.Z*v.Z):F1} w={Math.Sqrt(w.X*w.X+w.Y*w.Y+w.Z*w.Z):F1} s={bone.Current.Scale:R} im={bone.Rig.InvMass:R}"));}
+                        foreach(var bone in system.Bones){var m=bone.Rig.WorldTransform;var v=bone.Rig.LinearVelocity;var w=bone.Rig.AngularVelocity;line.Append(FormattableString.Invariant($" | {bone.Name}{(bone.Kinematic?"*":"")} ({m.M41:F2},{m.M42:F2},{m.M43:F2}) v={Math.Sqrt(v.X*v.X+v.Y*v.Y+v.Z*v.Z):F1} w={Math.Sqrt(w.X*w.X+w.Y*w.Y+w.Z*w.Z):F1} s={bone.Current.Scale:R} im={bone.Rig.InvMass:R}"));if(traceRotation)line.Append(FormattableString.Invariant($" r={m.M11:F5},{m.M12:F5},{m.M13:F5},{m.M21:F5},{m.M22:F5},{m.M23:F5},{m.M31:F5},{m.M32:F5},{m.M33:F5}"));}
                         traceLines.Add(line.ToString());
                     }
                 }

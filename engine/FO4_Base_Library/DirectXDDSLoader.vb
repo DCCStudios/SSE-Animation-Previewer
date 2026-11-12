@@ -7,6 +7,9 @@ Imports DirectXTexWrapperCLI
 Imports OpenTK.Graphics.OpenGL4
 
 Public Module DirectXDDSLoader
+    ''' <summary>Largest width or height uploaded to GL; mip levels above it are skipped (0 = no limit). A capture
+    ''' at 1280x720 cannot show a 4096 texture's top level, and skipping it divides that texture's memory by 16.</summary>
+    Public Property MaxUploadTextureSize As Integer = 0
 
     ''' <summary>
     ''' Genera un DDS de fallback (32×32, BGRA8 gris).
@@ -457,8 +460,18 @@ Public Module DirectXDDSLoader
             Return 0
         End If
 
-        Dim baseW As Integer = tex.Levels(0).Width
-        Dim baseH As Integer = tex.Levels(0).Height
+        ' Top mip levels above MaxUploadTextureSize are skipped: storage and upload start at the first level
+        ' that fits. Always keeps at least the smallest level.
+        Dim skipLevels As Integer = 0
+        If MaxUploadTextureSize > 0 Then
+            While skipLevels < mipLevels - 1 AndAlso Math.Max(tex.Levels(skipLevels * faces).Width, tex.Levels(skipLevels * faces).Height) > MaxUploadTextureSize
+                skipLevels += 1
+            End While
+        End If
+        mipLevels -= skipLevels
+
+        Dim baseW As Integer = tex.Levels(skipLevels * faces).Width
+        Dim baseH As Integer = tex.Levels(skipLevels * faces).Height
         If baseW <= 0 OrElse baseH <= 0 Then
             Return 0
         End If
@@ -510,7 +523,7 @@ Public Module DirectXDDSLoader
             ' mip0-face0, mip0-face1, ..., mip1-face0, mip1-face1, ...
             For m As Integer = 0 To mipLevels - 1
                 For f As Integer = 0 To faces - 1
-                    Dim idx = m * faces + f
+                    Dim idx = (m + skipLevels) * faces + f
                     Dim lvl = tex.Levels(idx)
                     If lvl Is Nothing OrElse lvl.Data Is Nothing Then
                         Throw New InvalidOperationException("Invalid texture level at idx=" & idx.ToString())
@@ -548,7 +561,7 @@ Public Module DirectXDDSLoader
 
             For m As Integer = 0 To mipLevels - 1
                 For f As Integer = 0 To faces - 1
-                    Dim idx = m * faces + f
+                    Dim idx = (m + skipLevels) * faces + f
                     Dim lvl = tex.Levels(idx)
                     Dim subTarget = If(tex.IsCubemap, faceTargets(f), TextureTarget.Texture2D)
 

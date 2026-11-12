@@ -129,6 +129,8 @@ Public Module MaterialResolver
                 rebuiltMaterial.Create_From_Shader(shape.NifContent, shape.NifShape, CType(shape.NifShader, BSLightingShaderProperty))
             Case GetType(BSEffectShaderProperty)
                 rebuiltMaterial.Create_From_Shader(shape.NifContent, shape.NifShape, CType(shape.NifShader, BSEffectShaderProperty))
+            Case GetType(BSWaterShaderProperty)
+                rebuiltMaterial.Create_From_WaterShader(shape.NifContent)
             Case Else
                 Return
         End Select

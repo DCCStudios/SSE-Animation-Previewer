@@ -227,6 +227,22 @@ Public Class PreviewControl
     ''' CS's PBR response instead of the vanilla Skyrim one. Off: those shapes render as the vanilla shader
     ''' would read their slots, which is what a game without Community Shaders shows.</summary>
     Public Property TruePbr As Boolean
+    ''' <summary>Game path of a cubemap DDS (e.g. textures\cubemaps\...) that True PBR shapes reflect, standing in for
+    ''' Community Shaders' dynamic cubemaps. Empty: they reflect the ambient hemisphere. Set before the scene loads: the
+    ''' path is added to each PBR material's texture list.</summary>
+    Public Property PbrEnvironmentCubemap As String = ""
+    ''' <summary>Multiplier on the environment cubemap's linearized radiance.</summary>
+    Public Property PbrEnvironmentIntensity As Single = 1.0F
+    ''' <summary>Vertical field of view of the perspective projection, in degrees. 45 is the orbit viewer's.</summary>
+    Public Property FieldOfViewYDegrees As Single = 45.0F
+    ''' <summary>Draws every Skyrim shape in one flat colour of its own (lit only by a soft key term), for seeing where
+    ''' one shape ends and the next begins. Alpha testing still cuts the shapes out.</summary>
+    Public Property FlatShapeColors As Boolean
+    ''' <summary>Static geometry for still captures of large levels: vertex buffers are created as static (the driver
+    ''' keeps no system-memory mirror of them) and, after each pipeline pass, every unskinned mesh drops its CPU-side
+    ''' vertex arrays, which the GPU already has. Pose, morph and bounds updates skip those meshes from then on. Off in
+    ''' the editor, which re-skins and re-poses meshes every frame.</summary>
+    Public Property StaticGeometryMode As Boolean
     Private overlay As TextOverlayRenderer
     Public SharedActiveShader As Shader_Class_Fo4
     Public SharedSSEShader As Shader_Class_SSE
@@ -972,21 +988,26 @@ Public Class PreviewControl
             PipelineStep_Morphs(intent)
 
             ' Geometry modifiers (zaps, etc.)
+            PipelineTrace("geometry extracted")
             PipelineStep_GeometryModifiers(intent)
+            PipelineTrace("geometry modifiers")
 
             ' GPU upload
             Model.Setup_GL()
+            PipelineTrace("GL buffers created")
             ' Las UVs se suben SIEMPRE, tambien en GPU-skinning: ahi UpdateSkinBuffers_GL no corre
             ' (el shader skinnea del SSBO) pero un slider uv igual movio Uvs_Weight. Es no-op si el
             ' flag esta apagado, que es el caso de todo modelo sin sliders uv.
             For Each mesh In Model.meshes
                 mesh.UpdateUvBuffer_GL()
             Next
+            PipelineTrace("UV buffers")
             If Not Config_App.Current.Setting_GPUSkinning Then
                 For Each mesh In Model.meshes
                     mesh.UpdateSkinBuffers_GL()
                 Next
             End If
+            PipelineTrace("CPU skin pass")
 
             ' Display
             If allowCameraReset AndAlso (needsCameraReset OrElse isNewShapeSet) Then ResetCamera()
@@ -1280,7 +1301,32 @@ Public Class PreviewControl
             Model.FlushPostTextureUploadHookSyncSuccess()
         End If
 
+        If StaticGeometryMode Then ReleaseStaticGeometry() : PipelineTrace("static geometry released")
+
         intent.ClearDirty()
+    End Sub
+
+    ''' <summary>StaticGeometryMode: drops the CPU-side vertex arrays of every unskinned mesh whose buffers are on the
+    ''' GPU. Keeps the indices (zap filtering reads them), the bounds and the material. About 300 bytes per vertex: a
+    ''' level tile of 3.6 million vertices held 1.4 GB of them.</summary>
+    ''' <summary>SSE_PIPE_TRACE=&lt;file&gt;: appends private and managed memory at each full-reload step, for finding
+    ''' which step a large scene's memory goes to.</summary>
+    Private Sub PipelineTrace(stage As String)
+        Dim file = Environment.GetEnvironmentVariable("SSE_PIPE_TRACE")
+        If String.IsNullOrEmpty(file) Then Return
+        Dim self = Process.GetCurrentProcess()
+        IO.File.AppendAllText(file, $"{stage}: private {self.PrivateMemorySize64 / 1073741824.0:F2} GB, managed {GC.GetTotalMemory(False) / 1073741824.0:F2} GB{Environment.NewLine}")
+    End Sub
+
+    Private Sub ReleaseStaticGeometry()
+        Dim released As Integer = 0
+        For Each mesh In Model.meshes
+            If PreviewModel.ReleaseMeshGeometry(mesh) Then released += 1
+        Next
+        If released > 0 Then
+            Runtime.GCSettings.LargeObjectHeapCompactionMode = Runtime.GCLargeObjectHeapCompactionMode.CompactOnce
+            GC.Collect(2, GCCollectionMode.Forced, True, True)
+        End If
     End Sub
 
     ''' <summary>Resolve skeleton via app-provided resolver or default fallback. Pose state
@@ -1312,6 +1358,8 @@ Public Class PreviewControl
         If dirtyMeshes Is Nothing Then
             dirtyMeshes = Model.meshes.Where(Function(m) intent.IsShapeDirty(m.MeshData.Shape)).ToList()
         End If
+        ' Static meshes whose arrays were released were morphed before their upload, by the chunked loader.
+        dirtyMeshes = dirtyMeshes.Where(Function(m) Not m.GeometryReleased AndAlso Not m.GlSetupDone).ToList()
 
         ' Geometría BASE pre-skin (opcional; Nothing = base del NIF, comportamiento de siempre).
         ' EN SERIE y ANTES del Parallel.ForEach a propósito: el provider puede necesitar estado
@@ -1350,10 +1398,17 @@ Public Class PreviewControl
     End Sub
 
     ''' <summary>Apply geometry modifiers in order. Skips if none set.</summary>
+    ''' <summary>The chunked static loader's morph step for one chunk, in the order a full reload uses.</summary>
+    Friend Sub MorphChunk(chunk As List(Of PreviewModel.RenderableMesh))
+        If chunk.Count = 0 Then Return
+        PipelineStep_Morphs(Intent, chunk)
+    End Sub
+
     Private Sub PipelineStep_GeometryModifiers(intent As RenderIntent)
         If intent.GeometryModifiers Is Nothing Then Return
         For Each gmod In intent.GeometryModifiers
             For Each mesh In Model.meshes
+                If mesh.GeometryReleased OrElse mesh.GlSetupDone Then Continue For
                 gmod.Apply(mesh.MeshData.Shape, mesh.MeshData.Meshgeometry)
             Next
         Next
@@ -1494,7 +1549,7 @@ Public Class PreviewControl
         End If
 
         Dim aspect As Single = Me.Width / CSng(Math.Max(1, Me.Height))
-        Dim fovY As Single = MathHelper.DegreesToRadians(45.0F)
+        Dim fovY As Single = MathHelper.DegreesToRadians(Math.Clamp(FieldOfViewYDegrees, 5.0F, 170.0F))
 
         projection = Matrix4.CreatePerspectiveFieldOfView(fovY, aspect, nearZ, farZ)
         lastNear = nearZ
@@ -1783,6 +1838,15 @@ Public Class PreviewControl
             GL.ReadBuffer(ReadBufferMode.Back)
             GL.PixelStore(PixelStoreParameter.PackAlignment, 4)
             GL.ReadPixels(0, 0, bmp.Width, bmp.Height, OpenTK.Graphics.OpenGL4.PixelFormat.Bgra, PixelType.UnsignedByte, data.Scan0)
+            ' A rendered frame is opaque. Blended effects also blend into the framebuffer's alpha channel, so it read back
+            ' as low as 30/255 under smoke; saved as PNG that made the smoke column see-through wherever the image was
+            ' composited (a GIF encoder's transparency, an image viewer). Alpha is set to 255 here.
+            Dim pixels(data.Stride * bmp.Height - 1) As Byte
+            System.Runtime.InteropServices.Marshal.Copy(data.Scan0, pixels, 0, pixels.Length)
+            For i As Integer = 3 To pixels.Length - 1 Step 4
+                pixels(i) = 255
+            Next
+            System.Runtime.InteropServices.Marshal.Copy(pixels, 0, data.Scan0, pixels.Length)
         Finally
             ' DEVOLVER el ReadBuffer. Quedaba en Front para siempre, asi que cualquier ReadPixels o
             ' CopyTexImage posterior contra el framebuffer por defecto leia el buffer equivocado. Es el bug
@@ -1826,6 +1890,12 @@ Public Class PreviewControl
     ''' <summary>Raised after the background is painted and before the model pass (engine floor, meshes), so a
     ''' host can draw its own ground geometry under blended effect meshes. Runs even when the model cannot render.</summary>
     Public Event BeforeSceneMeshes(projectionMatrix As Matrix4)
+    ''' <summary>Raised inside the model pass after the opaque, cutout and decal meshes and before the blended ones,
+    ''' so a host can draw surfaces that need the opaque scene behind them (water) under blended effects.</summary>
+    Public Event BeforeBlendedMeshes(projectionMatrix As Matrix4)
+    Friend Sub RaiseBeforeBlendedMeshes(projectionMatrix As Matrix4)
+        RaiseEvent BeforeBlendedMeshes(projectionMatrix)
+    End Sub
     ''' <summary>Extra depth past the camera focus that the far plane must keep inside the frustum; lets a host
     ''' draw large ground geometry without it being clipped at the default 1000-unit far plane.</summary>
     Public Property FarPlaneExtension As Single = 0
@@ -2267,7 +2337,7 @@ Public Class PreviewControl
         camera.FocusPosition = center
 
         ' 4) Parámetros de cámara
-        Dim fovY As Single = MathHelper.DegreesToRadians(45.0F)
+        Dim fovY As Single = MathHelper.DegreesToRadians(Math.Clamp(FieldOfViewYDegrees, 5.0F, 170.0F))
         Dim aspect As Single = Me.Width / CSng(Me.Height)
 
         ' ** Usamos Z para altura, X para anchura y Y para profundidad (hacia la cámara) **
@@ -2603,7 +2673,32 @@ Public Class PreviewModel
         Public Property OwnedByComposer As Boolean = False
 
     End Class
+    ' Hands out the flat-colour index of each mesh the first time it is drawn with FlatShapeColors on.
+    Private _flatColorCounter As Integer
+    Friend Function NextFlatColorIndex() As Integer
+        _flatColorCounter += 1
+        Return _flatColorCounter - 1
+    End Function
+    ''' <summary>A distinct colour for flat-colour index <paramref name="index"/>: hues a golden-ratio step apart.</summary>
+    Friend Shared Function FlatColorFor(index As Integer) As Vector3
+        Dim h As Double = (index * 0.618033988749895) Mod 1.0
+        Dim s As Double = 0.7, v As Double = 0.95
+        Dim sector As Integer = CInt(Math.Floor(h * 6)) Mod 6
+        Dim f As Double = h * 6 - Math.Floor(h * 6)
+        Dim p As Double = v * (1 - s), q As Double = v * (1 - f * s), t As Double = v * (1 - (1 - f) * s)
+        Dim rgb As Double() = {New Double() {v, t, p}, New Double() {q, v, p}, New Double() {p, v, t}, New Double() {p, q, v}, New Double() {t, p, v}, New Double() {v, p, q}}(sector)
+        Return New Vector3(CSng(rgb(0)), CSng(rgb(1)), CSng(rgb(2)))
+    End Function
+
     Public Class RenderableMesh
+        ''' <summary>This mesh's flat-colour index, handed out on its first flat-colour draw; -1 before.</summary>
+        Friend FlatColorIndex As Integer = -1
+        ''' <summary>True once StaticGeometryMode released this mesh's CPU vertex arrays.</summary>
+        Friend GeometryReleased As Boolean
+        ''' <summary>True once the chunked static loader created this mesh's GL objects, so Setup_GL skips it.</summary>
+        Friend GlSetupDone As Boolean
+        ''' <summary>Vertices uploaded by SetupMesh_GL, kept for reporting after a release.</summary>
+        Public VertexCount As Integer
         Public Class MeshData_Class
             Sub New(Parent As RenderableMesh)
                 ParentMesh = Parent
@@ -2901,9 +2996,35 @@ Public Class PreviewModel
                      FO4UnifiedMaterial_Class.CorrectTexturePath(MaterialBase.WrinklesTexture),
                      FO4UnifiedMaterial_Class.CorrectTexturePath(MaterialBase.DistanceFieldAlphaTexture),
                      FO4UnifiedMaterial_Class.CorrectTexturePath(MaterialBase.EnvmapMaskTexture)
-                                              }
+                                              }.Concat(PbrTextures_Path_List)
                 End Get
             End Property
+
+            ''' <summary>True PBR only: the raw texture-set slots the PBR path samples by path (2 emissive, 3 displacement,
+            ''' 6 features 1, 7 features 0), whatever the vanilla slot mapping did with them, and the host's environment
+            ''' cubemap for PBR reflections. They load raw: their alpha channels are data, and the shader decodes the colour
+            ''' channels of the emissive and feature maps itself.</summary>
+            Public ReadOnly Property PbrTextures_Path_List As IEnumerable(Of String)
+                Get
+                    If MaterialBase Is Nothing OrElse Not MaterialBase.NifTruePbr Then Return Array.Empty(Of String)()
+                    Dim paths As New List(Of String)
+                    For Each slot In {2, 3, 6, 7}
+                        Dim p = MaterialBase.NifPbrSlot(slot)
+                        If p.Length > 0 Then paths.Add(FO4UnifiedMaterial_Class.CorrectTexturePath(p))
+                    Next
+                    Dim env = ParentMeshData?.ParentMesh?.ParentModel?.ParentControl?.PbrEnvironmentCubemap
+                    If Not String.IsNullOrEmpty(env) Then paths.Add(FO4UnifiedMaterial_Class.CorrectTexturePath(env))
+                    Return paths
+                End Get
+            End Property
+
+            ''' <summary>Texture id of a True PBR raw slot, 0 when the slot is empty or did not load.</summary>
+            Public Function PbrSlotTexture_ID(slot As Integer) As UInteger
+                If MaterialBase Is Nothing OrElse Not MaterialBase.NifTruePbr Then Return 0
+                Dim p = MaterialBase.NifPbrSlot(slot)
+                If p.Length = 0 Then Return 0
+                Return GetTextureID(FO4UnifiedMaterial_Class.CorrectTexturePath(p))
+            End Function
 
             ''' <summary>The COLOR textures of this material that the GPU must gamma-decode (sRGB) at load,
             ''' decided PER-SLOT from how the engine shaders sample each one (a slot is sRGB iff its sample is
@@ -2917,6 +3038,9 @@ Public Class PreviewModel
                 Get
                     If MaterialBase.IsBGEM Then Return Array.Empty(Of String)()
                     Dim colors As New List(Of String)()
+                    ' True PBR albedo is decoded too. Community Shaders uses a PBR texture as stored (DiffuseToWorking with
+                    ' PBRTextures), and with Linear Lighting off its whole lighting pass runs on
+                    ' those gamma values: in this linear renderer that is the sRGB decode at load.
                     If Not MaterialBase.GrayscaleToPaletteColor Then colors.Add(FO4UnifiedMaterial_Class.CorrectTexturePath(MaterialBase.Diffuse_or_Base_Texture))
                     ' InnerLayer: en FACEGEN (SSE FaceTint) el InnerLayer es el facetint _d = DATA, no color. El engine
                     ' lo samplea CRUDO para fgTint=(t4+off)·255/64 — la neutral (63,64,63)/255 da fgTint=1 SÓLO si es
@@ -3101,7 +3225,7 @@ Public Class PreviewModel
         ''' corre con el flag prendido, no por frame.
         ''' </summary>
         Public Sub UpdateUvBuffer_GL()
-            If MeshData Is Nothing Then Exit Sub
+            If MeshData Is Nothing OrElse GeometryReleased Then Exit Sub
             Dim geom = MeshData.Meshgeometry
             If Not geom.UvsDirty Then Exit Sub
             ' El flag se limpia DESPUES de subir, no antes: si el VBO todavia no existe hay que
@@ -3149,6 +3273,7 @@ Public Class PreviewModel
         ''' El nombre difiere de ComputeBounds a proposito: VB es case-insensitive y un parametro homonimo
         ''' sombrearia al metodo.</param>
         Public Sub UpdateSkinBuffers_GL(Optional recomputeBounds As Boolean = True)
+            If GeometryReleased Then Exit Sub
             UpdateUvBuffer_GL()
             ' Actualiza VBOs de Normales, Tangentes, Bitangentes y Posiciones
             ' Detect skinning mode change: if the toggle changed since last upload, force ALL dirty
@@ -3622,6 +3747,42 @@ Public Class PreviewModel
             MeshData.Meshgeometry.ZapTopologyDirty = False
         End Sub
 
+        ''' <summary>Static mode: immutable storage (glBufferStorage), which lets the driver keep the data in video memory
+        ''' without a system-memory copy. DYNAMIC_STORAGE keeps BufferSubData legal for the one CPU skin pass a mesh gets
+        ''' before its release. Otherwise the usual BufferData with <paramref name="usage"/>.</summary>
+        Private Sub UploadVertexBuffer(Of T As Structure)(buffer As Integer, data As T(), bytes As Integer, usage As BufferUsageHint, staticStorage As Boolean)
+            GL.BindBuffer(BufferTarget.ArrayBuffer, buffer)
+            If staticStorage AndAlso bytes > 0 Then
+                GL.BufferStorage(BufferTarget.ArrayBuffer, bytes, data, BufferStorageFlags.DynamicStorageBit)
+            Else
+                GL.BufferData(BufferTarget.ArrayBuffer, bytes, data, usage)
+            End If
+        End Sub
+
+        ''' <summary>Unit vectors as GL_INT_2_10_10_10_REV, 4 bytes instead of 12. The vertex shader still reads a vec3:
+        ''' a normalized packed attribute arrives as floats.</summary>
+        Private Shared Function PackDirections(v As Vector3()) As UInteger()
+            Dim packed(v.Length - 1) As UInteger
+            For i As Integer = 0 To v.Length - 1
+                Dim x = CInt(Math.Round(Math.Clamp(v(i).X, -1.0F, 1.0F) * 511.0F)) And &H3FF
+                Dim y = CInt(Math.Round(Math.Clamp(v(i).Y, -1.0F, 1.0F) * 511.0F)) And &H3FF
+                Dim z = CInt(Math.Round(Math.Clamp(v(i).Z, -1.0F, 1.0F) * 511.0F)) And &H3FF
+                packed(i) = CUInt(x Or (y << 10) Or (z << 20))
+            Next
+            Return packed
+        End Function
+        ''' <summary>Vertex colours as four normalized bytes, 4 bytes instead of 16.</summary>
+        Private Shared Function PackColors(c As Vector4()) As Byte()
+            Dim packed(c.Length * 4 - 1) As Byte
+            For i As Integer = 0 To c.Length - 1
+                packed(i * 4) = CByte(Math.Round(Math.Clamp(c(i).X, 0.0F, 1.0F) * 255.0F))
+                packed(i * 4 + 1) = CByte(Math.Round(Math.Clamp(c(i).Y, 0.0F, 1.0F) * 255.0F))
+                packed(i * 4 + 2) = CByte(Math.Round(Math.Clamp(c(i).Z, 0.0F, 1.0F) * 255.0F))
+                packed(i * 4 + 3) = CByte(Math.Round(Math.Clamp(c(i).W, 0.0F, 1.0F) * 255.0F))
+            Next
+            Return packed
+        End Function
+
         Public Sub SetupMesh_GL()
             vao = GL.GenVertexArray()
             ebo = GL.GenBuffer()
@@ -3634,6 +3795,11 @@ Public Class PreviewModel
             vboMask = GL.GenBuffer()
 
             Dim count = MeshData.Meshgeometry.Vertices.Length
+            VertexCount = count
+            ' Static mode: nothing re-uploads these, so the driver may keep them in video memory only.
+            Dim staticStorage = ParentModel IsNot Nothing AndAlso ParentModel.ParentControl IsNot Nothing AndAlso ParentModel.ParentControl.StaticGeometryMode AndAlso
+                                (MeshData.Shape Is Nothing OrElse Not MeshData.Shape.IsSkinned)
+            Dim vertexUsage = If(staticStorage, BufferUsageHint.StaticDraw, BufferUsageHint.DynamicDraw)
 
             GL.BindVertexArray(vao)
 
@@ -3647,49 +3813,75 @@ Public Class PreviewModel
             Dim bitanF() As Vector3 = MeshData.Meshgeometry.Bitangents
 
             ' POSICIONES — DynamicDraw
-            GL.BindBuffer(BufferTarget.ArrayBuffer, vboPosition)
-            GL.BufferData(BufferTarget.ArrayBuffer, posF.Length * 3 * 4, posF, BufferUsageHint.DynamicDraw)
+            UploadVertexBuffer(vboPosition, posF, posF.Length * 3 * 4, vertexUsage, staticStorage)
             GL.EnableVertexAttribArray(0)
             GL.VertexAttribPointer(0, 3, VertexAttribPointerType.Float, False, 0, 0)
 
             ' NORMALES — DynamicDraw
-            GL.BindBuffer(BufferTarget.ArrayBuffer, vboNormal)
-            GL.BufferData(BufferTarget.ArrayBuffer, nrmF.Length * 3 * 4, nrmF, BufferUsageHint.DynamicDraw)
-            GL.EnableVertexAttribArray(1)
-            GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, False, 0, 0)
+            If staticStorage Then
+                ' Static: packed 10:10:10:2. Nothing re-uploads a static mesh, so the packed form never meets the float path.
+                Dim packed = PackDirections(nrmF)
+                UploadVertexBuffer(vboNormal, packed, packed.Length * 4, vertexUsage, staticStorage)
+                GL.EnableVertexAttribArray(1)
+                GL.VertexAttribPointer(1, 4, VertexAttribPointerType.Int2101010Rev, True, 0, 0)
+            Else
+                UploadVertexBuffer(vboNormal, nrmF, nrmF.Length * 3 * 4, vertexUsage, staticStorage)
+                GL.EnableVertexAttribArray(1)
+                GL.VertexAttribPointer(1, 3, VertexAttribPointerType.Float, False, 0, 0)
+            End If
 
             ' TANGENTES — DynamicDraw
-            GL.BindBuffer(BufferTarget.ArrayBuffer, vboTangent)
-            GL.BufferData(BufferTarget.ArrayBuffer, tanF.Length * 3 * 4, tanF, BufferUsageHint.DynamicDraw)
-            GL.EnableVertexAttribArray(2)
-            GL.VertexAttribPointer(2, 3, VertexAttribPointerType.Float, False, 0, 0)
+            If staticStorage Then
+                ' Static: packed 10:10:10:2. Nothing re-uploads a static mesh, so the packed form never meets the float path.
+                Dim packed = PackDirections(tanF)
+                UploadVertexBuffer(vboTangent, packed, packed.Length * 4, vertexUsage, staticStorage)
+                GL.EnableVertexAttribArray(2)
+                GL.VertexAttribPointer(2, 4, VertexAttribPointerType.Int2101010Rev, True, 0, 0)
+            Else
+                UploadVertexBuffer(vboTangent, tanF, tanF.Length * 3 * 4, vertexUsage, staticStorage)
+                GL.EnableVertexAttribArray(2)
+                GL.VertexAttribPointer(2, 3, VertexAttribPointerType.Float, False, 0, 0)
+            End If
 
             ' BITANGENTES — DynamicDraw
-            GL.BindBuffer(BufferTarget.ArrayBuffer, vboBitangent)
-            GL.BufferData(BufferTarget.ArrayBuffer, bitanF.Length * 3 * 4, bitanF, BufferUsageHint.DynamicDraw)
-            GL.EnableVertexAttribArray(3)
-            GL.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, False, 0, 0)
+            If staticStorage Then
+                ' Static: packed 10:10:10:2. Nothing re-uploads a static mesh, so the packed form never meets the float path.
+                Dim packed = PackDirections(bitanF)
+                UploadVertexBuffer(vboBitangent, packed, packed.Length * 4, vertexUsage, staticStorage)
+                GL.EnableVertexAttribArray(3)
+                GL.VertexAttribPointer(3, 4, VertexAttribPointerType.Int2101010Rev, True, 0, 0)
+            Else
+                UploadVertexBuffer(vboBitangent, bitanF, bitanF.Length * 3 * 4, vertexUsage, staticStorage)
+                GL.EnableVertexAttribArray(3)
+                GL.VertexAttribPointer(3, 3, VertexAttribPointerType.Float, False, 0, 0)
+            End If
 
             ' COLOR + ALPHA — StaticDraw
 
-            GL.BindBuffer(BufferTarget.ArrayBuffer, vboColorAlpha)
-            GL.BufferData(BufferTarget.ArrayBuffer, MeshData.Meshgeometry.VertexColors.Length * 4 * 4, MeshData.Meshgeometry.VertexColors, BufferUsageHint.StaticDraw)
-            GL.EnableVertexAttribArray(4)
-            GL.VertexAttribPointer(4, 3, VertexAttribPointerType.Float, False, 4 * 4, 0)
-            GL.EnableVertexAttribArray(5)
-            GL.VertexAttribPointer(5, 1, VertexAttribPointerType.Float, False, 4 * 4, 3 * 4)
+            If staticStorage Then
+                Dim packedColors = PackColors(MeshData.Meshgeometry.VertexColors)
+                UploadVertexBuffer(vboColorAlpha, packedColors, packedColors.Length, BufferUsageHint.StaticDraw, staticStorage)
+                GL.EnableVertexAttribArray(4)
+                GL.VertexAttribPointer(4, 3, VertexAttribPointerType.UnsignedByte, True, 4, 0)
+                GL.EnableVertexAttribArray(5)
+                GL.VertexAttribPointer(5, 1, VertexAttribPointerType.UnsignedByte, True, 4, 3)
+            Else
+                UploadVertexBuffer(vboColorAlpha, MeshData.Meshgeometry.VertexColors, MeshData.Meshgeometry.VertexColors.Length * 4 * 4, BufferUsageHint.StaticDraw, staticStorage)
+                GL.EnableVertexAttribArray(4)
+                GL.VertexAttribPointer(4, 3, VertexAttribPointerType.Float, False, 4 * 4, 0)
+                GL.EnableVertexAttribArray(5)
+                GL.VertexAttribPointer(5, 1, VertexAttribPointerType.Float, False, 4 * 4, 3 * 4)
+            End If
 
             ' UV + WEIGHT — StaticDraw
-            GL.BindBuffer(BufferTarget.ArrayBuffer, vboUVMaskWeight)
-            GL.BufferData(BufferTarget.ArrayBuffer, MeshData.Meshgeometry.Uvs_Weight.Length * 3 * 4, MeshData.Meshgeometry.Uvs_Weight, BufferUsageHint.StaticDraw)
+            UploadVertexBuffer(vboUVMaskWeight, MeshData.Meshgeometry.Uvs_Weight, MeshData.Meshgeometry.Uvs_Weight.Length * 3 * 4, BufferUsageHint.StaticDraw, staticStorage)
             GL.EnableVertexAttribArray(6)
             GL.VertexAttribPointer(6, 2, VertexAttribPointerType.Float, False, 3 * 4, 0)
             GL.EnableVertexAttribArray(8)
             GL.VertexAttribPointer(8, 1, VertexAttribPointerType.Float, False, 3 * 4, 2 * 4)
 
             ' MÁSCARA — DynamicDraw
-            GL.BindBuffer(BufferTarget.ArrayBuffer, vboMask)
-            GL.BufferData(BufferTarget.ArrayBuffer, MeshData.Meshgeometry.VertexMask.Length * 4, MeshData.Meshgeometry.VertexMask, BufferUsageHint.DynamicDraw)
+            UploadVertexBuffer(vboMask, MeshData.Meshgeometry.VertexMask, MeshData.Meshgeometry.VertexMask.Length * 4, vertexUsage, staticStorage)
 
             GL.EnableVertexAttribArray(7)
             GL.VertexAttribPointer(7, 1, VertexAttribPointerType.Float, False, 4, 0)
@@ -3751,6 +3943,7 @@ Public Class PreviewModel
         ''' <c>BoundsMin/Max</c> (que son Single): asi la clave de orden del bucket BLENDED no pasa por un
         ''' redondeo de mas.</para></summary>
         Public Sub ComputeBounds()
+            If GeometryReleased Then Exit Sub
             If MeshData.Meshgeometry.Vertices Is Nothing OrElse MeshData.Meshgeometry.Vertices.Length = 0 Then
                 BoundsMin = New Vector3(Single.MaxValue)
                 BoundsMax = New Vector3(Single.MinValue)
@@ -4598,6 +4791,16 @@ Public Class PreviewModel
                 shader.BindTexture("texEnvMask", Me.ParentModel.ParentControl.defaultWhiteTex, TextureUnit.Texture3)
             End If
 
+            ' Flat colour per shape (view captures checking seams): one colour per mesh, the same in every frame.
+            If isSSE Then
+                Dim control = Me.ParentModel.ParentControl
+                shader.SetBool("bFlatColor", control.FlatShapeColors)
+                If control.FlatShapeColors Then
+                    If FlatColorIndex < 0 Then FlatColorIndex = Me.ParentModel.NextFlatColorIndex()
+                    shader.SetVector3("flatColor", PreviewModel.FlatColorFor(FlatColorIndex))
+                End If
+            End If
+
             ' TRUE PBR (Community Shaders): slot 5 is the RMAOS map, read raw (it is not in ColorTextures_Path_List).
             ' Only with the viewport toggle on and the map present; otherwise the shape takes the vanilla path.
             If isSSE Then
@@ -4606,6 +4809,54 @@ Public Class PreviewModel
                 shader.BindTexture("texRmaos", If(rmaosId <> 0, rmaosId, Me.ParentModel.ParentControl.defaultWhiteTex), TextureUnit.Texture11)
                 shader.SetFloat("pbrRoughnessScale", materialBase.NifSpecularStrength)
                 shader.SetFloat("pbrSpecularLevel", materialBase.NifGlossiness)
+
+                ' Coat, interlayer parallax and subsurface (TruePBR.cpp flag reading): two-layer = bit 24; with it, bit 25
+                ' interlayer parallax, bit 27 coat normal, bit 30 coloured coat. Single layer: bit 27 is hair (not drawn
+                ' here), else bit 26 subsurface.
+                Dim f2 As UInteger = If(rmaosId <> 0, materialBase.NifPbrFlags2, 0UI)
+                Dim twoLayer As Boolean = (f2 And (1UI << 24)) <> 0
+                shader.SetBool("bPbrTwoLayer", twoLayer)
+                shader.SetBool("bPbrInterlayer", twoLayer AndAlso (f2 And (1UI << 25)) <> 0)
+                shader.SetBool("bPbrCoatNormal", twoLayer AndAlso (f2 And (1UI << 27)) <> 0)
+                shader.SetBool("bPbrColoredCoat", twoLayer AndAlso (f2 And (1UI << 30)) <> 0)
+                shader.SetBool("bPbrSubsurface", Not twoLayer AndAlso (f2 And (1UI << 27)) = 0 AndAlso (f2 And (1UI << 26)) <> 0)
+                Dim white = Me.ParentModel.ParentControl.defaultWhiteTex
+                Dim emissiveId = If(rmaosId <> 0, CInt(material.PbrSlotTexture_ID(2)), 0)
+                Dim displacementId = If(rmaosId <> 0, CInt(material.PbrSlotTexture_ID(3)), 0)
+                Dim feature1Id = If(rmaosId <> 0, CInt(material.PbrSlotTexture_ID(6)), 0)
+                Dim feature0Id = If(rmaosId <> 0, CInt(material.PbrSlotTexture_ID(7)), 0)
+                shader.SetBool("bPbrHasEmissive", emissiveId <> 0)
+                shader.SetBool("bPbrHasDisplacement", displacementId <> 0)
+                shader.SetBool("bPbrHasFeature0", feature0Id <> 0)
+                shader.SetBool("bPbrHasFeature1", feature1Id <> 0)
+                shader.BindTexture("texPbrDisplacement", If(displacementId <> 0, displacementId, white), TextureUnit.Texture9)
+                shader.BindTexture("texPbrFeature0", If(feature0Id <> 0, feature0Id, white), TextureUnit.Texture12)
+                shader.BindTexture("texPbrFeature1", If(feature1Id <> 0, feature1Id, white), TextureUnit.Texture13)
+                shader.BindTexture("texPbrEmissive", If(emissiveId <> 0, emissiveId, white), TextureUnit.Texture16)
+                Dim sc = materialBase.NifPbrSpecularColor
+                shader.SetVector4("pbrParams2", New Vector4(sc.X, sc.Y, sc.Z, materialBase.NifPbrLightingEffect1))
+                shader.SetFloat("pbrDisplacementScale", materialBase.NifPbrDisplacementScale)
+                shader.SetVector2("pbrCoat", New Vector2(materialBase.NifPbrCoatRoughness, materialBase.NifPbrCoatF0))
+                ' Environment for PBR reflections: the host's cubemap when set and loaded.
+                Dim envId As Integer = 0
+                Dim envLevels As Integer = 1
+                Dim envPath = Me.ParentModel.ParentControl.PbrEnvironmentCubemap
+                If rmaosId <> 0 AndAlso Not String.IsNullOrEmpty(envPath) Then
+                    Dim envTex As Texture_Loaded_Class = Nothing
+                    If Me.ParentModel.Textures_Dictionary.TryGetValue(FO4UnifiedMaterial_Class.CorrectTexturePath(envPath), envTex) AndAlso envTex.Texture_ID <> 0 AndAlso envTex.Cubemap Then
+                        envId = CInt(envTex.Texture_ID)
+                        envLevels = CubemapLevels(envId)
+                    End If
+                End If
+                shader.SetBool("bPbrEnv", envId <> 0)
+                If envId <> 0 Then
+                    GL.ActiveTexture(TextureUnit.Texture17)
+                    GL.BindTexture(TextureTarget.TextureCubeMap, envId)
+                    shader.SetInt("texPbrEnv", 17)
+                    GL.ActiveTexture(TextureUnit.Texture0)
+                End If
+                shader.SetFloat("pbrEnvMaxLod", CSng(envLevels - 1))
+                shader.SetFloat("pbrEnvIntensity", Me.ParentModel.ParentControl.PbrEnvironmentIntensity)
             End If
 
             ' texSpecular = TXST slot 7. El motor lo lee DOS veces desde material+0x68: t2 (mask especular, bajo
@@ -5094,6 +5345,10 @@ Public Class PreviewModel
         ' Consecuencia para el usuario: el preview podia dibujarse distinto en cada carga sin que nada
         ' cambiara, que es exactamente lo que vuelve irreproducible un reporte de bug.
         Dim lista = LoadedShapes
+        If ParentControl.StaticGeometryMode Then
+            LoadShapesChunkedStatic(lista, resolver)
+            Exit Sub
+        End If
         Dim porIndice(lista.Count - 1) As RenderableMesh
         Parallel.For(0, lista.Count, Sub(i) porIndice(i) = LoadShapeSafe(lista(i), resolver))
         ' `LoadShapeSafe` devuelve Nothing para una shape que no se pudo cargar: esos huecos se saltean, y
@@ -5103,6 +5358,102 @@ Public Class PreviewModel
         Next
         MarkRenderBucketsDirty()
     End Sub
+
+    ''' <summary>StaticGeometryMode: extracts, uploads and releases the shapes a chunk at a time, so the CPU-side
+    ''' geometry of only one chunk exists at once. Loading every shape first held it all: 22 GB for a level view of
+    ''' 57 million vertices before any of it reached the GPU. Each mesh goes through the same steps a full reload
+    ''' gives it (geometry modifiers, GL buffers, UVs, the CPU skin pass) before its arrays are dropped.</summary>
+    Private Sub LoadShapesChunkedStatic(lista As List(Of IRenderableShape), resolver As ISkeletonResolver)
+        Const ChunkSize As Integer = 256
+        ParentControl.EnsureContextCurrent()
+        Dim modifiers = ParentControl.Intent.GeometryModifiers
+        For start As Integer = 0 To lista.Count - 1 Step ChunkSize
+            Dim count = Math.Min(ChunkSize, lista.Count - start)
+            Dim part(count - 1) As RenderableMesh
+            Dim first = start
+            Parallel.For(0, count, Sub(i) part(i) = LoadShapeSafe(lista(first + i), resolver))
+            Dim chunk = part.Where(Function(m) m IsNot Nothing).ToList()
+            meshes.AddRange(chunk)
+            ParentControl.MorphChunk(chunk)
+            For Each mesh In chunk
+                If modifiers IsNot Nothing Then
+                    For Each gmod In modifiers
+                        gmod.Apply(mesh.MeshData.Shape, mesh.MeshData.Meshgeometry)
+                    Next
+                End If
+                mesh.SetupMesh_GL()
+                mesh.GlSetupDone = True
+                mesh.UpdateUvBuffer_GL()
+                ' The CPU skin pass only matters for skinned meshes: an unskinned mesh's skin matrix is the identity, and its
+                ' buffers are packed (10:10:10:2) in static mode, which the float re-upload of that pass must not touch.
+                If Not Config_App.Current.Setting_GPUSkinning AndAlso mesh.MeshData.Shape IsNot Nothing AndAlso mesh.MeshData.Shape.IsSkinned Then mesh.UpdateSkinBuffers_GL()
+                ReleaseMeshGeometry(mesh)
+            Next
+            ' Blocking, so the next chunk reuses this chunk's freed arrays instead of growing the heap.
+            GC.Collect(2, GCCollectionMode.Forced, True)
+        Next
+        ' One compaction at the end hands the freed heap back to Windows.
+        Runtime.GCSettings.LargeObjectHeapCompactionMode = Runtime.GCLargeObjectHeapCompactionMode.CompactOnce
+        GC.Collect(2, GCCollectionMode.Forced, True, True)
+        MarkRenderBucketsDirty()
+    End Sub
+
+    Private Shared ReadOnly _cubemapLevels As New Dictionary(Of Integer, Integer)
+    ''' <summary>Mip levels present in a cubemap texture (counted once with GL queries), for roughness-blurred reads.</summary>
+    Friend Shared Function CubemapLevels(textureId As Integer) As Integer
+        Dim levels As Integer
+        If _cubemapLevels.TryGetValue(textureId, levels) Then Return levels
+        GL.GetInteger(GetPName.TextureBindingCubeMap, levels)
+        Dim previous = levels
+        GL.BindTexture(TextureTarget.TextureCubeMap, textureId)
+        Dim maxLevel As Integer
+        GL.GetTexParameter(TextureTarget.TextureCubeMap, GetTextureParameter.TextureMaxLevel, maxLevel)
+        levels = 0
+        For level = 0 To Math.Min(maxLevel, 15)
+            Dim w As Integer
+            GL.GetTexLevelParameter(TextureTarget.TextureCubeMapPositiveX, level, GetTextureParameter.TextureWidth, w)
+            If w <= 0 Then Exit For
+            levels += 1
+        Next
+        GL.BindTexture(TextureTarget.TextureCubeMap, previous)
+        levels = Math.Max(1, levels)
+        _cubemapLevels(textureId) = levels
+        Return levels
+    End Function
+
+    ''' <summary>Meshes for which <see cref="ReleaseMeshGeometry"/> keeps the CPU-side arrays, because a host pass draws them.</summary>
+    Public Shared Property KeepCpuGeometry As Func(Of RenderableMesh, Boolean)
+
+    ''' <summary>Drops the CPU-side vertex arrays of an unskinned mesh whose buffers are on the GPU (StaticGeometryMode).
+    ''' Keeps the indices (zap filtering reads them), the bounds and the material.</summary>
+    Friend Shared Function ReleaseMeshGeometry(mesh As RenderableMesh) As Boolean
+        If mesh.GeometryReleased OrElse mesh.vao = 0 Then Return False
+        If mesh.MeshData.Shape Is Nothing OrElse mesh.MeshData.Shape.IsSkinned Then Return False
+        ' Water surfaces are drawn by the host's water pass from these arrays; they are a few hundred vertices each.
+        If TypeOf mesh.MeshData.Shape.NifShader Is NiflySharp.Blocks.BSWaterShaderProperty Then Return False
+        ' The host's own passes (sky statics) draw some meshes from these arrays too.
+        If KeepCpuGeometry IsNot Nothing AndAlso KeepCpuGeometry(mesh) Then Return False
+        Dim g = mesh.MeshData.Meshgeometry
+        g.Vertices = Nothing : g.BaseVertices = Nothing : g.NifLocalVertices = Nothing
+        g.CachedWorldVertices = Nothing : g.CachedWorldNormals = Nothing : g.WorldCacheValid = False
+        g.Normals = Nothing : g.Tangents = Nothing : g.Bitangents = Nothing
+        g.Uvs_Weight = Nothing : g.BaseUvs_Weight = Nothing
+        g.VertexColors = Nothing : g.VertexMask = Nothing
+        g.GPUBoneIndices = Nothing : g.GPUBoneWeights = Nothing
+        g.dirtyMaskFlags = Nothing : g.dirtyVertexFlags = Nothing
+        g.PerVertexSkinMatrix = Nothing : g.PerVertexMatrixValid = False
+        g.CachedTBN = Nothing   ' per-triangle tangent scratch and an index copy; only recomputing tangents reads it
+        mesh.MeshData.Meshgeometry = g
+        ' The NIF's own vertex list too: a level placement loads its own copy of the NIF, and after the upload only
+        ' node transforms and the vertex-format flags (HasVertexColors) are read from it.
+        Dim tri = TryCast(mesh.MeshData.Shape.NifShape, NiflySharp.Blocks.BSTriShape)
+        If tri IsNot Nothing Then
+            If tri.VertexDataSSE IsNot Nothing Then tri.VertexDataSSE.Clear() : tri.VertexDataSSE.TrimExcess()
+            If tri.VertexData IsNot Nothing Then tri.VertexData.Clear() : tri.VertexData.TrimExcess()
+        End If
+        mesh.GeometryReleased = True
+        Return True
+    End Function
 
     Public Sub BakeOrInvertPose(inverse As Boolean)
         If LoadedShapes.Count = 0 Then Exit Sub
@@ -5164,6 +5515,7 @@ Public Class PreviewModel
         If Me.ParentControl.IsDisposed Then Exit Sub
         ParentControl.EnsureContextCurrent()
         For Each mesh In meshes
+            If mesh.GlSetupDone Then Continue For
             mesh.SetupMesh_GL()
         Next
     End Sub
@@ -5207,6 +5559,16 @@ Public Class PreviewModel
     ''' Keeps frame time bounded while progressively loading textures.
     ''' </summary>
     Private Const MaxTextureUploadsPerFrame As Integer = 64
+
+    ''' <summary>Textures decoded per background batch. With at most two batches waiting, the CPU holds a few
+    ''' hundred MB of texture data at a time instead of the whole scene's.</summary>
+    Private Const TextureLoadBatchSize As Integer = 32
+
+    ' Texture bytes uploaded since the last collection. The raw DDS arrays and decoded levels are garbage once
+    ' on the GPU, but they sit on the large-object heap, which the workstation GC collects rarely on a machine
+    ' with a lot of RAM: a level tile left 4.8 GB of them behind. Collected every TextureGcEveryBytes.
+    Private _textureBytesSinceGc As Long
+    Private Const TextureGcEveryBytes As Long = 256L * 1024 * 1024
 
     ''' <summary>
     ''' Set of texture paths currently queued for background loading (to avoid duplicate loads).
@@ -5345,23 +5707,33 @@ Public Class PreviewModel
         _backgroundLoadTask = Task.Run(
             Sub()
                 Try
-                    ct.ThrowIfCancellationRequested()
-                    Dim loaded = DirectXDDSLoader.LoadTexturesFromDictionary_Background(
-                        pathsArray, useCompress:=True, forceOpenGL:=True, ct:=ct)
+                    ' In batches, each decoded only when at most one earlier batch still waits for the GL thread.
+                    ' One batch for the whole scene held every raw DDS and every decoded copy in memory at once:
+                    ' a level view with thousands of 4K textures went past 60 GB.
+                    For start As Integer = 0 To pathsArray.Length - 1 Step TextureLoadBatchSize
+                        ct.ThrowIfCancellationRequested()
+                        While _pendingTextureUploads.Count >= 2
+                            ct.ThrowIfCancellationRequested()
+                            Threading.Thread.Sleep(5)
+                        End While
+                        Dim chunk = pathsArray.Skip(start).Take(TextureLoadBatchSize).ToArray()
+                        Dim loaded = DirectXDDSLoader.LoadTexturesFromDictionary_Background(
+                            chunk, useCompress:=True, forceOpenGL:=True, ct:=ct)
 
-                    ct.ThrowIfCancellationRequested()
+                        ct.ThrowIfCancellationRequested()
 
-                    ' Enqueue result for GL-thread upload (Phase 2)
-                    _pendingTextureUploads.Enqueue(loaded)
+                        ' Enqueue result for GL-thread upload (Phase 2)
+                        _pendingTextureUploads.Enqueue(loaded)
 
-                    ' Signal the GL thread to wake up and process pending uploads. Setting
-                    ' UpdateRequired alone is enough — the RenderTimer_Tick polls for it and
-                    ' calls Invalidate() guarded by Context.IsCurrent so we don't steal the
-                    ' GL context from a sibling PreviewControl (e.g. an active modal editor)
-                    ' just because a background-thread texture decode happened to finish.
-                    If controlRef IsNot Nothing AndAlso Not controlRef.IsDisposed AndAlso controlRef.IsHandleCreated Then
-                        controlRef.BeginInvoke(Sub() controlRef.UpdateRequired = True)
-                    End If
+                        ' Signal the GL thread to wake up and process pending uploads. Setting
+                        ' UpdateRequired alone is enough — the RenderTimer_Tick polls for it and
+                        ' calls Invalidate() guarded by Context.IsCurrent so we don't steal the
+                        ' GL context from a sibling PreviewControl (e.g. an active modal editor)
+                        ' just because a background-thread texture decode happened to finish.
+                        If controlRef IsNot Nothing AndAlso Not controlRef.IsDisposed AndAlso controlRef.IsHandleCreated Then
+                            controlRef.BeginInvoke(Sub() controlRef.UpdateRequired = True)
+                        End If
+                    Next
                 Catch ex As OperationCanceledException
                     ' Cancelled — remove paths from pending set so they can be retried
                     SyncLock _pendingBackgroundPaths
@@ -5416,6 +5788,11 @@ Public Class PreviewModel
                     Dim path = kvp.Key
                     Dim tex = kvp.Value
 
+                    If tex IsNot Nothing AndAlso tex.Levels IsNot Nothing Then
+                        For Each level In tex.Levels
+                            If level IsNot Nothing AndAlso level.Data IsNot Nothing Then _textureBytesSinceGc += level.Data.Length
+                        Next
+                    End If
                     Try
                         Dim result = DirectXDDSLoader.UploadTextureToGL(tex, path, SRGBTexturePaths.Contains(path))
 
@@ -5477,6 +5854,10 @@ Public Class PreviewModel
                 ' If the batch is now empty, dequeue it
                 If batch.Count = 0 Then
                     _pendingTextureUploads.TryDequeue(batch)
+                    If _textureBytesSinceGc > TextureGcEveryBytes Then
+                        _textureBytesSinceGc = 0
+                        GC.Collect(2, GCCollectionMode.Forced, False)
+                    End If
                 Else
                     ' Batch still has remaining textures — stop for this frame
                     Exit While
@@ -5507,6 +5888,12 @@ Public Class PreviewModel
             ' Only mark Ready if the retry check found nothing new to queue
             If _pendingTextureUploads.IsEmpty AndAlso (_backgroundLoadTask Is Nothing OrElse _backgroundLoadTask.IsCompleted) Then
                 If Not TexturesReady Then
+                    ' Everything is on the GPU: compact the large-object heap once so the memory goes back to Windows.
+                    If _textureBytesSinceGc > 0 OrElse anyUploaded Then
+                        _textureBytesSinceGc = 0
+                        Runtime.GCSettings.LargeObjectHeapCompactionMode = Runtime.GCLargeObjectHeapCompactionMode.CompactOnce
+                        GC.Collect(2, GCCollectionMode.Forced, True, True)
+                    End If
                     TexturesReady = True
                     ' Fire the post-texture-upload hook BEFORE the repaint so any GL state the
                     ' callback mutates (e.g. re-uploading a diffuse with bake passes applied)
@@ -5749,6 +6136,12 @@ Public Class PreviewModel
             Return _frameLights
         End Get
     End Property
+
+    ''' <summary>This frame's key light (world direction toward the light, linear colour) and hemispheric ambient,
+    ''' as the mesh shader receives them. For host passes that light their own surfaces.</summary>
+    Public Function FrameKeyLight() As (Direction As Vector3, Color As Vector3, AmbientSky As Vector3, AmbientGround As Vector3)
+        Return (_frameLights.KeyDir, _frameLights.KeyDiffuse, _frameLights.AmbientSky, _frameLights.AmbientGround)
+    End Function
 
     ''' <summary>Lleva una dirección del marco del RIG al marco del MUNDO usando la base de la cámara.
     ''' <para>NO HACE FALTA CONVERTIR LOS PRESETS, y esa es la razón por la que esto entra sin tocar nada
@@ -6577,6 +6970,9 @@ Public Class PreviewModel
             _groundQuad.Render(ParentControl.SharedGroundShadowShader, vp, _groundQuadCenter, _groundQuadHalf)
         End If
 
+        ' 3c. Host surfaces between the opaque scene and blended effects (water).
+        ParentControl?.RaiseBeforeBlendedMeshes(projection)
+
         ' 4. BLENDED — requiere ordenamiento por profundidad.
         ' (Was an early `Exit Sub` when empty; now a guarded block so the overlay pass 5 below still
         ' runs even with zero blended meshes — tattoos live on the OPAQUE skin body, not a blended mesh.)
@@ -6589,7 +6985,13 @@ Public Class PreviewModel
                 Dim viewPos = Vector3.TransformPosition(mesh.MeshData.Meshgeometry.Boundingcenter, viewMatrix)
                 BlendedDepthBuffer.Add(New MeshDepth With {.Mesh = mesh, .Depth = -viewPos.Z})
             Next
-            BlendedDepthBuffer.Sort(Function(a, b) b.Depth.CompareTo(a.Depth))
+            ' Back to front. List.Sort is not stable, so shapes at the same depth (a shell around the mesh it wraps,
+            ' both centred on one point) swapped order from frame to frame and flickered. Ties keep load order.
+            BlendedDepthBuffer.Sort(Function(a, b)
+                                        Dim byDepth = b.Depth.CompareTo(a.Depth)
+                                        If byDepth <> 0 Then Return byDepth
+                                        Return a.Mesh.MeshData.Idx.CompareTo(b.Mesh.MeshData.Idx)
+                                    End Function)
             For Each item In BlendedDepthBuffer
                 item.Mesh.Render(projection, camera)
             Next
@@ -6833,11 +7235,40 @@ Public Class OrbitCamera
     End Sub
 
     Public Function GetViewMatrix() As Matrix4
+        If ViewOverrideActive Then Return Matrix4.LookAt(_overrideEye, _overrideEye + _overrideForward, _overrideUp)
         Dim eye = FocusPosition + Forward * distance
         Return Matrix4.LookAt(eye, FocusPosition, Vector3.UnitZ)
     End Function
 
     Public Function GetEyePosition() As Vector3
+        If ViewOverrideActive Then Return _overrideEye
         Return FocusPosition + Forward * distance
     End Function
+
+    ''' <summary>The orbit eye, ignoring any view override: the base an animated camera offsets.</summary>
+    Public Function GetOrbitEyePosition() As Vector3
+        Return FocusPosition + Forward * distance
+    End Function
+
+    ''' <summary>A view that replaces the orbit view for drawing (an animated camera: eye, view direction and up, roll
+    ''' included). The orbit state is left as it is, so clearing the override returns to it.</summary>
+    Public ReadOnly Property ViewOverrideActive As Boolean
+        Get
+            Return _overrideActive
+        End Get
+    End Property
+    Public Sub SetViewOverride(eye As Vector3, viewForward As Vector3, up As Vector3)
+        If viewForward.LengthSquared < 0.000001F OrElse up.LengthSquared < 0.000001F Then Return
+        _overrideEye = eye
+        _overrideForward = Vector3.Normalize(viewForward)
+        _overrideUp = Vector3.Normalize(up)
+        _overrideActive = True
+    End Sub
+    Public Sub ClearViewOverride()
+        _overrideActive = False
+    End Sub
+    Private _overrideActive As Boolean
+    Private _overrideEye As Vector3
+    Private _overrideForward As Vector3 = Vector3.UnitY
+    Private _overrideUp As Vector3 = Vector3.UnitZ
 End Class

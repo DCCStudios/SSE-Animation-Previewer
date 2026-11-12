@@ -345,6 +345,13 @@ Public Class FO4UnifiedMaterial_Class
         copy._NifGlossinessFromShader = _NifGlossinessFromShader
         copy._NifTruePbr = _NifTruePbr
         copy._NifSpecularStrength = _NifSpecularStrength
+        copy._NifPbrFlags2 = _NifPbrFlags2
+        copy._NifPbrSpecularColor = _NifPbrSpecularColor
+        copy._NifPbrLightingEffect1 = _NifPbrLightingEffect1
+        copy._NifPbrDisplacementScale = _NifPbrDisplacementScale
+        copy._NifPbrCoatRoughness = _NifPbrCoatRoughness
+        copy._NifPbrCoatF0 = _NifPbrCoatF0
+        copy._NifPbrSlots = If(_NifPbrSlots Is Nothing, Nothing, CType(_NifPbrSlots.Clone(), String()))
         ' Multiplicador runtime del tint (convención ×2 del pelo SSE): vive en el wrapper, no en el
         ' BGSM, así que el loop de reflexión de arriba no lo alcanza. Sin esto un clon perdería el ×2.
         copy.TintColorScale = TintColorScale
@@ -477,6 +484,89 @@ Public Class FO4UnifiedMaterial_Class
     Private _NifTruePbr As Boolean = False
     Private _NifSpecularStrength As Single = 1.0F
     Friend Const TruePbrFlag2 As UInteger = 1UI << 23
+
+    ''' <summary>True PBR material parameters as Community Shaders reads them (TruePBR.cpp BSLightingShaderProperty
+    ''' load, BSLightingShaderMaterialPBR getters). Only set on a True PBR shape.
+    ''' <list type="bullet">
+    ''' <item>Flags 2 bit 24 MultiLayerParallax = two-layer (coat); with bit 25 SoftLighting = interlayer parallax
+    ''' (refraction); bit 27 BackLighting = coat normal (slot 6 xyz); EffectLighting = coloured coat.</item>
+    ''' <item>Single layer: bit 26 RimLighting = subsurface.</item>
+    ''' <item>SpecularColor = coat colour or subsurface colour; Lighting Effect 1 (NiflySharp Softlight) = coat
+    ''' strength or subsurface opacity; Lighting Effect 2 (RimlightPower on SSE) = displacement scale.</item>
+    ''' <item>Shader type MultiLayerParallax: ParallaxInnerLayerThickness = coat roughness, ParallaxRefractionScale
+    ''' = coat F0 (specular level).</item>
+    ''' <item>Slots, raw from the texture set: 2 emissive, 3 displacement (inner layer height), 6 features 1 (coat
+    ''' normal xyz + coat roughness a), 7 features 0 (coat colour + strength, or subsurface colour + thickness).
+    ''' The vanilla slot mapping of this class moves slot 2 and drops slot 6 when those flags are set.</item>
+    ''' </list></summary>
+    Friend ReadOnly Property NifPbrFlags2 As UInteger
+        Get
+            Return _NifPbrFlags2
+        End Get
+    End Property
+    Friend ReadOnly Property NifPbrSpecularColor As OpenTK.Mathematics.Vector3
+        Get
+            Return _NifPbrSpecularColor
+        End Get
+    End Property
+    Friend ReadOnly Property NifPbrLightingEffect1 As Single
+        Get
+            Return _NifPbrLightingEffect1
+        End Get
+    End Property
+    Friend ReadOnly Property NifPbrDisplacementScale As Single
+        Get
+            Return _NifPbrDisplacementScale
+        End Get
+    End Property
+    Friend ReadOnly Property NifPbrCoatRoughness As Single
+        Get
+            Return _NifPbrCoatRoughness
+        End Get
+    End Property
+    Friend ReadOnly Property NifPbrCoatF0 As Single
+        Get
+            Return _NifPbrCoatF0
+        End Get
+    End Property
+    ''' <summary>One line on the True PBR features this shape asks for and its feature slots, for capture logs. Empty for a
+    ''' shape without the True PBR flag. A function, so GetDifferences' Public reflection does not pick it up.</summary>
+    Public Function TruePbrSummary() As String
+        If Not _NifTruePbr Then Return ""
+        Dim f2 = _NifPbrFlags2
+        Dim twoLayer = (f2 And (1UI << 24)) <> 0
+        Dim parts As New List(Of String)
+        If twoLayer Then
+            parts.Add("two-layer")
+            If (f2 And (1UI << 25)) <> 0 Then parts.Add("interlayer parallax")
+            If (f2 And (1UI << 27)) <> 0 Then parts.Add("coat normal")
+            If (f2 And (1UI << 30)) <> 0 Then parts.Add("coloured coat")
+            parts.Add(String.Format(Globalization.CultureInfo.InvariantCulture, "coat strength {0:0.###}, roughness {1:0.###}, F0 {2:0.###}, displacement scale {3:0.###}", _NifPbrLightingEffect1, _NifPbrCoatRoughness, _NifPbrCoatF0, _NifPbrDisplacementScale))
+        ElseIf (f2 And (1UI << 27)) <> 0 Then
+            parts.Add("hair (not drawn as such)")
+        ElseIf (f2 And (1UI << 26)) <> 0 Then
+            parts.Add(String.Format(Globalization.CultureInfo.InvariantCulture, "subsurface colour {0:0.##},{1:0.##},{2:0.##} opacity {3:0.###}", _NifPbrSpecularColor.X, _NifPbrSpecularColor.Y, _NifPbrSpecularColor.Z, _NifPbrLightingEffect1))
+        Else
+            parts.Add("single layer")
+        End If
+        For Each slot In {2, 3, 6, 7}
+            Dim p = NifPbrSlot(slot)
+            If p.Length > 0 Then parts.Add("slot " & slot & " " & p)
+        Next
+        Return String.Join("; ", parts)
+    End Function
+    ''' <summary>Raw texture-set path of slot <paramref name="slot"/> of a True PBR shape, or "".</summary>
+    Friend Function NifPbrSlot(slot As Integer) As String
+        If _NifPbrSlots Is Nothing OrElse slot < 0 OrElse slot >= _NifPbrSlots.Length Then Return ""
+        Return If(_NifPbrSlots(slot), "")
+    End Function
+    Private _NifPbrFlags2 As UInteger
+    Private _NifPbrSpecularColor As OpenTK.Mathematics.Vector3 = OpenTK.Mathematics.Vector3.One
+    Private _NifPbrLightingEffect1 As Single
+    Private _NifPbrDisplacementScale As Single
+    Private _NifPbrCoatRoughness As Single
+    Private _NifPbrCoatF0 As Single
+    Private _NifPbrSlots As String()
     ''' <summary>The True PBR flag for hosts outside this assembly. A function, not a property, so the Public
     ''' reflection of GetDifferences does not pick it up.</summary>
     Public Function IsTruePbr() As Boolean
@@ -3638,6 +3728,19 @@ Public Class FO4UnifiedMaterial_Class
             If Not IsNothing(shad.TextureSetRef) AndAlso shad.TextureSetRef.Index <> -1 Then
                 Dim texset = TryCast(Nif.Blocks(shad.TextureSetRef.Index), BSShaderTextureSet)
                 ReadBgsmTexturesFromTextureSet(mat, texset, IsSkShader(shad), _EnvmapMaskPath)
+                If texset IsNot Nothing AndAlso IsSkShader(shad) AndAlso (CUInt(shad.ShaderFlags_SSPF2) And TruePbrFlag2) <> 0 Then
+                    _NifPbrSlots = texset.Textures.Select(Function(t) If(t?.Content, "")).ToArray()
+                End If
+            End If
+            If IsSkShader(shad) AndAlso (CUInt(shad.ShaderFlags_SSPF2) And TruePbrFlag2) <> 0 Then
+                _NifPbrFlags2 = CUInt(shad.ShaderFlags_SSPF2)
+                _NifPbrSpecularColor = New OpenTK.Mathematics.Vector3(shad.SpecularColor.R, shad.SpecularColor.G, shad.SpecularColor.B)
+                _NifPbrLightingEffect1 = shad.Softlight
+                _NifPbrDisplacementScale = shad.RimlightPower
+                If shad.ShaderType_SK_FO4 = NiflySharp.Enums.BSLightingShaderType.MultiLayerParallax Then
+                    _NifPbrCoatRoughness = shad.ParallaxInnerLayerThickness
+                    _NifPbrCoatF0 = shad.ParallaxRefractionScale
+                End If
             End If
         Else
             mat = New BGSM
@@ -3706,6 +3809,43 @@ Public Class FO4UnifiedMaterial_Class
             _suppressAutoPromotion = False
         End Try
         Underlying_Material.AlphaBlendMode = ClassifyTuple(_alphaBlendEnabled, _blendFunctionSource, _blendFunctionDest)
+    End Sub
+
+    ''' <summary>Water colour for planes with a BSWaterShaderProperty (0xRRGGBB): a blue-green close to Skyrim's
+    ''' default shallow water.</summary>
+    Public Shared Property WaterPreviewColor As UInteger = &H2E5A5EUI
+    ''' <summary>Opacity of those planes.</summary>
+    Public Shared Property WaterPreviewAlpha As Single = 0.6F
+
+    ''' <summary>A stand-in for Skyrim's water shader, which this renderer does not reproduce: an unlit, untextured
+    ''' effect material in <see cref="WaterPreviewColor"/>, alpha blended at <see cref="WaterPreviewAlpha"/>, depth
+    ''' tested without depth writes, so what lies under the surface shows through. No reflection, refraction or waves.</summary>
+    Public Sub Create_From_WaterShader(Nif As Nifcontent_Class_Manolo)
+        Dim mat As New BGEM With {
+            .TwoSided = True,
+            .BaseColor = WaterPreviewColor,
+            .BaseColorScale = 1.0F,
+            .EffectLightingEnabled = False,
+            .LightingInfluence = 0.0F,
+            .ZBufferTest = True,
+            .ZBufferWrite = False
+        }
+        If Nif IsNot Nothing Then mat.Version = DefaultMaterialVersionForNif(Nif)
+        mat.AlphaTest = False
+        mat.AlphaTestRef = 128
+        mat.Alpha = WaterPreviewAlpha
+        _castShadowsDelNif = False
+        Underlying_Material = mat
+        _suppressAutoPromotion = True
+        Try
+            _alphaBlendEnabled = True
+            _blendFunctionSource = NiflySharp.Enums.AlphaFunction.SRC_ALPHA
+            _blendFunctionDest = NiflySharp.Enums.AlphaFunction.INV_SRC_ALPHA
+        Finally
+            _suppressAutoPromotion = False
+        End Try
+        mat.AlphaBlendMode = ClassifyTuple(True, NiflySharp.Enums.AlphaFunction.SRC_ALPHA, NiflySharp.Enums.AlphaFunction.INV_SRC_ALPHA)
+        ClearDirty()
     End Sub
 
     Public Sub Create_From_Shader(Nif As Nifcontent_Class_Manolo, shap As INiShape, shad As BSEffectShaderProperty)

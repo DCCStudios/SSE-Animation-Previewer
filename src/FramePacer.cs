@@ -12,7 +12,7 @@ public sealed class FramePacer(Control owner,double hz):IDisposable
 {
     public event EventHandler? Tick;
     public double Hz=hz;
-    volatile bool running;int pending,generation;
+    volatile bool running;int pending,generation;long pendingSince;
 
     public void Start()
     {
@@ -43,7 +43,11 @@ public sealed class FramePacer(Control owner,double hz):IDisposable
                 period=(long)(Stopwatch.Frequency/Math.Max(1,Hz));next+=period;
                 // More than a frame behind (a long load, a breakpoint): start the schedule again from now.
                 long now=Stopwatch.GetTimestamp();if(now-next>period)next=now+period;
-                if(Interlocked.CompareExchange(ref pending,1,0)!=0)continue;
+                // One tick in flight at a time. A posted tick that never runs (seen in hidden-window captures, where the
+                // clip froze mid-run) would stop playback for good, so after half a second another one is posted; a
+                // spare tick is harmless because TickPlayback skips calls closer than half a frame apart.
+                if(Interlocked.CompareExchange(ref pending,1,0)!=0){if(now-Volatile.Read(ref pendingSince)<Stopwatch.Frequency/2)continue;}
+                Volatile.Write(ref pendingSince,now);
                 try{owner.BeginInvoke(Fire);}catch(InvalidOperationException){pending=0;if(owner.IsDisposed)break;}
             }
         }finally{if(timer!=IntPtr.Zero)CloseHandle(timer);if(raised)timeEndPeriod(1);}

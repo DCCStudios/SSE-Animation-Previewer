@@ -5,7 +5,7 @@ namespace SSEPreview;
 internal static class Program
 {
     // Every switch the program answers to. ParticleTests checks this against the source.
-    internal static readonly HashSet<string> Switches=new(StringComparer.Ordinal){"--no-activate","--show","--annotation-smoke","--archive-order-smoke","--attachment-smoke","--attack-effect-inspect","--background","--bfco-smoke","--billboard-test","--bladebeam-smoke","--camera-smoke","--catalog-test","--character-smoke","--ci-test","--clip-profile","--playback-probe","--cloud-effect-alpha-smoke","--cloud-equipment-smoke","--color-fixture","--data","--docs-capture","--dump-annotations","--effect-capture","--effect-graph-audit","--effect-sequence-test","--emitter-inspect","--emitter-source-smoke","--equipment-smoke","--fade-fixture","--ff7vfx-smoke","--flipbook-smoke","--floor-smoke","--frame-smoke","--frames-capture","--hair-smoke","--holster-smoke","--inspect","--library-smoke","--mod-sweep","--override-smoke","--particle-smoke","--particle-test","--precision-smoke","--preferences-test","--prepare-fixture","--queue-smoke","--record-inspect","--reference-effect-smoke","--refraction-smoke","--remote-cast-smoke","--scene-dialog-smoke","--scene-save-smoke","--self-test","--skeleton-smoke","--smoke","--smp-determinism","--smp-smoke","--smp-soak","--smp-test","--sound-smoke","--sources-recent-smoke","--speed-smoke","--tagfile-smoke","--texture-dump","--timing-smoke","--track-bone","--weaponart-profile-smoke","--window-pick-smoke"};
+    internal static readonly HashSet<string> Switches=new(StringComparer.Ordinal){"--no-activate","--show","--annotation-smoke","--archive-order-smoke","--attachment-smoke","--attack-effect-inspect","--background","--bfco-smoke","--billboard-test","--bladebeam-smoke","--camera-smoke","--catalog-test","--character-smoke","--ci-test","--clip-profile","--playback-probe","--view-capture","--cloud-effect-alpha-smoke","--cloud-equipment-smoke","--color-fixture","--data","--docs-capture","--dump-annotations","--effect-capture","--effect-graph-audit","--effect-sequence-test","--emitter-inspect","--emitter-source-smoke","--equipment-smoke","--fade-fixture","--ff7vfx-smoke","--flipbook-smoke","--floor-smoke","--frame-smoke","--frames-capture","--hair-smoke","--holster-smoke","--inspect","--library-smoke","--mod-sweep","--override-smoke","--particle-smoke","--particle-test","--pbr-glow-smoke","--precision-smoke","--preferences-test","--prepare-fixture","--queue-smoke","--record-inspect","--reference-effect-smoke","--refraction-smoke","--remote-cast-smoke","--scene-dialog-smoke","--scene-save-smoke","--self-test","--skeleton-smoke","--smoke","--smp-determinism","--smp-smoke","--smp-soak","--smp-test","--sound-smoke","--sources-recent-smoke","--speed-smoke","--tagfile-smoke","--texture-dump","--timing-smoke","--track-bone","--weaponart-profile-smoke","--window-pick-smoke"};
     [STAThread]
     static int Main(string[] args)
     {
@@ -20,6 +20,16 @@ internal static class Program
         bool tool=args.Any(a=>a.StartsWith("--")&&a is not ("--data" or "--background" or "--no-activate" or "--show"));
         MainWindow.Background=!args.Contains("--show")&&(tool||args.Contains("--background")||Environment.GetEnvironmentVariable("SSE_PREVIEW_BACKGROUND")=="1");
         MainWindow.NoActivate=MainWindow.Background||args.Contains("--no-activate")||Environment.GetEnvironmentVariable("SSE_PREVIEW_NO_ACTIVATE")=="1";
+        // GLFW focuses a window when it shows it (GLFW_FOCUS_ON_SHOW defaults to true), and OpenTK's GLControl shows its GLFW
+        // child window right after parenting it into the form. So every background run took the foreground for about 2 s:
+        // measured 2026-11-03, class GLFW30 "OpenTK Window" over Cursor and over a running game. OpenTK never resets window
+        // hints, so this one carries into the GLControl's window. It must be set on this thread, before the form exists.
+        if(MainWindow.NoActivate){OpenTK.Windowing.Desktop.GLFWProvider.EnsureInitialized();OpenTK.Windowing.GraphicsLibraryFramework.GLFW.WindowHint(OpenTK.Windowing.GraphicsLibraryFramework.WindowHintBool.FocusOnShow,false);}
+        // That hint was not enough: the GLFW window also took the foreground while it was still hidden, as it was created
+        // (style 860A0000 before GLControl parents it, 48000000 after), and once the main form did. A background run never
+        // needs a window activated, so this thread refuses every activation of its own windows. An on-screen --no-activate
+        // run is left alone: the user must be able to click into it.
+        if(MainWindow.Background)ActivationGuard.Install();
         // A switch the program does not know is an error, not a silent normal start: a caller waiting for output
         // files would otherwise wait on a run that did nothing.
         if(args.Where(a=>a.StartsWith("--")).FirstOrDefault(a=>!Switches.Contains(a)) is {} unknown){
