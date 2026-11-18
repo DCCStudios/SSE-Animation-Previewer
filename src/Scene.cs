@@ -261,7 +261,7 @@ public sealed partial class Scene
 
     public double Time;
     public Scene(Assets a,Viewport v,Records? records=null){assets=a;view=v;this.records=records;view.BeforeSceneFrame+=BeforeFrame;particleRenderer=new(a);refractionRenderer=new(a);waterRenderer=new(a);skyRenderer=new(a);view.AfterSceneFrame+=AfterFrame;view.BeforeSceneMeshes+=DrawSky;view.BeforeSceneMeshes+=DrawFloor;view.BeforeBlendedMeshes+=DrawFog;view.BeforeBlendedMeshes+=DrawWater;view.BeforeBlendedMeshes+=DrawTrails;
-        PreviewModel.KeepCpuGeometry=mesh=>skyShapes.Contains(mesh.MeshData.Shape);}
+        PreviewModel.KeepCpuGeometry=mesh=>skyShapes.Contains(mesh.MeshData.Shape)||mesh.MeshData.Material.MaterialBase?.Refraction==true;}
     public void Clear()
     {
         hairTints.Clear();ClearPhysics();weaponMeshLength=null;partnerShapes.Clear();partnerSession=null;addingPartner=false;PairedStatus="";
@@ -550,6 +550,7 @@ public sealed partial class Scene
             void Include(V3 point,float radius=0){if(!float.IsFinite(point.X)||!float.IsFinite(point.Y)||!float.IsFinite(point.Z))return;minimum=V3.ComponentMin(minimum,point-new V3(radius));maximum=V3.ComponentMax(maximum,point+new V3(radius));any=true;}
             foreach(var mesh in view.Model.meshes.Where(m=>modelOwners.GetValueOrDefault(m.MeshData.Shape)==owner)){
                 var geo=mesh.MeshData.Meshgeometry;var vertices=geo.PerVertexSkinMatrix!=null?SkinningHelper.GetWorldVertices(ref geo):geo.Vertices;mesh.MeshData.Meshgeometry=geo;
+                if(vertices==null){var lo=geo.Minv;var hi=geo.Maxv;for(int i=0;i<8;i++)Include(V3.TransformPosition(new V3((float)((i&1)==0?lo.X:hi.X),(float)((i&2)==0?lo.Y:hi.Y),(float)((i&4)==0?lo.Z:hi.Z)),mesh.MeshData.Transform));continue;}
                 foreach(var p in vertices)Include(V3.TransformPosition(new((float)p.X,(float)p.Y,(float)p.Z),mesh.MeshData.Transform));
             }
             foreach(var p in particles.Where(p=>p.System.Nif==owner)){
