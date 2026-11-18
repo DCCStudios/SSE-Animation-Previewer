@@ -5,6 +5,21 @@ release notes and adds every bullet as its own changelog entry on the Nexus Mods
 markup removed. Write the section before pushing the version tag. A bullet may wrap onto lines indented by two
 spaces.
 
+## 0.7.0
+
+- **NPC looks.** A list of every NPC in the loaded plugins sets the race, sex, weight, head parts, hair colour, skin
+  colour and outfit from the record, following templates as the game does.
+- **Baked heads and face tints.** An NPC's head is the FaceGeom file the game loads for it, with its baked face tint
+  (war paint, lip and eye colour, skin tone), found under the plugin that first defines the NPC.
+- **Dark face cases.** When the game would reject or miss the head file, the head is built from parts and the face
+  tint is composed from the record's tint layers with the game's formula; Diagnostics says why.
+- **Skin colour.** The body, head and worn armor take the NPC's stored skin colour. A race without an NPC uses its
+  default skin tone at its preset strength, which was applied at full strength before.
+- **Paired animations.** Killmoves, hugs, mounting and other two-actor clips show both actors, bound by track name
+  and placed by the clip's own marks. The second actor is a plain body of a race chosen from the clip.
+- **Shared killmoves.** Clips in `meshes\actors\sharedkillmoves` are listed in the library.
+- **Application icon.** The exe and the window have an icon.
+
 ## 0.6.0
 
 - **Precision blade trails.** The trail Precision draws behind a `Collision_Add` capsule on a weapon or shield shows

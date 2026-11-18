@@ -49,6 +49,8 @@ public sealed class AnimationClip
     public byte[] Bytes=[];
     public double Duration;
     public int Frames,Tracks;
+    /// <summary>Set when the file holds two actors (a Skyrim paired clip); null for a solo clip.</summary>
+    public PairedClip? Paired;
     public List<Annotation> Events=[];
     public List<(double Time,Vector3 Value)> Translation=[];
     public List<(double Time,float Value)> Rotation=[];
@@ -157,6 +159,7 @@ public sealed class AnimationClip
         var graph=HkxObjectGraphParser_Class.BuildGraph(pack);
         var anim=graph.Animaciones().FirstOrDefault() ?? throw new InvalidDataException("No supported animation in this HKX. Select a spline or lossless animation, not a behavior graph.");
         var clip=new AnimationClip {Bytes=bytes,Duration=anim.Animacion.Duration,Frames=anim.NumFrames,Tracks=anim.Animacion.NumberOfTransformTracks};
+        try{clip.Paired=PairedClip.Read(anim);}catch(Exception){clip.Paired=null;}
         int track=0, motionTrack=-1;
         foreach(var t in anim.Animacion.AnnotationTracks) {
             foreach(var e in t.Annotations) {

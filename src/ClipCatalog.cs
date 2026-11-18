@@ -62,7 +62,8 @@ public sealed class ClipCatalog(Assets assets)
     public IEnumerable<ClipEntry> Build()
     {
         var paths=assets.Paths.ToArray();
-        var animations=paths.Where(p=>p.EndsWith(".hkx",StringComparison.OrdinalIgnoreCase)&&p.Contains("animations\\",StringComparison.OrdinalIgnoreCase)).ToArray();
+        // Paired clips shared by a human and a creature live outside any "animations" folder, in meshes\actors\sharedkillmoves.
+        var animations=paths.Where(p=>p.EndsWith(".hkx",StringComparison.OrdinalIgnoreCase)&&(p.Contains("animations\\",StringComparison.OrdinalIgnoreCase)||p.Contains("\\sharedkillmoves\\",StringComparison.OrdinalIgnoreCase))).ToArray();
         var roots=paths.Where(p=>p.EndsWith("\\config.json",StringComparison.OrdinalIgnoreCase)||p.EndsWith("\\user.json",StringComparison.OrdinalIgnoreCase))
             .Select(SubRoot).Where(r=>r!=null).Cast<string>().Distinct(StringComparer.OrdinalIgnoreCase);
         var routes=new Dictionary<string,string?>(StringComparer.OrdinalIgnoreCase);

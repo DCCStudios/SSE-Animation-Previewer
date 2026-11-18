@@ -8,15 +8,53 @@ The right column builds the actor the clip plays on. It reads the same records t
 
 ## Race, sex and head
 
-**CHARACTER** lists every race record in the loaded plugins, creatures included. Choosing one loads its skeleton, body, default head parts and skin tint for the selected sex.
+**CHARACTER** lists every race record in the loaded plugins, creatures included. Choosing one loads its skeleton, body, default head parts and skin tint for the selected sex. The skin tint is the race's default skin tone, and the face gets the race's default tint layers.
 
 A clip only fits the skeleton it was made for, because its tracks are numbered against that skeleton. Picking a clip from another actor folder, such as `meshes\actors\werewolfbeast` or `meshes\actors\bear`, switches to a race that animates in that folder (WerewolfBeastRace, a bear race, WolfRace for a clip with "wolf" in its name). A race's folder is the one its behavior graph is in, so a follower race with its own skeleton elsewhere, such as a custom Cloud race, still counts as a character race and keeps playing character clips. Picking a character clip afterwards switches back to the race you had. The status bar names the switch. When no loaded plugin has such a race, as with vampire lord clips when Dawnguard.esm is not mounted, the clip plays on that folder's `character assets\skeleton.nif` with the body NIF named after the folder (`vampirelord.nif`) and without the race's armor, head or weapon. A skeleton chosen with **Skeleton NIF…** is never replaced. Choosing a race by hand while a clip from another actor folder is loaded (a vampire race with a werewolf clip) leaves the character in its rest pose with a note in the status bar, instead of driving the wrong bones.
+
+### An NPC's own looks
+
+The list under the sex list holds every NPC record in the loaded plugins. Choosing one fills the character controls from the record, as the game resolves it:
+
+- race, sex and weight
+- the head parts the game builds: the record's own parts with their extra parts, then the race defaults for every part type the record leaves open
+- hair colour, and the skin colour the record stores (`QNAM`), which goes to every skin shape of the body, the head and worn armor
+- the default outfit, without a shield
+
+An NPC that takes its traits from a template gets them from the template, as in game. When the template is a levelled list, the first entry is used and a note in Diagnostics says so.
+
+**Use the NPC's baked head (FaceGeom)** draws the head file the game loads for that NPC, with its sculpted shape and its baked face tint (war paint, lip and eye colour, skin tone). The game names these files after the plugin that first defines the NPC, so a replacer that ships a new head under `facegeom\Skyrim.esm\` is picked up when its folder is mounted. The line under the box shows which file is used.
+
+The previewer falls back to building the head from parts when the game would: the file is missing, or it has no shape named after one of the record's own head parts. In game that NPC gets the dark face bug. Here the face tint is composed from the record's tint layers with the game's own formula, so the colours are the ones the Creation Kit would bake, and Diagnostics names the reason. Untick the box to see that version for any NPC. A head built from parts has the race's default shape, because the record's face morphs are not applied.
+
+Changing the race or the sex by hand drops the NPC and goes back to the race's own looks. Every other control stays editable.
+
+Not read: SkyPatcher and similar plugins change looks at run time from their own files, and the player's look lives in the save. An NPC's height is shown but not applied.
 
 **HEAD PARTS** lists the race's hair, head, mouth, eyes and brows. Tick or untick parts to swap them.
 
 **Hair color** sets the one hair colour the actor carries. The game writes that colour into every hair-tint material on the actor, so it reaches hair, brows and worn hair-tint pieces such as wigs. "Race default" uses the race's own default. The list also holds every colour record in the mounted plugins and a custom picker.
 
 The game multiplies the hair texture by the colour's bytes over 128. A value of 128 leaves the texture as painted. Vanilla colours are darker than that, and a RaceMenu colour above 128 brightens it. The previewer cannot read the colour stored in a save, so pick the one your character uses.
+
+## Paired animations
+
+Killmoves, hugs, mounting and other paired clips hold two actors in one file. Skyrim tells them apart by track name: one actor's tracks carry its bone names and the other's carry the same names after `2_`. Two more tracks, `NPC` and `2_`, say where each actor stands. Selecting such a clip shows both actors, bound and placed the way the game does it.
+
+The clips in `meshes\actors\sharedkillmoves` (a human with a bear, dragon, horse and so on) are listed in the library with the rest.
+
+**PAIRED ANIMATION** in the right column controls the second actor:
+
+- **Show the second actor of a paired clip** draws it as a plain body of the partner race: the race's skin and default head, without equipment.
+- The partner race list starts on "chosen from the clip": the loaded race whose skeleton has the most of the bones the clip animates for that role. A human pair gets the actor's own race, and `human&bear` gets a bear. Pick another race when the choice is wrong.
+- **Partner: male / female** picks the body.
+- **Swap roles** makes the scene's actor play the other actor's tracks. The role is otherwise the one that fits the actor's skeleton best, so a werewolf actor takes the werewolf's side of a werewolf killmove. For two humans the scene's actor plays the plain names (the attacker in a killmove), and this box gives the victim's side.
+
+The line under the controls names each role, how many bones the clip drives on each skeleton, and the two placements.
+
+Paired clips carry no root motion. The actors stay on their marks and the root bones move inside the clip, so **Root motion** changes nothing for them.
+
+Not shown: the events of a paired clip (kill, end of the pairing, sounds) are stored in the behavior graphs and not in the clip, so the annotation list of a paired clip is nearly empty. The partner has no weapon, armor, physics or NPC looks.
 
 ## Weight
 

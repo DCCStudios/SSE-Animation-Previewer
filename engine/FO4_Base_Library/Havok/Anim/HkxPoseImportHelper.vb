@@ -145,7 +145,8 @@ Public NotInheritable Class HkxPoseImportSession
                                   liveSkeleton As SkeletonInstance,
                                   animationDisplayPath As String,
                                   skeletonDisplayPath As String,
-                                  Optional additiveHint As Boolean = False) As HkxPoseImportSession
+                                  Optional additiveHint As Boolean = False,
+                                  Optional trackPrefix As String = Nothing) As HkxPoseImportSession
         If animationHkxBytes Is Nothing OrElse animationHkxBytes.Length = 0 Then Throw New ArgumentException("Animation HKX is empty.", NameOf(animationHkxBytes))
         If liveSkeleton Is Nothing OrElse liveSkeleton.HasSkeleton = False Then Throw New InvalidOperationException("A live NIF skeleton must be loaded before importing HKX poses.")
 
@@ -207,7 +208,7 @@ Public NotInheritable Class HkxPoseImportSession
         End If
         If hkxSkeleton Is Nothing Then skeletonSource = "animation-track-names"
 
-        Dim tracks = ResolveTracks(animation, hkxSkeleton, skeletonSource)
+        Dim tracks = ResolveTracks(animation, hkxSkeleton, skeletonSource, trackPrefix)
         BindLiveSkeletonTracks(tracks, hkxSkeleton, liveSkeleton)
         Dim diagnostics As New HkxPoseImportDiagnostics With {
             .AnimationDisplayPath = If(animationDisplayPath, ""),
@@ -806,11 +807,53 @@ Public NotInheritable Class HkxPoseImportSession
         }
     End Function
 
+    ''' <summary>A Skyrim paired clip holds two actors: it has a track named PairedRoot, or tracks whose names start
+    ''' with "2_" (the second actor's bones).</summary>
+    Public Shared Function IsPairedClip(trackNames As IEnumerable(Of String)) As Boolean
+        If trackNames Is Nothing Then Return False
+        For Each name In trackNames
+            If name Is Nothing Then Continue For
+            If name.Equals("PairedRoot", StringComparison.Ordinal) OrElse name.StartsWith("2_", StringComparison.Ordinal) Then Return True
+        Next
+        Return False
+    End Function
+
+    ''' <summary>Tracks bound to a skeleton bone (for a paired clip: this actor's share of the file).</summary>
+    Public ReadOnly Property BoundTrackCount As Integer
+        Get
+            Return _tracks.Count
+        End Get
+    End Property
+
     Private Shared Function ResolveTracks(animation As HkxAnimacionDescomprimida_Class,
                                           hkxSkeleton As Havok.Canon.Objects.HkObj_HkaSkeleton,
-                                          skeletonSource As String) As List(Of ResolvedTrack)
+                                          skeletonSource As String,
+                                          Optional trackPrefix As String = Nothing) As List(Of ResolvedTrack)
         Dim result As New List(Of ResolvedTrack)
         Dim binding = If(animation.Binding?.TransformTrackToBoneIndices, New List(Of Integer)())
+
+        ' Skyrim paired clip (killmoves, mounting): one file holds both actors, the binding table is empty and every
+        ' track is named. The game binds by name (BSSynchronizedClipGenerator, SkyrimSE 1.6.1170 0x140B9FE20): for each
+        ' bone of the character's skeleton, the first track named SyncAnimPrefix + bone name, compared byte for byte.
+        ' The prefix is empty for one actor and "2_" for the other. Binding such a clip by track index would put the
+        ' PairedRoot track on bone 0 and the other actor's tracks on this one's bones.
+        If hkxSkeleton IsNot Nothing AndAlso binding.Count = 0 AndAlso IsPairedClip(animation.TrackNames) Then
+            Dim prefix = If(trackPrefix, "")
+            Dim byName As New Dictionary(Of String, Integer)(StringComparer.Ordinal)
+            Dim named = Math.Min(animation.TrackNames.Count, animation.Animacion.NumberOfTransformTracks)
+            For trackIndex = 0 To named - 1
+                Dim name = animation.TrackNames(trackIndex)
+                If name IsNot Nothing AndAlso Not byName.ContainsKey(name) Then byName(name) = trackIndex
+            Next
+            For boneIndex = 0 To hkxSkeleton.Bones.Count - 1
+                Dim found As Integer
+                Dim boneName = hkxSkeleton.Bones(boneIndex).Name
+                If String.IsNullOrWhiteSpace(boneName) = False AndAlso byName.TryGetValue(prefix & boneName, found) Then
+                    result.Add(New ResolvedTrack With {.TrackIndex = found, .BoneIndex = boneIndex, .BoneName = boneName.Trim()})
+                End If
+            Next
+            Return result
+        End If
 
         For trackIndex = 0 To animation.Animacion.NumberOfTransformTracks - 1
             Dim boneIndex = -1

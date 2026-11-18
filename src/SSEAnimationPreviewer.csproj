@@ -1,12 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>WinExe</OutputType><TargetFramework>net8.0-windows</TargetFramework>
+    <OutputType>WinExe</OutputType><ApplicationIcon>app.ico</ApplicationIcon><TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
     <SelfContained>true</SelfContained><PublishSingleFile>false</PublishSingleFile><PublishTrimmed>false</PublishTrimmed><PlatformTarget>x64</PlatformTarget><RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <AssemblyName>SSE Animation Previewer</AssemblyName><ApplicationManifest>app.manifest</ApplicationManifest>
     <!-- Build output goes to bin\ at the repository root, where the tests look for fixtures four folders up. -->
     <BaseOutputPath>..\bin\</BaseOutputPath>
-    <Version>0.6.0</Version><Product>SSE Animation Previewer</Product><IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Version>0.7.0</Version><Product>SSE Animation Previewer</Product><IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <FloorTextures Condition="'$(FloorTextures)'=='' And Exists('resources\local\testgrid_d.dds')">resources\local</FloorTextures>
     <FloorTextures Condition="'$(FloorTextures)'==''">resources</FloorTextures>

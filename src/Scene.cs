@@ -264,7 +264,7 @@ public sealed partial class Scene
         PreviewModel.KeepCpuGeometry=mesh=>skyShapes.Contains(mesh.MeshData.Shape);}
     public void Clear()
     {
-        hairTints.Clear();ClearPhysics();weaponMeshLength=null;
+        hairTints.Clear();ClearPhysics();weaponMeshLength=null;partnerShapes.Clear();partnerSession=null;addingPartner=false;PairedStatus="";
         attachmentAnimations.Clear();inheritedVisibility.Clear();addonLoads=0;modelOwners.Clear();weightBlend.Clear();pooledCues.Clear();bipedShapes.Clear();attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();particleRenderer.InvalidateTextures();refractionRenderer.InvalidateTextures();refractionMeshes.Clear();waterRenderer.InvalidateTextures();waterMeshes.Clear();shapeWaterTypes.Clear();editorMarkersSkipped=0;skyRenderer.Invalidate();skyShapes.Clear();skyMeshes.Clear();Sky=null;ClearTrails();shaderlessSkipped=0;particles.Clear();shapes.Clear();effectShapes.Clear();effectBindInverse.Clear();bases.Clear();weaponShapes.Clear();Session=null;segmentSessions.Clear();Skeleton.Reset();Diagnostics.Clear();
     }
     // fallbackHkx is the skeleton.hkx used when none sits beside the NIF, the race project's.
@@ -277,7 +277,7 @@ public sealed partial class Scene
         SkeletonHkx=assets.Exists(hkx)?hkx:fallbackHkx;
         if(assets.Exists(SkeletonHkx))Skeleton.MergeHkxSkeleton(assets.Read(SkeletonHkx));
     }
-    public void AddModel(string path,bool weapon=false,EffectCue? cue=null,string[]? textureOverride=null,Color? hairColor=null,uint bipedSlots=0,int weaponIndex=-1,string[]? skinTextureOverride=null,Func<double,System.Numerics.Matrix4x4>? placementOverride=null,Func<double,bool>? visibilityOverride=null,HashSet<string>? addonChain=null,Func<double,float>? addonScale=null,Color? skinColor=null,IReadOnlyList<EffectCue>? pool=null,string? waterType=null,bool sky=false)
+    public void AddModel(string path,bool weapon=false,EffectCue? cue=null,string[]? textureOverride=null,Color? hairColor=null,uint bipedSlots=0,int weaponIndex=-1,string[]? skinTextureOverride=null,Func<double,System.Numerics.Matrix4x4>? placementOverride=null,Func<double,bool>? visibilityOverride=null,HashSet<string>? addonChain=null,Func<double,float>? addonScale=null,Color? skinColor=null,IReadOnlyList<EffectCue>? pool=null,string? waterType=null,bool sky=false,Func<string[],string[]>? faceTextures=null,IReadOnlySet<string>? hiddenShapes=null)
     {
         poolAccepted=false;pendingWaterType=waterType;pendingSky=sky;
         path=Assets.Normalize(path);if(!path.StartsWith(@"meshes\",StringComparison.OrdinalIgnoreCase)&&!Path.IsPathRooted(path))path=@"meshes\"+path;
@@ -285,12 +285,13 @@ public sealed partial class Scene
         try {
             if(!preparedModels.Remove(path,out var nif)){nif=new Nifcontent_Class_Manolo();nif.Load_Manolo(assets.Read(path));}
             MaterialOverrides.Apply(nif,textureOverride,skinTextureOverride);
+            if(faceTextures!=null)MaterialOverrides.EditFace(nif,faceTextures);
             if(hairColor is {} tint)foreach(var shader in nif.Blocks.OfType<BSLightingShaderProperty>())
                 if(shader.IsTypeHairTint)shader.HairTintColor=new NiflySharp.Structs.Color3{R=tint.R/255f,G=tint.G/255f,B=tint.B/255f};
             if(skinColor is {} skinTint)foreach(var shader in nif.Blocks.OfType<BSLightingShaderProperty>())
                 if(shader.IsTypeSkinTint)shader.SkinTintColor=new NiflySharp.Structs.Color3{R=skinTint.R/255f,G=skinTint.G/255f,B=skinTint.B/255f};
             var parsed=NifRenderableShape.FromNif(nif);
-            if(cue==null)RegisterPhysicsModel(path,nif,parsed,weapon);
+            if(cue==null&&!addingPartner)RegisterPhysicsModel(path,nif,parsed,weapon);
             // A stateless mesh effect (no particle systems, addon nodes or behavior graph) looks the same whichever
             // trigger shows it, so non-overlapping repeats of one cue can share this loaded instance.
             if(pool!=null&&cue!=null&&!nif.Blocks.OfType<NiParticleSystem>().Any()&&!nif.Blocks.OfType<BSValueNode>().Any()&&!nif.Blocks.OfType<BSBehaviorGraphExtraData>().Any()){
@@ -344,11 +345,13 @@ public sealed partial class Scene
                 // Skyrim draws nothing for geometry without a shader property. On armor, hair and weapons such
                 // shapes are HDT-SMP collision proxies (VirtualGround, body colliders); they stay available to physics.
                 if(shape.NifShader==null&&cue==null){Diagnostics.Add($"{path}: shape {shape.NifShape?.Name} has no shader property and is not drawn (collision proxy).");continue;}
+                // Shapes the caller leaves out by name: the hair of a baked head under a helmet or hood.
+                if(hiddenShapes!=null&&shape.ShapeName!=null&&hiddenShapes.Contains(shape.ShapeName))continue;
                 // Placed world objects (view captures) follow the same rule: a waterfall's CurrentPlane shapes carry no shader.
                 if(shape.NifShader==null&&SkipShaderlessShapes){shaderlessSkipped++;continue;}
                 // The game never draws a shape named EditorMarker (the Creation Kit's placement box).
                 if(SkipShaderlessShapes&&string.Equals(shape.ShapeName,"EditorMarker",StringComparison.OrdinalIgnoreCase)){editorMarkersSkipped++;continue;}
-                modelOwners[shape]=nif;shapes.Add(shape);if(pendingWaterType!=null&&shape.NifShader is BSWaterShaderProperty)shapeWaterTypes[shape]=pendingWaterType;if(pendingSky)skyShapes.Add(shape);if(hairColor is {} resolvedHair&&shape.NifShader?.IsTypeHairTint==true)hairTints[shape]=resolvedHair;if(weapon)weaponShapes.Add(shape);
+                modelOwners[shape]=nif;shapes.Add(shape);if(addingPartner)partnerShapes.Add(shape);if(pendingWaterType!=null&&shape.NifShader is BSWaterShaderProperty)shapeWaterTypes[shape]=pendingWaterType;if(pendingSky)skyShapes.Add(shape);if(hairColor is {} resolvedHair&&shape.NifShader?.IsTypeHairTint==true)hairTints[shape]=resolvedHair;if(weapon)weaponShapes.Add(shape);
                 void Register(int index){if(!bipedShapes.TryGetValue(index,out var group))bipedShapes[index]=group=[];group.Add(shape);}
                 for(int index=0;index<32;index++)if((bipedSlots&(1u<<index))!=0)Register(index);
                 if(weapon&&weaponIndex>=32&&weaponIndex<42)Register(weaponIndex);
@@ -402,7 +405,9 @@ public sealed partial class Scene
     public void Commit(bool resetCamera=true)
     {
         MergeModelBones();
-        Skeleton.PrepareForShapes(shapes.Where(s=>!effectShapes.ContainsKey(s)));
+        partnerShapes.RemoveWhere(s=>!shapes.Contains(s));
+        Skeleton.PrepareForShapes(shapes.Where(s=>!effectShapes.ContainsKey(s)&&!partnerShapes.Contains(s)));
+        if(partnerShapes.Count>0)partnerSkeleton.PrepareForShapes(partnerShapes);
         // RenderShapes may draw synchronously. Capture local matrices before any
         // attachment callback can replace them with animated world transforms.
         committing=true;cameraWasReset=resetCamera&&!view.PlayingAnimation;poseShapes=shapes.Where(s=>!effectShapes.ContainsKey(s)).ToArray();
@@ -410,7 +415,7 @@ public sealed partial class Scene
         // engine restricts the reload's morph and base-geometry pass to marked shapes, so stale entries would leave every
         // new mesh at its loaded _1 weight. A full reload covers all shapes.
         view.Intent.DirtyShapes.Clear();
-        try {view.RenderShapes(new RenderRequest {Shapes=shapes.ToArray(),SkeletonResolver=new SingleInstanceSkeletonResolver(Skeleton),BaseGeometryProvider=weightBlend,ResetCamera=resetCamera,PreserveTextureCache=textureRevision==assets.Revision});}
+        try {view.RenderShapes(new RenderRequest {Shapes=shapes.ToArray(),SkeletonResolver=ActorResolver(),BaseGeometryProvider=weightBlend,ResetCamera=resetCamera,PreserveTextureCache=textureRevision==assets.Revision});}
         finally {committing=false;}
         foreach(var mesh in view.Model.meshes)if(hairTints.TryGetValue(mesh.MeshData.Shape,out var tint)&&mesh.MeshData.Material.MaterialBase is {} material){material.HairTintColor=tint;material.TintColorScale=2;}
         preparedModels.Clear();
@@ -420,23 +425,26 @@ public sealed partial class Scene
     }
     public void BindClip(AnimationClip clip)
     {
-        attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();Clip=clip;Session=null;segmentSessions.Clear();physicsJump=true;
+        attachmentFrames.Clear();attachmentNodes.Clear();namedAttachmentNodes.Clear();Clip=clip;Session=null;partnerSession=null;PairedStatus="";segmentSessions.Clear();physicsJump=true;
         if(!Skeleton.HasSkeleton){Diagnostics.Add("Animation decoded; load a race or skeleton NIF to display its pose.");return;}
         byte[]? hkx=assets.Exists(SkeletonHkx)?assets.Read(SkeletonHkx):null;
+        // A paired clip is bound by track name under this actor's prefix; a solo clip ignores the prefix.
+        ChoosePairedPrefix(clip);
         if(clip.Segments is {} segments){
             foreach(var segment in segments){
-                try{segmentSessions.Add(HkxPoseImportSession.Create(hkx,segment.Clip.Bytes,Skeleton,segment.Name,SkeletonHkx));}
+                try{segmentSessions.Add(HkxPoseImportSession.Create(hkx,segment.Clip.Bytes,Skeleton,segment.Name,SkeletonHkx,trackPrefix:ActorPrefix));}
                 catch(Exception ex){segmentSessions.Add(null);Diagnostics.Add($"Animation binding ({segment.Name}): {ex.Message}");}
             }
             return;
         }
-        try {Session=HkxPoseImportSession.Create(hkx,clip.Bytes,Skeleton,"Selected animation",SkeletonHkx);}
+        try {Session=HkxPoseImportSession.Create(hkx,clip.Bytes,Skeleton,"Selected animation",SkeletonHkx,trackPrefix:ActorPrefix);}
         catch(Exception ex){Diagnostics.Add("Animation binding: "+ex.Message);}
+        BindPartner();
     }
     public void SetTime(double t)
     {
         NotePhysicsTime(t);Time=t;
-        if(HasPose) {Skeleton.ApplyPose(PoseAt(t,"Preview"));
+        if(HasPose) {Skeleton.ApplyPose(PoseAt(t,"Preview"));PosePartner(t);
             // Only actor shapes follow the actor pose. Effect meshes are placed by their own controllers in BeforeFrame,
             // and the engine's pose step costs tens of microseconds per dirty mesh.
             if(poseShapes.Length>0&&Environment.GetEnvironmentVariable("SSE_POSE_ALL_SHAPES")!="1")view.Intent.MarkDirty(RenderDirtyFlags.Pose,poseShapes);else view.Intent.MarkDirty(RenderDirtyFlags.Pose);}
@@ -703,6 +711,7 @@ public sealed partial class Scene
         view.FarPlaneExtension=Math.Max(MinimumFarPlane,floor.Enabled?view.camera.FocusPosition.Length+floor.Size*.75f:0);view.UpdateProjection();
         var motion=RootMotion && Clip!=null?Clip.Motion(Time):(System.Numerics.Vector3.Zero,0f);
         var actor=M4.CreateRotationZ(motion.Item2)*M4.CreateTranslation(motion.Item1.X,motion.Item1.Y,motion.Item1.Z);
+        var partnerActor=partnerShapes.Count>0?PartnerWorld(actor):actor;
         foreach(var p in particles){double age=Time-(p.Cue?.Time??0);if(age>=0&&ShowEffects&&CueVisible(p.Cue,p.System.Animation,age)){long seekStart=System.Diagnostics.Stopwatch.GetTimestamp();p.System.Seek(age);p.System.LastSeekMs=System.Diagnostics.Stopwatch.GetElapsedTime(seekStart).TotalMilliseconds;}else{p.System.Simulation.Reset();p.System.LastSeekMs=0;}}
         LastSimulationMs=System.Diagnostics.Stopwatch.GetElapsedTime(profileStart).TotalMilliseconds;
         refractionMeshes.Clear();waterMeshes.Clear();skyMeshes.Clear();
@@ -751,7 +760,7 @@ public sealed partial class Scene
                 mesh.MeshData.Transform=WeaponBone(Time,out var bone)?bases.GetValueOrDefault(shape,M4.Identity)*bone.GetGlobalTransform.ToMatrix4()*actor:bases.GetValueOrDefault(shape,M4.Identity)*actor;
                 if(shape.RenderHide)continue;
             }
-            else mesh.MeshData.Transform=bases.GetValueOrDefault(shape,M4.Identity)*actor;
+            else mesh.MeshData.Transform=bases.GetValueOrDefault(shape,M4.Identity)*(partnerShapes.Contains(shape)?partnerActor:actor);
             if(mesh.MeshData.Material.MaterialBase?.Refraction==true){refractionMeshes.Add(mesh);shape.RenderHide=true;}
             else if(shape.NifShader is BSWaterShaderProperty){if(!shape.RenderHide)waterMeshes.Add(mesh);shape.RenderHide=true;}
             else if(skyShapes.Contains(shape)){if(!shape.RenderHide)skyMeshes.Add(mesh);shape.RenderHide=true;}

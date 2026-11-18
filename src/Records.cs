@@ -33,7 +33,7 @@ public sealed class Records
     public GameRecord? Resolve(string plugin,uint id) => All.GetValueOrDefault($"{plugin.ToLowerInvariant()}|{id & 0xffffff:X6}");
     public void Load(Assets assets, string? pluginsFile)
     {
-        All.Clear(); Diagnostics.Clear(); Revision++; localized.Clear(); strings.Clear(); stringsAssets=assets;
+        All.Clear(); Diagnostics.Clear(); Revision++; localized.Clear(); light.Clear(); strings.Clear(); stringsAssets=assets;
         var names=assets.Paths.Where(p=>!p.Contains('\\') && Path.GetExtension(p).ToLowerInvariant() is ".esm" or ".esp" or ".esl").ToList();
         var order=new List<string>();
         if(!string.IsNullOrEmpty(pluginsFile) && File.Exists(pluginsFile))
@@ -57,11 +57,13 @@ public sealed class Records
         if(!string.IsNullOrEmpty(pluginsFile)&&File.Exists(pluginsFile))assets.ApplyArchiveLoadOrder(order.Distinct(StringComparer.OrdinalIgnoreCase).Where(assets.Exists),pluginsFile);
         foreach(var name in order.Distinct(StringComparer.OrdinalIgnoreCase)) {
             if(!assets.Exists(name)) {Diagnostics.Add("Active plugin is missing: "+name);continue;}
-            try {foreach(var r in Parse(assets.Read(name),name)) {if(r.Kind=="TES4"){if((r.Flags&0x80)!=0)localized.Add(name);continue;} if((r.Flags&0x20)!=0)All.Remove(r.Key); else All[r.Key]=r;}}
+            try {foreach(var r in Parse(assets.Read(name),name)) {if(r.Kind=="TES4"){if((r.Flags&0x80)!=0)localized.Add(name);if((r.Flags&0x200)!=0||name.EndsWith(".esl",StringComparison.OrdinalIgnoreCase))light.Add(name);continue;} if((r.Flags&0x20)!=0)All.Remove(r.Key); else All[r.Key]=r;}}
             catch(Exception ex) {Diagnostics.Add(name+": "+ex.Message);}
         }
     }
-    readonly HashSet<string> localized=new(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> localized=new(StringComparer.OrdinalIgnoreCase),light=new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>A light plugin (TES4 flag 0x200 or .esl): its records use only the low 12 bits of the form ID.</summary>
+    public bool IsLight(string plugin)=>light.Contains(plugin);
     readonly Dictionary<string,Dictionary<uint,string>?> strings=new(StringComparer.OrdinalIgnoreCase);
     Assets? stringsAssets;
     /// <summary>The record's FULL name. A localized plugin (TES4 flag 0x80) stores a string ID, looked up in
@@ -101,7 +103,7 @@ public sealed class Records
                 string tag=Encoding.ASCII.GetString(bytes,pos,4);uint size=BitConverter.ToUInt32(bytes,pos+4);
                 if(tag=="GRUP") {if(size<24 || (long)pos+size>end)throw new InvalidDataException("Invalid GRUP size");Walk(pos+24,pos+(int)size);pos+=(int)size;continue;}
                 if((long)pos+24+size>end)throw new InvalidDataException("Invalid record size");
-                if(tag is not ("TES4" or "RACE" or "HDPT" or "ARMO" or "ARMA" or "WEAP" or "SPEL" or "MGEF" or "PROJ" or "ARTO" or "TXST" or "FLST" or "EXPL" or "ADDN" or "IPCT" or "IPDS" or "MATT" or "HAZD" or "EFSH" or "CLFM" or "RFCT" or "ACTI" or "SOUN" or "SNDR" or "SNCT" or "SOPM")){pos+=24+(int)size;continue;}
+                if(tag is not ("TES4" or "RACE" or "HDPT" or "ARMO" or "ARMA" or "WEAP" or "SPEL" or "MGEF" or "PROJ" or "ARTO" or "TXST" or "FLST" or "EXPL" or "ADDN" or "IPCT" or "IPDS" or "MATT" or "HAZD" or "EFSH" or "CLFM" or "RFCT" or "ACTI" or "SOUN" or "SNDR" or "SNCT" or "SOPM" or "NPC_" or "OTFT" or "LVLN" or "LVLI")){pos+=24+(int)size;continue;}
                 uint flags=BitConverter.ToUInt32(bytes,pos+8),id=BitConverter.ToUInt32(bytes,pos+12);
                 byte[] payload=bytes.AsSpan(pos+24,(int)size).ToArray();
                 if((flags&0x40000)!=0) {
@@ -214,15 +216,34 @@ public sealed class Records
         var bytes=color?.Kind=="CLFM"?color.First("CNAM")?.Bytes:null;
         return bytes is {Length:>=3}?Color.FromArgb(255,bytes[0],bytes[1],bytes[2]):null;
     }
-    public Color? RaceSkinColor(GameRecord? race,bool female){
-        if(race==null)return null;int gender=-1,type=-1;
+    /// <summary>The race's tint masks for one sex, in record order: TINI index, TINT texture (under textures\), TINP
+    /// mask type, TIND default colour form, then its TINC/TINV presets.</summary>
+    public List<RaceTint> RaceTints(GameRecord? race,bool female)
+    {
+        var tints=new List<RaceTint>();if(race==null)return tints;
+        int gender=-1,index=-1,type=-1;string texture="";GameRecord? standard=null,presetColor=null;var presets=new List<(GameRecord?,float)>();
+        void Close(){if(index>=0&&gender==(female?1:0))tints.Add(new(index,texture,type,standard,presets.ToArray()));index=-1;type=-1;texture="";standard=null;presetColor=null;presets=[];}
         foreach(var field in race.Fields){
-            if(field.Tag=="MNAM"){gender=0;type=-1;}else if(field.Tag=="FNAM"){gender=1;type=-1;}
-            else if(field.Tag=="TINI")type=-1;
+            if(field.Tag is "MNAM" or "FNAM"){Close();gender=field.Tag=="MNAM"?0:1;}
+            else if(field.Tag=="TINI"&&field.Bytes.Length>=2){Close();index=BitConverter.ToUInt16(field.Bytes);}
+            else if(index<0)continue;
+            else if(field.Tag=="TINT")texture=field.Text;
             else if(field.Tag=="TINP"&&field.Bytes.Length>=2)type=BitConverter.ToUInt16(field.Bytes);
-            else if(field.Tag=="TIND"&&gender==(female?1:0)&&type==6)return ColorValue(Resolve(race,field.UInt()));
+            else if(field.Tag=="TIND")standard=Resolve(race,field.UInt());
+            else if(field.Tag=="TINC")presetColor=Resolve(race,field.UInt());
+            else if(field.Tag=="TINV"){presets.Add((presetColor,field.Float()));presetColor=null;}
         }
-        return null;
+        Close();return tints;
+    }
+    /// <summary>The body colour of an actor that has no NPC record: the race's skin tone mask at its default colour,
+    /// blended over mid grey by the default preset's strength, as the game computes a skin colour from a tint
+    /// (TESNPC::SetSkinFromTint, AE 24710). Mid grey leaves the skin texture as painted.</summary>
+    public Color? RaceSkinColor(GameRecord? race,bool female){
+        var tone=RaceTints(race,female).FirstOrDefault(t=>t.Type==RaceTint.SkinTone);
+        if(tone==null||tone.Default==null||ColorValue(tone.Default)==null)return null;
+        var (color,alpha)=tone.Fallback();
+        int Mix(int c)=>Math.Clamp((int)((c/255f*alpha+(1-Math.Max(alpha,0))*.5f)*255f),0,255);
+        return Color.FromArgb(255,Mix(color.R),Mix(color.G),Mix(color.B));
     }
     public string[]? TexturePaths(GameRecord? textureSet)
     {
